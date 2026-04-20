@@ -1,3 +1,7 @@
+# SPDX-License-Identifier: LGPL-2.1-or-later
+# Copyright © 2020-2024 Allan Leal (original C++ Optima, https://github.com/reaktoro/optima)
+# Copyright © 2026 Jean-François Barthélémy (Julia port)
+
 # ── problem.jl ─────────────────────────────────────────────────────────────────
 # Core data structures: OptimaProblem, OptimaState, OptimaResult, OptimaOptions
 

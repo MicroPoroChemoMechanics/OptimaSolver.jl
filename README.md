@@ -103,4 +103,25 @@ assistance from [Claude Code](https://claude.ai/code) (Anthropic).
 
 ## License
 
-MIT
+OptimaSolver.jl is licensed under the **GNU Lesser General Public License,
+version 2.1 or (at your option) any later version** (LGPL-2.1-or-later),
+matching the licence of the upstream Optima C++ library from which it is
+derived.
+
+- Copyright © 2020–2024 Allan Leal (original C++ Optima).
+- Copyright © 2026 Jean-François Barthélémy (Julia port).
+
+See [`LICENSE`](LICENSE) for the full notice and [`COPYING.LESSER`](COPYING.LESSER)
+for the full LGPL-2.1 text.
+
+**Licensing history.** Version 0.1.0 of this package was inadvertently
+published under the MIT license. This was an error: a Julia port of an
+LGPL-licensed library is a derivative work under copyright law and cannot
+be legitimately relicensed under MIT without explicit authorisation from
+the upstream copyright holder. Version 0.2.0 corrects this oversight by
+adopting LGPL-2.1-or-later to match the upstream Optima license.
+
+**Practical note for downstream users.** The LGPL permits
+`using OptimaSolver` from Julia code of **any** licence (including MIT,
+Apache-2.0, or proprietary code). The copyleft applies only to modifications
+of OptimaSolver.jl itself, which must remain LGPL.

@@ -1,3 +1,7 @@
+# SPDX-License-Identifier: LGPL-2.1-or-later
+# Copyright © 2020-2024 Allan Leal (original C++ Optima, https://github.com/reaktoro/optima)
+# Copyright © 2026 Jean-François Barthélémy (Julia port)
+
 # ── canonicalizer.jl ───────────────────────────────────────────────────────────
 # Transforms A (m × ns) into canonical form [I S] via QR with column pivoting.
 # Exposes the LU factorisation of the basic block for reuse across Newton steps.
