@@ -1,8 +1,10 @@
 # OptimaSolver.jl
 
-[![Stable](https://img.shields.io/badge/docs-stable-blue.svg)](https://ChemistryTools.github.io/OptimaSolver.jl/stable/)
-[![Dev](https://img.shields.io/badge/docs-dev-blue.svg)](https://ChemistryTools.github.io/OptimaSolver.jl/dev/)
-[![Build Status](https://github.com/ChemistryTools/OptimaSolver.jl/actions/workflows/CI.yml/badge.svg?branch=main)](https://github.com/ChemistryTools/OptimaSolver.jl/actions/workflows/CI.yml?query=branch%3Amain)
+[![Docs - Stable](https://img.shields.io/badge/docs-stable-blue.svg)](https://MicroPoroChemoMechanics.codeberg.page/OptimaSolver.jl/stable/)
+[![Docs - Dev](https://img.shields.io/badge/docs-dev-blue.svg)](https://MicroPoroChemoMechanics.codeberg.page/OptimaSolver.jl/dev/)
+
+[![License: LGPL v2.1+](https://img.shields.io/badge/License-LGPL_v2.1+-blue.svg)](https://codeberg.org/MicroPoroChemoMechanics/OptimaSolver.jl/src/branch/main/LICENSE)
+[![code style: runic](https://img.shields.io/badge/code_style-%E1%9A%B1%E1%9A%A2%E1%9A%BE%E1%9B%81%E1%9A%B2-black)](https://github.com/fredrikekre/Runic.jl)
 
 A Julia-native primal-dual interior-point solver for Gibbs-energy minimisation in
 equilibrium chemistry.
@@ -34,11 +36,25 @@ The algorithm is a log-barrier interior-point method with:
 
 ## Installation
 
-```julia
-julia> import Pkg; Pkg.add("OptimaSolver")
+OptimaSolver.jl is hosted on the [MPCM registry](https://codeberg.org/MicroPoroChemoMechanics/MPCM-Registry).
+Add the registry once, then install as usual.
+
+In Pkg REPL mode (press `]` in the Julia REPL):
+
+```julia-repl
+pkg> registry add https://codeberg.org/MicroPoroChemoMechanics/MPCM-Registry
+pkg> add OptimaSolver
 ```
 
-Requires Julia ≥ 1.10.
+Or via the `Pkg` API:
+
+```julia
+using Pkg
+Pkg.Registry.add(RegistrySpec(url="https://codeberg.org/MicroPoroChemoMechanics/MPCM-Registry"))
+Pkg.add("OptimaSolver")
+```
+
+Requires Julia ≥ 1.12.
 
 ## Quick example
 
@@ -64,7 +80,7 @@ println(result.iterations) # typically 15–25
 ## SciML / ChemistryLab interface
 
 `OptimaOptimizer` is a drop-in replacement for `IpoptOptimizer` in
-[ChemistryLab.jl](https://github.com/ChemistryTools/ChemistryLab.jl):
+[ChemistryLab.jl](https://codeberg.org/MicroPoroChemoMechanics/ChemistryLab.jl):
 
 ```julia
 using ChemistryLab, OptimaSolver
@@ -77,9 +93,8 @@ between consecutive solves.
 
 ## Documentation
 
-Full documentation with theory, API reference, and worked examples:
-
-<https://ChemistryTools.github.io/OptimaSolver.jl>
+- [**STABLE**](https://MicroPoroChemoMechanics.codeberg.page/OptimaSolver.jl/stable/) — most recently tagged version of the documentation.
+- [**DEV**](https://MicroPoroChemoMechanics.codeberg.page/OptimaSolver.jl/dev/) — development version of the documentation.
 
 ## Credits and lineage
 
@@ -114,14 +129,20 @@ derived.
 See [`LICENSE`](LICENSE) for the full notice and [`COPYING.LESSER`](COPYING.LESSER)
 for the full LGPL-2.1 text.
 
-**Licensing history.** Version 0.1.0 of this package was inadvertently
-published under the MIT license. This was an error: a Julia port of an
-LGPL-licensed library is a derivative work under copyright law and cannot
-be legitimately relicensed under MIT without explicit authorisation from
-the upstream copyright holder. Version 0.2.0 corrects this oversight by
-adopting LGPL-2.1-or-later to match the upstream Optima license.
-
 **Practical note for downstream users.** The LGPL permits
 `using OptimaSolver` from Julia code of **any** licence (including MIT,
 Apache-2.0, or proprietary code). The copyleft applies only to modifications
 of OptimaSolver.jl itself, which must remain LGPL.
+
+## Citation
+
+See [CITATION.cff](CITATION.cff) for citation details.
+
+```bibtex
+@software{optimasolver_jl,
+  author    = {Barth{\'e}lemy, Jean-Fran{\c{c}}ois},
+  title     = {{OptimaSolver.jl}: Julia-native primal-dual interior-point solver for Gibbs-energy minimisation},
+  url       = {https://codeberg.org/MicroPoroChemoMechanics/OptimaSolver.jl},
+  year      = {2026}
+}
+```

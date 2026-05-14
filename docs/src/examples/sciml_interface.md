@@ -6,7 +6,7 @@ CurrentModule = OptimaSolver
 
 [`OptimaOptimizer`](@ref) implements `SciMLBase.AbstractOptimizationAlgorithm`
 and is designed as a drop-in replacement for `IpoptOptimizer` inside
-[ChemistryLab.jl](https://github.com/ChemistryTools/ChemistryLab.jl).
+[ChemistryLab.jl](https://codeberg.org/MicroPoroChemoMechanics/ChemistryLab.jl).
 
 ## Usage with ChemistryLab.jl
 

@@ -13,11 +13,12 @@ makedocs(;
     modules  = [OptimaSolver],
     authors  = "Jean-François Barthélémy",
     sitename = "OptimaSolver.jl",
-    remotes  = Dict(".." => Documenter.Remotes.GitHub("ChemistryTools", "OptimaSolver.jl")),
+    remotes  = nothing,
     format   = Documenter.HTML(;
-        canonical  = "https://ChemistryTools.github.io/OptimaSolver.jl",
-        edit_link  = "main",
-        prettyurls = (get(ENV, "CI", nothing) == "true"),
+        prettyurls    = get(ENV, "CI", "false") == "true",
+        canonical     = "https://MicroPoroChemoMechanics.codeberg.page/OptimaSolver.jl",
+        repolink      = "https://codeberg.org/MicroPoroChemoMechanics/OptimaSolver.jl",
+        edit_link     = "main",
         collapselevel = 1,
     ),
     pages = [
@@ -35,6 +36,8 @@ makedocs(;
     warnonly = [:missing_docs, :docs_block],
 )
 
-if get(ENV, "CI", nothing) == "true"
-    deploydocs(; repo = "github.com/ChemistryTools/OptimaSolver.jl", devbranch = "main")
-end
+deploydocs(;
+    repo         = "git@codeberg-docs:MicroPoroChemoMechanics/OptimaSolver.jl.git",
+    devbranch    = "main",
+    push_preview = false,
+)

@@ -1,0 +1,43 @@
+cff-version: 1.2.0
+message: "If you use OptimaSolver.jl in your work, please cite it as below."
+title: "OptimaSolver.jl: Julia-native primal-dual interior-point solver for Gibbs-energy minimisation"
+authors:
+  - family-names: Barthélémy
+    given-names: Jean-François
+    affiliation: "Cerema, UMR MCD"
+    orcid: "https://orcid.org/0000-0002-1968-8939"
+version: 0.1.0
+date-released: 2026-05-14
+license: LGPL-2.1-or-later
+url: "https://codeberg.org/MicroPoroChemoMechanics/OptimaSolver.jl"
+repository-code: "https://codeberg.org/MicroPoroChemoMechanics/OptimaSolver.jl"
+keywords:
+  - julia
+  - optimization
+  - interior-point
+  - gibbs-energy
+  - chemistry
+  - sciml
+references:
+  - type: software
+    title: "Optima"
+    authors:
+      - family-names: Leal
+        given-names: Allan M. M.
+    url: "https://github.com/reaktoro/optima"
+    notes: "Upstream C++ library this Julia port is derived from."
+  - type: article
+    title: "Efficient chemical equilibrium calculations for geochemical speciation and reactive transport modelling"
+    authors:
+      - family-names: Leal
+        given-names: Allan M. M.
+      - family-names: Blunt
+        given-names: Martin J.
+      - family-names: LaForce
+        given-names: Tara C.
+    journal: "Geochimica et Cosmochimica Acta"
+    volume: 131
+    year: 2014
+    start: 301
+    end: 322
+    doi: "10.1016/j.gca.2014.01.006"
