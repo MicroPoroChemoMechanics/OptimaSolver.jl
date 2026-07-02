@@ -16,8 +16,8 @@ makedocs(;
     remotes  = nothing,
     format   = Documenter.HTML(;
         prettyurls    = get(ENV, "CI", "false") == "true",
-        canonical     = "https://MicroPoroChemoMechanics.codeberg.page/OptimaSolver.jl",
-        repolink      = "https://codeberg.org/MicroPoroChemoMechanics/OptimaSolver.jl",
+        canonical     = "https://MicroPoroChemoMechanics.github.io/OptimaSolver.jl",
+        repolink      = "https://github.com/MicroPoroChemoMechanics/OptimaSolver.jl",
         edit_link     = "main",
         collapselevel = 1,
     ),
@@ -37,7 +37,7 @@ makedocs(;
 )
 
 deploydocs(;
-    repo         = "git@codeberg-docs:MicroPoroChemoMechanics/OptimaSolver.jl.git",
+    repo         = "github.com/MicroPoroChemoMechanics/OptimaSolver.jl.git",
     devbranch    = "main",
     push_preview = false,
 )

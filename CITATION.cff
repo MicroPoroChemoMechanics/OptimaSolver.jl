@@ -9,8 +9,8 @@ authors:
 version: "0.2.1"
 date-released: "2026-05-14"
 license: LGPL-2.1-or-later
-url: "https://codeberg.org/MicroPoroChemoMechanics/OptimaSolver.jl"
-repository-code: "https://codeberg.org/MicroPoroChemoMechanics/OptimaSolver.jl"
+url: "https://github.com/MicroPoroChemoMechanics/OptimaSolver.jl"
+repository-code: "https://github.com/MicroPoroChemoMechanics/OptimaSolver.jl"
 keywords:
   - julia
   - optimization

@@ -1,9 +1,9 @@
 # OptimaSolver.jl
 
-[![Docs - Stable](https://img.shields.io/badge/docs-stable-blue.svg)](https://MicroPoroChemoMechanics.codeberg.page/OptimaSolver.jl/stable/)
-[![Docs - Dev](https://img.shields.io/badge/docs-dev-blue.svg)](https://MicroPoroChemoMechanics.codeberg.page/OptimaSolver.jl/dev/)
+[![Docs - Stable](https://img.shields.io/badge/docs-stable-blue.svg)](https://MicroPoroChemoMechanics.github.io/OptimaSolver.jl/stable/)
+[![Docs - Dev](https://img.shields.io/badge/docs-dev-blue.svg)](https://MicroPoroChemoMechanics.github.io/OptimaSolver.jl/dev/)
 
-[![License: LGPL v2.1+](https://img.shields.io/badge/License-LGPL_v2.1+-blue.svg)](https://codeberg.org/MicroPoroChemoMechanics/OptimaSolver.jl/src/branch/main/LICENSE)
+[![License: LGPL v2.1+](https://img.shields.io/badge/License-LGPL_v2.1+-blue.svg)](https://github.com/MicroPoroChemoMechanics/OptimaSolver.jl/blob/main/LICENSE)
 [![code style: runic](https://img.shields.io/badge/code_style-%E1%9A%B1%E1%9A%A2%E1%9A%BE%E1%9B%81%E1%9A%B2-black)](https://github.com/fredrikekre/Runic.jl)
 
 A Julia-native primal-dual interior-point solver for Gibbs-energy minimisation in
@@ -36,13 +36,13 @@ The algorithm is a log-barrier interior-point method with:
 
 ## Installation
 
-OptimaSolver.jl is hosted on the [MPCM registry](https://codeberg.org/MicroPoroChemoMechanics/MPCM-Registry).
+OptimaSolver.jl is hosted on the [MPCM registry](https://github.com/MicroPoroChemoMechanics/MPCM-Registry).
 Add the registry once, then install as usual.
 
 In Pkg REPL mode (press `]` in the Julia REPL):
 
 ```julia-repl
-pkg> registry add https://codeberg.org/MicroPoroChemoMechanics/MPCM-Registry
+pkg> registry add https://github.com/MicroPoroChemoMechanics/MPCM-Registry
 pkg> add OptimaSolver
 ```
 
@@ -50,7 +50,7 @@ Or via the `Pkg` API:
 
 ```julia
 using Pkg
-Pkg.Registry.add(RegistrySpec(url="https://codeberg.org/MicroPoroChemoMechanics/MPCM-Registry"))
+Pkg.Registry.add(RegistrySpec(url="https://github.com/MicroPoroChemoMechanics/MPCM-Registry"))
 Pkg.add("OptimaSolver")
 ```
 
@@ -80,7 +80,7 @@ println(result.iterations) # typically 15–25
 ## SciML / ChemistryLab interface
 
 `OptimaOptimizer` is a drop-in replacement for `IpoptOptimizer` in
-[ChemistryLab.jl](https://codeberg.org/MicroPoroChemoMechanics/ChemistryLab.jl):
+[ChemistryLab.jl](https://github.com/MicroPoroChemoMechanics/ChemistryLab.jl):
 
 ```julia
 using ChemistryLab, OptimaSolver
@@ -93,8 +93,8 @@ between consecutive solves.
 
 ## Documentation
 
-- [**STABLE**](https://MicroPoroChemoMechanics.codeberg.page/OptimaSolver.jl/stable/) — most recently tagged version of the documentation.
-- [**DEV**](https://MicroPoroChemoMechanics.codeberg.page/OptimaSolver.jl/dev/) — development version of the documentation.
+- [**STABLE**](https://MicroPoroChemoMechanics.github.io/OptimaSolver.jl/stable/) — most recently tagged version of the documentation.
+- [**DEV**](https://MicroPoroChemoMechanics.github.io/OptimaSolver.jl/dev/) — development version of the documentation.
 
 ## Credits and lineage
 
@@ -142,7 +142,7 @@ See [CITATION.cff](CITATION.cff) for citation details.
 @software{optimasolver_jl,
   author    = {Barth{\'e}lemy, Jean-Fran{\c{c}}ois},
   title     = {{OptimaSolver.jl}: Julia-native primal-dual interior-point solver for Gibbs-energy minimisation},
-  url       = {https://codeberg.org/MicroPoroChemoMechanics/OptimaSolver.jl},
+  url       = {https://github.com/MicroPoroChemoMechanics/OptimaSolver.jl},
   year      = {2026}
 }
 ```
