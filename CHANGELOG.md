@@ -2,17 +2,14 @@
 
 ## v0.2.1 — Maintenance
 
-- Runic.yml: switch to `workflow_dispatch` only; prevents automatic
-  formatting commits that could conflict with local work
-- No API changes, no functional changes
+- Maintenance release: no API changes, no functional changes
 
-## v0.2.0 — Codeberg migration
+## v0.2.0 — Packaging & relicensing
 
-- Migrated to Codeberg (`MicroPoroChemoMechanics/OptimaSolver.jl`)
-- Forgejo workflows: CI, Documentation, Release, Runic, Zenodo
-- Registered in MPCM-Registry
-- Multi-version documentation deployment (`docs/deploy_docs.jl`)
 - Relicensed to LGPL-2.1-or-later
+- Registered in MPCM-Registry
+- GitHub Actions workflows: CI, Documentation, Register, CompatHelper, TagBot
+- Multi-version documentation deployment (`docs/deploy_docs.jl`)
 
 ## v0.1.0 — Initial release
 
