@@ -38,13 +38,11 @@ The algorithm is a log-barrier interior-point method with:
 
 ## Installation
 
-OptimaSolver.jl is hosted on the [MPCM registry](https://github.com/MicroPoroChemoMechanics/MPCM-Registry).
-Add the registry once, then install as usual.
+OptimaSolver.jl is registered in Julia's General registry.
 
 In Pkg REPL mode (press `]` in the Julia REPL):
 
 ```julia-repl
-pkg> registry add https://github.com/MicroPoroChemoMechanics/MPCM-Registry
 pkg> add OptimaSolver
 ```
 
@@ -52,7 +50,6 @@ Or via the `Pkg` API:
 
 ```julia
 using Pkg
-Pkg.Registry.add(RegistrySpec(url="https://github.com/MicroPoroChemoMechanics/MPCM-Registry"))
 Pkg.add("OptimaSolver")
 ```
 
