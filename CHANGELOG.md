@@ -1,5 +1,14 @@
 # Changelog
 
+## v0.2.2 — Maintenance
+
+- Maintenance release: no API changes, no functional changes.
+- CI badge restored; Runic badge.
+- Installation instructions updated for registration in Julia's General
+  registry (no registry to add beforehand).
+- Retired the Codeberg return path: removed `.forgejo/` workflows and
+  `docs/deploy_docs.jl`; GitHub is now the sole home.
+
 ## v0.2.1 — Maintenance
 
 - Maintenance release: no API changes, no functional changes
