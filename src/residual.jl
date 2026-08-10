@@ -3,7 +3,7 @@
 # Copyright © 2026 Jean-François Barthélémy (Julia port)
 
 # ── residual.jl ────────────────────────────────────────────────────────────────
-# KKT residual F(n, y; μ) and Hessian structure for Gibbs minimisation.
+# KKT residual F(n, y; μ) and Hessian structure for Gibbs minimization.
 #
 # KKT conditions for the log-barrier problem:
 #
@@ -19,7 +19,7 @@
 # Hessian of the barrier-augmented objective w.r.t. n:
 #   H = ∇²f(n) + μ * diag(1 / (n - lb)²)
 #
-# For Gibbs minimisation, ∇²f(n) is provided by the caller (typically
+# For Gibbs minimization, ∇²f(n) is provided by the caller (typically
 # diagonal + rank-1 for ideal-solution models, or full for HKF).
 
 """
@@ -118,7 +118,7 @@ Diagonal of ∇²G for the ideal/dilute Gibbs function G(n) = nᵀ μ(n,p).
 For an ideal solution where μᵢ(n) = μᵢ⁰(T,P)/RT + ln(aᵢ(n)):
 - Aqueous solvent (mole fraction): ∂²G/∂nᵢ² = 1/nᵢ - 1/n_aq + 1/n_aq (approximately 1/nᵢ)
 - Aqueous solutes (molality): ∂²G/∂nᵢ² ≈ 1/nᵢ
-- Pure solids/gases: ∂²G/∂nᵢ² = 0 (or small positive for regularisation)
+- Pure solids/gases: ∂²G/∂nᵢ² = 0 (or small positive for regularization)
 
 For the general case we use finite-difference or AD. Here we provide the
 ideal approximation H_diag[i] = 1/nᵢ as a sensible default that is always

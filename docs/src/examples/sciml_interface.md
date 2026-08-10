@@ -19,7 +19,7 @@ state_eq = equilibrate(state0; solver=OptimaOptimizer(tol=1e-10, verbose=false))
 
 `OptimaOptimizer` handles:
 - **Variable scaling** — each species is scaled by its starting value so that all
-  normalised variables are $O(1)$, critical for convergence when concentrations span
+  normalized variables are $O(1)$, critical for convergence when concentrations span
   multiple decades (e.g. a titration from pH 1 to pH 13).
 - **Cold-start lifting** — absent species (at their lower bound) are raised to a
   rough element-balance estimate before the first Newton step, avoiding the

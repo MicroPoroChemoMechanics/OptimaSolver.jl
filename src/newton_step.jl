@@ -91,9 +91,9 @@ function compute_step!(
     mul!(ws.rhs, ws.AoverH, ex)   # rhs = AoverH * ex
     ws.rhs .= ew .- ws.rhs        # rhs = ew - A H⁻¹ ex
 
-    # Solve S dy = rhs  (LU factorisation, m × m).
+    # Solve S dy = rhs  (LU factorization, m × m).
     #
-    # Tikhonov regularisation: add δ·I where δ = diag_max × 1e-14.
+    # Tikhonov regularization: add δ·I where δ = diag_max × 1e-14.
     # Without this, S is nearly singular when some conservation rows involve
     # only absent species (e.g. Na⁺ row at V=0 in a titration: all sodium
     # species are absent, so S[Na⁺,Na⁺] ≈ (scale)²/h ≈ 10⁻²⁷ → zero pivot).

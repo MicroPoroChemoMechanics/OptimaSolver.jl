@@ -23,7 +23,7 @@
     OptimaOptimizer
 
 Drop-in SciML optimizer implementing the OptimaSolver primal-dual interior-point
-algorithm for Gibbs-energy minimisation.
+algorithm for Gibbs-energy minimization.
 
 # Constructors
 ```julia
@@ -153,7 +153,7 @@ function SciMLBase.solve(
     y_start = isnothing(prev) ? nothing : prev.y
 
     # ── Variable scaling ─────────────────────────────────────────────────────
-    # Ipopt scales each variable by its initial value so all normalised
+    # Ipopt scales each variable by its initial value so all normalized
     # variables are O(1) at the starting point.  This is critical when
     # concentrations span many orders of magnitude (e.g. a titration with
     # pH 1–13 where [H⁺] varies over 12 decades).  Without scaling the

@@ -7,7 +7,7 @@
 #
 # Algorithm sketch (Wächter & Biegler 2006 / Optima-style):
 #
-#   1. Initialise (n, y) — from state if warm_start, else feasibility heuristic
+#   1. Initialize (n, y) — from state if warm_start, else feasibility heuristic
 #   2. Outer loop over barrier parameter μ:
 #      a. Inner loop (Newton iterations):
 #         i.   Evaluate KKT residual F(n, y; μ)
@@ -21,7 +21,7 @@
 #   3. Final KKT check; set state.converged
 #
 # Warm-start: if state already has n, y from a previous solve, we start there
-# with μ initialised to barrier_init (may converge in 1–3 outer iterations).
+# with μ initialized to barrier_init (may converge in 1–3 outer iterations).
 
 """
     solve!(state, prob, can, opts) -> OptimaState
@@ -55,7 +55,7 @@ function solve!(
     y = state.y
     μ = state.μ
 
-    # ── Feasibility initialisation (ensure An ≈ b) ───────────────────────────
+    # ── Feasibility initialization (ensure An ≈ b) ───────────────────────────
     # If the initial n is badly infeasible, project it: add a feasibility step.
     ew0 = prob.A * n .- prob.b
     if maximum(abs, ew0) > sqrt(opts.tol)
@@ -189,7 +189,7 @@ end
 """
     solve(prob, opts; u0, y0) -> OptimaResult
 
-Solve the Gibbs minimisation problem `prob` and return an `OptimaResult`.
+Solve the Gibbs minimization problem `prob` and return an `OptimaResult`.
 
 # Arguments
 - `prob`:  `OptimaProblem`
@@ -199,7 +199,7 @@ Solve the Gibbs minimisation problem `prob` and return an `OptimaResult`.
 
 # Warm-start
 Pass a previous `OptimaResult` as `u0 = prev_result` and the solver will
-initialise from `prev_result.n` and `prev_result.y`.
+initialize from `prev_result.n` and `prev_result.y`.
 """
 function solve(
         prob::OptimaProblem{T},
@@ -294,7 +294,7 @@ This corrects gross infeasibility in the initial guess without an inner loop.
 function _initialise_feasible!(n::AbstractVector{T}, prob::OptimaProblem{T}, ::Canonicalizer{T}) where {T}
     ew = prob.A * n .- prob.b
     # Solve A Aᵀ Δy = ew  →  Δn = -Aᵀ Δy  (minimum-norm correction).
-    # Tikhonov regularisation (same as in compute_step!): when some
+    # Tikhonov regularization (same as in compute_step!): when some
     # conservation rows involve only absent species (e.g. Na⁺ row at V=0),
     # the corresponding diagonal of A Aᵀ is near zero and the solve diverges.
     AAT = prob.A * prob.A'

@@ -8,7 +8,7 @@
 """
     OptimaProblem{T, F, G}
 
-Gibbs-energy minimisation problem in the form:
+Gibbs-energy minimization problem in the form:
 
     minimize    f(n, p)            (e.g. G(n) = nᵀ μ(n,p))
     subject to  A n = b            (mass conservation, m × ns)
@@ -109,7 +109,7 @@ Mutable solver state — primal variables `n`, dual variables `y` (Lagrange
 multipliers for A n = b), and the barrier parameter `μ`.
 
 Warm-starting: pass the converged state from a previous solve as `u0` to
-`solve`; the solver will initialise (n, y) from it.
+`solve`; the solver will initialize (n, y) from it.
 """
 mutable struct OptimaState{T <: Real}
     n::Vector{T}       # primal: mole amounts (ns,)

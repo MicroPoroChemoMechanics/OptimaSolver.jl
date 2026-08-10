@@ -5,7 +5,7 @@ CurrentModule = OptimaSolver
 # OptimaSolver.jl
 
 **OptimaSolver** is a Julia-native primal-dual interior-point solver for
-Gibbs-energy minimisation in equilibrium chemistry.
+Gibbs-energy minimization in equilibrium chemistry.
 
 It solves problems of the form
 
@@ -32,7 +32,7 @@ element-abundance vector, and $\varepsilon$ is a small positivity floor.
   reduced step sizes to avoid numerical blow-up near the positivity boundary.
 - **Implicit-differentiation sensitivity** — post-solve computation of
   $\partial n^*/\partial b$ and $\partial n^*/\partial(\mu^0/RT)$ using the
-  same Schur-complement factorisation as the last Newton step.
+  same Schur-complement factorization as the last Newton step.
 - **Warm-start** — consecutive solves (e.g. temperature scans, titration curves)
   reuse the previous solution as the starting point, typically halving the iteration
   count or more.
@@ -56,7 +56,7 @@ that library and from the following reference:
 
 > Leal, A.M.M., Blunt, M.J., LaForce, T.C. (2014).
 > Efficient chemical equilibrium calculations for geochemical speciation and reactive
-> transport modelling.
+> transport modeling.
 > *Geochimica et Cosmochimica Acta*, **131**, 301–322.
 > <https://doi.org/10.1016/j.gca.2014.01.006>
 

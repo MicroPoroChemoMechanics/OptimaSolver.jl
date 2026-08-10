@@ -14,7 +14,7 @@
 #   ∂F/∂u · ∂u*/∂c + ∂F/∂c = 0
 #   ⟹  ∂u*/∂c = -J⁻¹ ∂F/∂c
 #
-# where J = ∂F/∂u is the KKT Jacobian (already factorised during the last
+# where J = ∂F/∂u is the KKT Jacobian (already factorized during the last
 # Newton step — we reconstruct it here at marginal cost).
 #
 # For the two sensitivity parameters of interest:
@@ -100,7 +100,7 @@ function sensitivity(
     # Schur: S DY = -(A H⁻¹)   [m × ns, all ns RHS at once]
     #        dn_k = -H⁻¹ (eₖ + Aᵀ DY[:,k])
     #
-    # Vectorised form (single BLAS TRSM + GEMM):
+    # Vectorized form (single BLAS TRSM + GEMM):
     #   RHS_μ0 = -(A ./ h')           m × ns
     #   DY_μ0  = S⁻¹ RHS_μ0           m × ns
     #   ∂n_∂μ0 = -(A' * DY_μ0) ./ h   ns × ns

@@ -11,7 +11,7 @@ reference by Leal et al. (2014).
 
 ## Problem statement
 
-We seek the equilibrium composition $n \in \mathbb{R}^{n_s}$ minimising the
+We seek the equilibrium composition $n \in \mathbb{R}^{n_s}$ minimizing the
 Gibbs free energy subject to element-mass conservation:
 
 ```math
@@ -54,7 +54,7 @@ logarithmic barrier term is added to the objective:
 ```
 
 The barrier weight $\mu > 0$ is driven to zero over an outer loop; as $\mu \to 0$
-the barrier minimiser converges to the original constrained minimiser.
+the barrier minimizer converges to the original constrained minimizer.
 
 ### KKT conditions
 
@@ -140,17 +140,17 @@ cheaper than factoring the full $(n_s + m)$-dimensional system.
 
 ### Numerical conditioning
 
-Two techniques stabilise the Schur solve when some conservation rows correspond
+Two techniques stabilize the Schur solve when some conservation rows correspond
 to absent species (zero element budget):
 
-1. **Tikhonov regularisation**: add $\delta_{\rm tik} I$ with
-   $\delta_{\rm tik} = 10^{-14}\max_i S_{ii}$ before factorisation,
+1. **Tikhonov regularization**: add $\delta_{\rm tik} I$ with
+   $\delta_{\rm tik} = 10^{-14}\max_i S_{ii}$ before factorization,
    preventing near-zero pivots.
 2. **Diagonal equilibration**: scale row and column $i$ by $1/\sqrt{S_{ii}}$
    so all diagonal entries equal 1, reducing the condition number from
    $O(10^7)$ to $O(1)$ in titration-type problems.
 
-## Conservation matrix canonicalisation
+## Conservation matrix canonicalization
 
 [`Canonicalizer`](@ref) decomposes $A$ via QR with column pivoting:
 
@@ -158,7 +158,7 @@ to absent species (zero element budget):
 A Q = [B \;\; N], \qquad B \in \mathbb{R}^{m \times m}\text{ full rank}.
 ```
 
-The LU factorisation of $B$ is cached and reused across Newton steps, reducing
+The LU factorization of $B$ is cached and reused across Newton steps, reducing
 each back-substitution to $O(m^2)$ rather than $O(m^3)$.
 When $A$ is fixed across a sequence of solves (e.g. a temperature scan), pass
 the pre-built `Canonicalizer` to `solve` to skip the QR entirely.
@@ -308,13 +308,13 @@ The scaling is transparent: the returned solution is always in the original unit
 
 ## References
 
-- Allan Leal, *Optima* — C++ library for chemical equilibrium optimisation,
+- Allan Leal, *Optima* — C++ library for chemical equilibrium optimization,
   ETH Zürich.
   [github.com/reaktoro/optima](https://github.com/reaktoro/optima)
 
 - Leal, A.M.M., Blunt, M.J., LaForce, T.C. (2014).
   Efficient chemical equilibrium calculations for geochemical speciation and
-  reactive transport modelling.
+  reactive transport modeling.
   *Geochimica et Cosmochimica Acta*, **131**, 301–322.
   <https://doi.org/10.1016/j.gca.2014.01.006>
 

@@ -40,7 +40,7 @@ near the new solution, so the outer loop converges in 1–3 steps.
 
 ## Temperature scan with `Canonicalizer` reuse
 
-Combine warm-start with a pre-built [`Canonicalizer`](@ref) to minimise overhead
+Combine warm-start with a pre-built [`Canonicalizer`](@ref) to minimize overhead
 when both $A$ and $\mu^0$ change slowly:
 
 ```julia

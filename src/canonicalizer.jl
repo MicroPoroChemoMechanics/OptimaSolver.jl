@@ -4,7 +4,7 @@
 
 # ── canonicalizer.jl ───────────────────────────────────────────────────────────
 # Transforms A (m × ns) into canonical form [I S] via QR with column pivoting.
-# Exposes the LU factorisation of the basic block for reuse across Newton steps.
+# Exposes the LU factorization of the basic block for reuse across Newton steps.
 
 """
     Canonicalizer{T}
@@ -14,8 +14,8 @@ Decomposes the conservation matrix A (m × ns) into canonical form:
     A Q = [B  N]    with B = basic block (m × m, full rank)
 
 where Q is a column permutation such that the first m columns are linearly
-independent. The LU factorisation of B is cached and reused for every
-Newton step without re-factorisation.
+independent. The LU factorization of B is cached and reused for every
+Newton step without re-factorization.
 
 # Fields
 - `A`:    original conservation matrix (m × ns)
@@ -24,7 +24,7 @@ Newton step without re-factorisation.
 - `jb`:   basic variable indices (length m)
 - `jn`:   non-basic variable indices (length ns-m)
 - `B`:    basic block A[:, jb] (m × m)
-- `BLU`:  LU factorisation of B (used for Newton and sensitivity)
+- `BLU`:  LU factorization of B (used for Newton and sensitivity)
 - `R`:    R = B⁻¹ N  (m × (ns-m)), the reduced-cost matrix
 - `ns`:   number of species
 - `m`:    number of constraints
@@ -87,7 +87,7 @@ end
 """
     refactorize!(c::Canonicalizer)
 
-Re-compute the LU factorisation of B in-place. Call this if A changes
+Re-compute the LU factorization of B in-place. Call this if A changes
 (e.g. after variable repartitioning). Returns a new `Canonicalizer`.
 """
 function refactorize(c::Canonicalizer{T}) where {T}

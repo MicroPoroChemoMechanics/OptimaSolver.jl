@@ -22,10 +22,10 @@ Dependencies (`ForwardDiff`, `SciMLBase`) are resolved automatically.
 
 ## First solve: three-species ideal Gibbs problem
 
-This minimal example solves a Gibbs-energy minimisation for a three-species system
+This minimal example solves a Gibbs-energy minimization for a three-species system
 under a single mole-balance constraint.
 
-**Problem.** Find mole amounts $n = (n_1, n_2, n_3)$ minimising
+**Problem.** Find mole amounts $n = (n_1, n_2, n_3)$ minimizing
 
 ```math
 G(n) = \sum_{i=1}^{3} n_i\!\left(\mu_i^0 + \ln n_i\right),

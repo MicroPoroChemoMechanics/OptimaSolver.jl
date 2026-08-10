@@ -5,7 +5,7 @@
 """
     OptimaSolver
 
-Julia-native primal-dual interior-point solver for Gibbs-energy minimisation.
+Julia-native primal-dual interior-point solver for Gibbs-energy minimization.
 
 Implements the Optima algorithm (Allan Leal, ETH Zürich) in Julia, with:
 - full ForwardDiff / AD compatibility (no Float64 casts)
