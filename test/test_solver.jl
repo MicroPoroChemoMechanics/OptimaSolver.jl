@@ -8,7 +8,7 @@
     # We use a 1-row system: [1 1 1] n = b (total moles = b[1])
     # with μ⁰ = [0, 1, 2] so the analytic solution is
     #   nᵢ* ∝ exp(-μᵢ⁰) = [1, e⁻¹, e⁻²]
-    # normalised to sum = b[1] = 1.
+    # normalized to sum = b[1] = 1.
 
     μ⁰ = [0.0, 1.0, 2.0]
 

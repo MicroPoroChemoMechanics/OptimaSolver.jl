@@ -8,12 +8,12 @@
 [![License: LGPL v2.1+](https://img.shields.io/badge/License-LGPL_v2.1+-blue.svg)](https://github.com/MicroPoroChemoMechanics/OptimaSolver.jl/blob/main/LICENSE)
 [![code style: runic](https://img.shields.io/badge/code_style-%E1%9A%B1%E1%9A%A2%E1%9A%BE%E1%9B%81%E1%9A%B2-pink)](https://github.com/fredrikekre/Runic.jl)
 
-A Julia-native primal-dual interior-point solver for Gibbs-energy minimisation in
+A Julia-native primal-dual interior-point solver for Gibbs-energy minimization in
 equilibrium chemistry.
 
 ## What it does
 
-OptimaSolver solves constrained optimisation problems of the form
+OptimaSolver solves constrained optimization problems of the form
 
 ```
 minimize    f(n, p)              (e.g. Gibbs energy G(n) = Σ nᵢ(μᵢ⁰/RT + ln nᵢ))
@@ -119,7 +119,7 @@ assistance from [Claude Code](https://claude.ai/code) (Anthropic).
 
 OptimaSolver.jl is licensed under the **GNU Lesser General Public License,
 version 2.1 or (at your option) any later version** (LGPL-2.1-or-later),
-matching the licence of the upstream Optima C++ library from which it is
+matching the license of the upstream Optima C++ library from which it is
 derived.
 
 - Copyright © 2020–2024 Allan Leal (original C++ Optima).
@@ -129,7 +129,7 @@ See [`LICENSE`](LICENSE) for the full notice and [`COPYING.LESSER`](COPYING.LESS
 for the full LGPL-2.1 text.
 
 **Practical note for downstream users.** The LGPL permits
-`using OptimaSolver` from Julia code of **any** licence (including MIT,
+`using OptimaSolver` from Julia code of **any** license (including MIT,
 Apache-2.0, or proprietary code). The copyleft applies only to modifications
 of OptimaSolver.jl itself, which must remain LGPL.
 

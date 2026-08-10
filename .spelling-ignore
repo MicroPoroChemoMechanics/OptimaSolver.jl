@@ -1,0 +1,7 @@
+# Literal strings the scanner and converter must leave alone.
+#
+# Published titles of third-party work: correcting their spelling would
+# misquote the reference. The convention applies to what we write, not to
+# what we cite. Both the README blockquote and CITATION.cff carry this title.
+literal:Efficient chemical equilibrium calculations for geochemical speciation and reactive
+literal:transport modelling
