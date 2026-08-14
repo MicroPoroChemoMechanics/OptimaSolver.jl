@@ -6,7 +6,7 @@ authors:
     given-names: Jean-François
     affiliation: "Cerema, UMR MCD"
     orcid: "https://orcid.org/0000-0002-1968-8939"
-version: "0.2.3"
+version: 0.2.4
 date-released: "2026-08-10"
 license: LGPL-2.1-or-later
 url: "https://github.com/MicroPoroChemoMechanics/OptimaSolver.jl"

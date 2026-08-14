@@ -66,9 +66,12 @@ function line_search(
         μ,
         opts::OptimaOptions;
         filter::LineSearchFilter,
-        α_max::Float64 = 1.0,
+        α_max = 1.0,
     ) where {T}
-    Tv = promote_type(eltype(n), eltype(dn), typeof(μ))
+    # `α_max` comes from `clamp_step`, hence carries the type of the iterates:
+    # annotating it `::Float64` used to reject dual numbers outright, which is
+    # what stopped `ForwardDiff` from crossing the solve.
+    Tv = promote_type(eltype(n), eltype(dn), typeof(μ), typeof(α_max))
 
     α = Tv(α_max)
     β = Tv(opts.ls_beta)

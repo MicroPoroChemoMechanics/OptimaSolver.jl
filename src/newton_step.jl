@@ -148,9 +148,9 @@ function clamp_step(
         n::AbstractVector,
         lb::AbstractVector,
         dn::AbstractVector;
-        τ::Float64 = 0.995,
+        τ = 0.995,
     )
-    T = promote_type(eltype(n), eltype(dn))
+    T = promote_type(eltype(n), eltype(dn), typeof(τ))
     α = one(T)
     @inbounds for i in eachindex(n)
         if dn[i] < zero(T)
