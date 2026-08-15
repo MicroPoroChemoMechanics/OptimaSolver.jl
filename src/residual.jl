@@ -72,12 +72,23 @@ function kkt_residual(
     #   ex[i]   ≥ 0                    (gradient pushes toward the bound)
     # Interior variables and near-bound variables with ex < 0 (species should
     # come off the bound) are always included.
-    max_slack = maximum(s)
-    slack_tol = Tv(1.0e-8) * max(one(Tv), max_slack)
-
+    # "At its bound" has to be judged against the variable's OWN bound, not
+    # against the largest variable in the problem. Scaling the threshold by
+    # `max_slack` looks harmless until the problem spans many orders of
+    # magnitude: in an aqueous system the solvent sits at 55 mol, so the
+    # threshold becomes 5.5e-7 and *every trace ion below it* is declared to be
+    # at a bound of 1e-16 — nine orders of magnitude away — and its stationarity
+    # is silently never enforced. Measured on calcite + CO₂, the species below
+    # that threshold were exactly the wrong ones: CaOH⁺ ×20.8, OH⁻ ×3.19,
+    # H⁺ ×1.24, while CO₃²⁻ and Ca(CO₃)@ just above it came out at ×1.10 and
+    # ×1.02.
+    #
+    # A variable is at its bound when its slack is negligible relative to the
+    # bound itself, which is what "sitting on it" means.
     err_opt = zero(Tv)
     @inbounds for i in eachindex(ex)
-        if s[i] > slack_tol || ex[i] < zero(Tv)
+        slack_tol_i = Tv(1.0e-6) * max(abs(prob.lb[i]), floatmin(Tv))
+        if s[i] > slack_tol_i || ex[i] < zero(Tv)
             v = abs(ex[i])
             if v > err_opt
                 err_opt = v

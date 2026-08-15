@@ -26,6 +26,20 @@
   against 3.78 and 13.9897 through the Schur complement. Mixed solid/aqueous
   systems are unchanged. Set `nullspace_step = false` to restore the old step.
 
+- **The convergence test excluded trace species from the stationarity check.**
+  A variable was judged "at its bound" when its slack fell below
+  `1e-8 × max_slack`, a threshold scaled by the *largest* variable in the
+  problem. In an aqueous system the solvent sits at 55 mol, so the threshold
+  became `5.5e-7` and every trace ion below it was declared to sit on a bound of
+  `1e-16` — nine orders of magnitude away — and its optimality residual was
+  never enforced. The criterion is now relative to the variable's own bound,
+  which is what "sitting on it" means.
+
+  Measured on calcite + CO₂ against Reaktoro: `CaOH⁺` ×20.8 → ×2.47, `OH⁻`
+  ×3.19 → ×1.045, `H⁺` ×1.24 → ×1.006, and `pKw` 13.40 → 13.979. Every species
+  except `CaOH⁺` now agrees to 5 % or better, and Ipopt lands on the same
+  `CaOH⁺` value (×2.46), so that residual belongs to neither back-end.
+
 ### Added
 
 - **The exact Hessian diagonal may be handed over through the problem
