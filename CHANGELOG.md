@@ -1,5 +1,20 @@
 # Changelog
 
+## v0.2.6 — The nullspace step no longer throws
+
+### Fixed
+
+- **`PosDefException` from the default code path.** The nullspace step factorizes
+  the reduced Hessian `Zᵀ H Z` by Cholesky. That matrix is positive definite at
+  any interior point in exact arithmetic, since `h > 0` there whatever the
+  curvature — but it can lose definiteness numerically when the amounts span ten
+  orders of magnitude. Hit on a calcite-dissolution trajectory where a species
+  sits at `1e-16`.
+
+  The factorization is now attempted (`check = false`) and falls back to a
+  Bunch–Kaufman factorization, which handles the indefinite case. A default path
+  must not throw on a well-posed problem.
+
 ## v0.2.5 — Nullspace Newton step, and the water autoprotolysis
 
 ### Changed (default behavior)

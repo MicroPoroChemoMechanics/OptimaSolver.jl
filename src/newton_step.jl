@@ -235,7 +235,15 @@ function compute_step_nullspace!(
         rhs[j] = rhs[j] - ex[jn[j]]
     end
 
-    dz = LinearAlgebra.cholesky!(LinearAlgebra.Symmetric(K)) \ rhs
+    # `Zᵀ H Z` is positive definite at any interior point in exact arithmetic,
+    # since `h > 0` there whatever the curvature. It can still lose definiteness
+    # numerically when the amounts span ten orders of magnitude, so the
+    # factorization is attempted and fallen back on rather than assumed —
+    # a `PosDefException` from a default code path is not acceptable.
+    Ksym = LinearAlgebra.Symmetric(K)
+    chol = LinearAlgebra.cholesky(Ksym; check = false)
+    dz = LinearAlgebra.issuccess(chol) ? chol \ rhs :
+        LinearAlgebra.bunchkaufman(Ksym; check = false) \ rhs
 
     # Assemble dn = dnₚ + Z dz.
     fill!(ws.dn, zero(T))
