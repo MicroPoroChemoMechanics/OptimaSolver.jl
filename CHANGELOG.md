@@ -1,5 +1,45 @@
 # Changelog
 
+## v0.2.5 — Nullspace Newton step, and the water autoprotolysis
+
+### Changed (default behavior)
+
+- **The Newton step is computed by the nullspace method by default**
+  (`nullspace_step = true`). The previous route formed the Schur complement
+  `S = A H⁻¹ Aᵀ`, which needs `H` invertible — and in a chemical equilibrium a
+  **pure phase** has unit activity, hence `∂²G/∂nᵢ² = 0` exactly. The step then
+  degenerates and the solve settles on a point that is not the minimum.
+
+  The nullspace method writes `dn = dnₚ + Z dz` with `Z` a basis of `null(A)`,
+  and since `Zᵀ Aᵀ = 0` the dual drops out of the projected stationarity:
+
+      (Zᵀ H Z) dz = −Zᵀ (ex + H dnₚ)
+
+  where `H` appears only as a *product*. The canonicalizer already supplies the
+  basis: with `R = B⁻¹N`, `Z[jb, :] = −R` and `Z[jn, :] = I`, so
+  `Zᵀ H Z = Rᵀ diag(h[jb]) R + diag(h[jn])`, symmetric positive definite at any
+  interior point. This is the route the C++ Optima this package is ported from
+  takes by default; its `Rangespace` counterpart — the Schur complement — is
+  documented there as suitable for invertible diagonal Hessians only.
+
+  Measured: pure water comes out at `[H⁺]/[OH⁻] = 1.0` and `pKw = 13.9994`,
+  against 3.78 and 13.9897 through the Schur complement. Mixed solid/aqueous
+  systems are unchanged. Set `nullspace_step = false` to restore the old step.
+
+### Added
+
+- **The exact Hessian diagonal may be handed over through the problem
+  parameters**, alongside `A` and `b`: a `hdiag` entry in the parameter
+  `NamedTuple`, called as `hdiag(hf, n)`. Useful when the caller can compute
+  `∂²f/∂nᵢ²` analytically instead of leaving the back-end to approximate it.
+
+### Changed
+
+- **`use_fd_hessian` has opposite defaults on the two ways of building an
+  optimizer** — `false` on `OptimaOptions`, `true` on the `OptimaOptimizer(; …)`
+  keyword constructor — so the same optimizer built two ways selects different
+  regimes. The behavior is unchanged; both are now documented.
+
 ## v0.2.4 — Dual numbers cross the solve
 
 ### Fixed

@@ -51,12 +51,24 @@ function OptimaOptimizer(;
         ls_beta::Float64 = 0.5,
         ls_max_iter::Int = 40,
         verbose::Bool = false,
-        use_fd_hessian::Bool = true,   # default true: correct for mixed solid/aqueous
+        # Kept at `true`, matching the historical behavior of this constructor,
+        # but note that it disagrees with `OptimaOptions()`, whose own default is
+        # `false`. The two are genuinely different regimes and neither is right
+        # everywhere: on an aqueous-only system the analytic `1/nᵢ` (`false`)
+        # gives water at `[H⁺]/[OH⁻] = 1.000003`, while the finite-difference
+        # diagonal (`true`) gives 3.78; on a mixed solid/aqueous system the
+        # verdict reverses. Building the same optimizer two ways must at least
+        # not silently pick opposite regimes, so the disagreement is documented
+        # here and on `OptimaOptions` until the underlying conditioning issue is
+        # resolved.
+        use_fd_hessian::Bool = true,
+        nullspace_step::Bool = true,
     )
     opts = OptimaOptions(;
         tol, max_iter, warm_start,
         barrier_init, barrier_min, barrier_decay,
         ls_alpha, ls_beta, ls_max_iter, verbose, use_fd_hessian,
+        nullspace_step,
     )
     return OptimaOptimizer(opts, Ref{Union{Nothing, OptimaResult}}(nothing))
 end

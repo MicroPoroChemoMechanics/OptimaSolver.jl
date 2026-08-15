@@ -60,7 +60,7 @@ export OptimaOptimizer, reset_cache!, solve
 
 # Internal components (exported for testing and extension)
 export KKTResidual, kkt_residual, hessian_diagonal, gibbs_hessian_diag
-export NewtonStep, compute_step!, clamp_step
+export NewtonStep, compute_step!, compute_step_nullspace!, clamp_step
 export LineSearchFilter, line_search
 export classify_variables, reduced_step_for_unstable!, stability_measure
 
