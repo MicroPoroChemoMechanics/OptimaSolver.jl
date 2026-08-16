@@ -148,9 +148,9 @@ function clamp_step(
         n::AbstractVector,
         lb::AbstractVector,
         dn::AbstractVector;
-        τ::Float64 = 0.995,
+        τ = 0.995,
     )
-    T = promote_type(eltype(n), eltype(dn))
+    T = promote_type(eltype(n), eltype(dn), typeof(τ))
     α = one(T)
     @inbounds for i in eachindex(n)
         if dn[i] < zero(T)
@@ -162,4 +162,105 @@ function clamp_step(
         end
     end
     return α
+end
+
+# ── Nullspace step ────────────────────────────────────────────────────────────
+
+"""
+    compute_step_nullspace!(ws, can, h, ex, ew) -> (dn, dy)
+
+Newton step by the **nullspace** method, which never inverts `H`.
+
+`compute_step!` above forms the Schur complement `S = A H⁻¹ Aᵀ`. That is the
+`Rangespace` method of the C++ Optima this package is ported from, and Optima
+documents it as suitable only for a Hessian that is diagonal *and* invertible.
+It is neither harmless nor hypothetical to ignore the second condition: in a
+chemical equilibrium a **pure phase** has unit activity, so `∂²G/∂nᵢ² = 0`
+exactly, and `H⁻¹` is then unbounded along that variable. The step degenerates
+and the solve stalls essentially at its starting point.
+
+The nullspace method avoids the inverse entirely. With `Z` a basis of `null(A)`,
+write `dn = dnₚ + Z dz` where `A dnₚ = −ew`. Since `Zᵀ Aᵀ = 0`, the dual drops
+out of the projected stationarity condition and
+
+```
+(Zᵀ H Z) dz = −Zᵀ (ex + H dnₚ)
+```
+
+is an `(ns − m) × (ns − m)` system in which `H` appears only as a *product*.
+
+The canonicalizer already supplies the basis for free. With `A[:, jb] = B`,
+`A[:, jn] = N` and `R = B⁻¹N`, the nullspace basis is `Z[jb, :] = −R`,
+`Z[jn, :] = I`, so
+
+```
+Zᵀ H Z = Rᵀ diag(h[jb]) R + diag(h[jn]),
+```
+
+symmetric and positive definite at any interior point, since `h > 0` there
+whatever the curvature — the barrier term `μ/s²` guarantees it.
+
+The dual step follows from the basic rows of `H dn + Aᵀ dy = −ex`, that is
+`Bᵀ dy = −ex[jb] − h[jb] ⊙ dn[jb]`.
+"""
+function compute_step_nullspace!(
+        ws::NewtonStep,
+        can::Canonicalizer,
+        h::AbstractVector,
+        ex::AbstractVector,
+        ew::AbstractVector,
+    )
+    T = eltype(ws.dn)
+    jb, jn, R = can.jb, can.jn, can.R
+    nb, nn = length(jb), length(jn)
+
+    # Particular solution: dnₚ[jn] = 0, dnₚ[jb] = B⁻¹(−ew).
+    dnp_b = can.BLU \ collect(-ew)
+
+    # Reduced Hessian Zᵀ H Z = Rᵀ diag(h_b) R + diag(h_n).
+    hb = @view h[jb]
+    K = Matrix{T}(undef, nn, nn)
+    hR = R .* hb                      # diag(h_b) * R
+    mul!(K, R', hR)
+    @inbounds for j in 1:nn
+        K[j, j] += h[jn[j]]
+    end
+
+    # RHS: −Zᵀ(ex + H dnₚ). H dnₚ is nonzero only on the basic block.
+    r_b = @view ex[jb]
+    w_b = r_b .+ hb .* dnp_b
+    rhs = Vector{T}(undef, nn)
+    mul!(rhs, R', w_b)                # (−R)ᵀ w_b, sign folded below
+    @inbounds for j in 1:nn
+        rhs[j] = rhs[j] - ex[jn[j]]
+    end
+
+    # `Zᵀ H Z` is positive definite at any interior point in exact arithmetic,
+    # since `h > 0` there whatever the curvature. It can still lose definiteness
+    # numerically when the amounts span ten orders of magnitude, so the
+    # factorization is attempted and fallen back on rather than assumed —
+    # a `PosDefException` from a default code path is not acceptable.
+    Ksym = LinearAlgebra.Symmetric(K)
+    chol = LinearAlgebra.cholesky(Ksym; check = false)
+    dz = LinearAlgebra.issuccess(chol) ? chol \ rhs :
+        LinearAlgebra.bunchkaufman(Ksym; check = false) \ rhs
+
+    # Assemble dn = dnₚ + Z dz.
+    fill!(ws.dn, zero(T))
+    @inbounds for j in 1:nn
+        ws.dn[jn[j]] = dz[j]
+    end
+    Rdz = R * dz
+    @inbounds for i in 1:nb
+        ws.dn[jb[i]] = dnp_b[i] - Rdz[i]
+    end
+
+    # Dual step from the basic rows: Bᵀ dy = −ex[jb] − h[jb] ⊙ dn[jb].
+    rhs_y = Vector{T}(undef, nb)
+    @inbounds for i in 1:nb
+        rhs_y[i] = -ex[jb[i]] - h[jb[i]] * ws.dn[jb[i]]
+    end
+    ws.dy .= can.BLU' \ rhs_y
+
+    return ws.dn, ws.dy
 end

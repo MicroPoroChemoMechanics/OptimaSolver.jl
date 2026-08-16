@@ -64,4 +64,28 @@
     )
     @test all(isfinite, g_obj)
     @test g_obj ≈ n_test atol = 1.0e-12   # ∂G/∂μ⁰_i = n_i
+
+    # ── a dual-valued `b` drives the whole Newton loop ────────────────────────
+    # The tests above differentiate the building blocks only. This one runs the
+    # solver itself on duals, which is where `line_search` and `clamp_step`
+    # reach for `α_max` and `τ`: annotating either as `Float64` breaks it.
+    A2 = [1.0 1.0 0.0; 0.0 1.0 1.0]
+    opts_ad = OptimaOptions(tol = 1.0e-12)
+
+    function n₁_of_b₁(x)
+        p = OptimaProblem(A2, [x, 1.0], G, ∇G!; lb = fill(1.0e-16, 3), p = (μ⁰ = μ⁰,))
+        return solve(p, opts_ad).n[1]
+    end
+
+    d_ad = ForwardDiff.derivative(n₁_of_b₁, 1.0)
+    @test isfinite(d_ad)
+
+    # against the analytic sensitivity, which never sees a dual
+    prob_b = OptimaProblem(A2, [1.0, 1.0], G, ∇G!; lb = fill(1.0e-16, 3), p = (μ⁰ = μ⁰,))
+    res_b = solve(prob_b, opts_ad)
+    @test res_b.converged
+    hf_b = OptimaSolver.gibbs_hessian_diag(res_b.n)
+    h_b = OptimaSolver.hessian_diagonal(prob_b, res_b.n, 1.0e-14, hf_b)
+    sens_b = sensitivity(prob_b, res_b.n, res_b.y, h_b, 1.0e-14)
+    @test d_ad ≈ sens_b.∂n_∂b[1, 1] rtol = 1.0e-6
 end

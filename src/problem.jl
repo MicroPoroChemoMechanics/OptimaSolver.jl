@@ -85,6 +85,27 @@ Solver hyperparameters.
                       (default false). Enable for problems with pure solid or
                       gas species where the true ∂²f/∂nᵢ² = 0, otherwise the
                       approximation 1/nᵢ causes extremely slow convergence.
+
+!!! warning "`use_fd_hessian` defaults differently here and on `OptimaOptimizer`"
+    This struct defaults it to `false`; the `OptimaOptimizer(; …)` keyword
+    constructor defaults it to `true`. Building the same optimizer the two ways
+    therefore selects **opposite regimes**, and neither is right everywhere.
+
+    Measured on chemical equilibria, where the amounts span ten orders of
+    magnitude between the solvent and the trace ions:
+
+    | | pure water | mixed solid/aqueous |
+    |:--|--:|--:|
+    | `false` (analytic 1/nᵢ) | `[H⁺]/[OH⁻] = 1.000003` ✓ | worst ×6181 ✗ |
+    | `true` (finite difference) | `[H⁺]/[OH⁻] = 3.78` ✗ | worst ×19.8 |
+
+    A Hessian affects the *rate* of Newton's method, not its limit, so a solver
+    that merely converged slowly would still reach the right answer. It does
+    not — the iteration stalls, identically at 300 and at 200 000 iterations —
+    which places the fault in the interior-point loop, most likely in how a
+    pure phase (whose objective is linear in its amount) is driven to its
+    bound. Until that is resolved, choose this flag deliberately rather than
+    relying on either default.
 """
 Base.@kwdef struct OptimaOptions
     tol::Float64 = 1.0e-10
@@ -98,6 +119,7 @@ Base.@kwdef struct OptimaOptions
     ls_max_iter::Int = 40
     verbose::Bool = false
     use_fd_hessian::Bool = false
+    nullspace_step::Bool = true
 end
 
 # ── OptimaState ───────────────────────────────────────────────────────────────

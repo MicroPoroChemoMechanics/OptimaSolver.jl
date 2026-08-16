@@ -106,7 +106,7 @@ function sensitivity(
     #   ∂n_∂μ0 = -(A' * DY_μ0) ./ h   ns × ns
     #   diagonal correction: subtract δ_{lk}/h[l]
     RHS_μ0 = Matrix{Tv}(-(A ./ h'))             # m × ns
-    DY_μ0  = S_lu \ RHS_μ0                      # m × ns  (BLAS TRSM)
+    DY_μ0 = S_lu \ RHS_μ0                      # m × ns  (BLAS TRSM)
     ∂n_∂μ0 = -(A' * DY_μ0) ./ h                # ns × ns (BLAS GEMM)
     ∂n_∂μ0[LinearAlgebra.diagind(∂n_∂μ0)] .-= one(Tv) ./ h  # δ_{lk}/h[l] term
 

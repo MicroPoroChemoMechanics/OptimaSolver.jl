@@ -104,7 +104,15 @@ function solve!(
             # making the Newton step negligible and causing linear (not quadratic)
             # convergence. The FD option computes the true diagonal via one
             # gradient evaluation per species.
-            if opts.use_fd_hessian
+            # The caller may hand over the exact diagonal through the parameters,
+            # the way `A` and `b` are handed over. Both fallbacks below are only
+            # approximations of `∂²f/∂nᵢ²`, and on a chemical system the error is
+            # not benign: understating the curvature on a trace species makes the
+            # line search reject its step, and the iteration stalls on a point
+            # that is not the minimum.
+            if prob.p isa NamedTuple && haskey(prob.p, :hdiag)
+                prob.p.hdiag(hf, n)
+            elseif opts.use_fd_hessian
                 ε_h = sqrt(eps(T))
                 for i in 1:ns
                     Δi = ε_h * max(one(T), abs(n[i]))
@@ -119,7 +127,9 @@ function solve!(
             h .= hessian_diagonal(prob, n, μ, hf)
 
             # Newton step
-            dn, dy = compute_step!(ws, can, h, kkt.ex, kkt.ew)
+            dn, dy = opts.nullspace_step ?
+                compute_step_nullspace!(ws, can, h, kkt.ex, kkt.ew) :
+                compute_step!(ws, can, h, kkt.ex, kkt.ew)
 
             # Fraction-to-boundary step limit
             α_max = clamp_step(n, prob.lb, dn)
