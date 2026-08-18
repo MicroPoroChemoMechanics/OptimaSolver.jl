@@ -58,6 +58,17 @@ hessian_diagonal
 gibbs_hessian_diag
 ```
 
+### Convergence and the barrier schedule
+
+The optimality error and the barrier update are derived in
+[The optimality error, and why the obvious one cannot work](@ref).
+
+```@docs
+OptimaSolver.is_converged
+OptimaSolver.should_reduce_barrier
+OptimaSolver.reduce_barrier
+```
+
 ### Newton step
 
 ```@docs

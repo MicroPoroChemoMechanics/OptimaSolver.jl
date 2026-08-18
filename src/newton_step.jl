@@ -164,6 +164,26 @@ function clamp_step(
     return α
 end
 
+"""
+    binding_variable(n, lb, dn; τ = 0.995) -> (i, α_i)
+
+Index of the variable that sets the fraction-to-boundary limit, and the limit it
+imposes. Diagnostic only.
+"""
+function binding_variable(n, lb, dn; τ = 0.995)
+    T = promote_type(eltype(n), eltype(dn), typeof(τ))
+    α = one(T); k = 0
+    @inbounds for i in eachindex(n)
+        if dn[i] < zero(T)
+            α_i = -τ * (n[i] - lb[i]) / dn[i]
+            if α_i < α
+                α = α_i; k = i
+            end
+        end
+    end
+    return k, α
+end
+
 # ── Nullspace step ────────────────────────────────────────────────────────────
 
 """

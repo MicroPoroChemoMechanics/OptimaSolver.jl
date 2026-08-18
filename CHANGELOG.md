@@ -1,5 +1,104 @@
 # Changelog
 
+## v0.3.0 — a primal-dual interior-point method
+
+### Breaking changes
+
+No name was removed or renamed, and every public signature is unchanged. The
+bump is a minor one because **the numbers move**: this replaces the primal
+barrier iteration with a primal-dual one, so a solve returns a different — and
+much better — iterate. Below 1.0 the resolver treats a minor bump as breaking
+regardless, so a downstream `[compat] OptimaSolver = "0.2"` must be widened.
+
+### The bound multipliers are now independent variables
+
+The method substituted `z = μ/s` for the bound multipliers. That is the textbook
+primal barrier method, and it has a textbook failure mode: as a variable
+approaches its bound, `μ/s` diverges. Measured on a cement equilibrium, the
+optimality residual started at 4.5e11 and never fell below 2e9, so
+`is_converged` could not fire at ANY tolerance — `tol = 1e-4` failed exactly as
+`tol = 1e-10` did. The barrier therefore never fell from its initial 1e-4, the
+step was capped by the fraction-to-boundary rule at every single iteration, and
+the solver ran to `max_iter` and stopped wherever it happened to be.
+
+`z` is now carried explicitly, with its own Newton step
+`dzᵢ = (μ − sᵢzᵢ − zᵢdnᵢ)/sᵢ`, its own fraction-to-boundary limit, and a
+central-path box that keeps it from drifting away from `μ/s` and poisoning the
+curvature `Σ = Z S⁻¹`. The Hessian seen by the step is `hf + z/s` rather than
+`hf + μ/s²`, so it tracks the actual multiplier instead of the barrier
+parameter.
+
+Convergence is measured on the two conditions that must both vanish — dual
+feasibility scaled by the slack, and complementarity `sᵢzᵢ − μ` — rather than on
+the raw Newton residual.
+
+### What it buys
+
+On the equilibrium partition of a full ordinary Portland cement, replayed at
+seven instants over 28 days, the element balance goes from
+
+| instant | before | after |
+|:--|--:|--:|
+| 0.05 d | 5.3e-3 | 3.3e-9 |
+| 0.25 d | 3.3e-4 | 7.1e-15 |
+| 1 d | 1.4e-7 | 1.8e-15 |
+| 28 d | 5.0e-9 | 2.8e-11 |
+
+with the worst over the 201 accepted steps of the coupled run falling from
+4.3e-4 mol to 6.0e-6, and the median to 2.7e-9. The six-hour instant — the AFt
+peak, where the assemblage switches and which had resisted every other remedy —
+is now solved to machine precision.
+
+### Also fixed
+
+- A dead test dependency on ChemistryLab, pinned at `"0.2, 0.3"` while no test
+  referenced it. It closed a dependency loop, ChemistryLab depending on this
+  package.
+
+### Still open
+
+The solver does not report `converged` on a cement equilibrium even now: the
+iterate is right and the balance is at machine precision, but the KKT error does
+not cross `tol`. Judge these solves on the element balance, not on the return
+code.
+
+## v0.2.8 — the optimality error was unattainable by construction
+
+### Fixed
+
+- **`is_converged` could never fire on a chemical equilibrium.** The optimality
+  error was `‖∇f + Aᵀy − μ/s‖∞`, the Newton residual itself. As a variable
+  approaches its bound that quantity diverges: with `μ = 1e-4` and `s = 1e-15`,
+  `μ/s = 1e11`. On a cement equilibrium `err_opt` began at **4.5e11** and never
+  fell below 2e9, so no tolerance could be met — `tol = 1e-4` failed exactly as
+  `tol = 1e-10` did. Two consequences followed silently: `should_reduce_barrier`
+  never let `μ` fall from its initial 1e-4, and every solve ran to `max_iter` and
+  stopped wherever it happened to be, while the *feasibility* error was
+  meanwhile reaching 1e-14.
+
+  The guard meant to prevent this — excluding variables within `1e-6 × lb` of
+  their bound — could not fire either: with `lb = 1e-16` that threshold is
+  `1e-22`, so nothing was ever excluded. It was the exact opposite of the defect
+  its own comment describes fixing.
+
+  Stationarity is now measured in complementarity form, `sᵢ(∇f + Aᵀy)ᵢ − μ`,
+  which is the equivalent condition multiplied through by `sᵢ`: bounded, zero at
+  the optimum, and the measure Ipopt reports (Wächter & Biegler 2006, §3.5). On
+  the same cement equilibrium `err_opt` is **5.8e-3** instead of 4.5e11, and the
+  feasibility error reaches 1.4e-14. The Newton step is unchanged — only the
+  error norm is.
+
+### What this does not fix
+
+The solver still does not reach its tolerance on a cement equilibrium. With the
+error now meaningful, the trace shows why: the iteration is **non-monotone** and
+the line search collapses, `α` falling to 2e-4 while `err_opt` stalls near
+5.8e-3 and at times increases. Running longer can make the answer worse before
+it makes it better. A full ordinary Portland cement coupling still shows element
+imbalances up to 1.1 mol at its worst early steps, though it closes to 1e-10 mol
+from three days on. That is a line-search and barrier-update problem, and it is
+not addressed here.
+
 ## v0.2.7 — the warm-start cache no longer overrides the caller's guess
 
 ### Fixed

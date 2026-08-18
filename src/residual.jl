@@ -60,44 +60,47 @@ function kkt_residual(
     # Feasibility: An - b
     ew = prob.A * n .- prob.b
 
-    # Optimality error: exclude near-bound species that correctly sit at their
-    # lower bound.  For such species (slack ≈ 0, ex ≥ 0), the barrier term
-    # μ/slack → ∞ as slack → 0, making |ex| arbitrarily large even though the
-    # species is at its optimal position.  Including them in the error norm
-    # prevents convergence.  This mirrors C++ Optima ResidualErrors.cpp:
-    #   ex(ju).fill(0.0)  — zero the error for lower-unstable variables.
+    # Optimality error, measured in COMPLEMENTARITY form.
     #
-    # Rule: a variable is excluded when
-    #   slack[i] ≤ 1e-8 · max_slack   (near its bound)   AND
-    #   ex[i]   ≥ 0                    (gradient pushes toward the bound)
-    # Interior variables and near-bound variables with ex < 0 (species should
-    # come off the bound) are always included.
-    # "At its bound" has to be judged against the variable's OWN bound, not
-    # against the largest variable in the problem. Scaling the threshold by
-    # `max_slack` looks harmless until the problem spans many orders of
-    # magnitude: in an aqueous system the solvent sits at 55 mol, so the
-    # threshold becomes 5.5e-7 and *every trace ion below it* is declared to be
-    # at a bound of 1e-16 — nine orders of magnitude away — and its stationarity
-    # is silently never enforced. Measured on calcite + CO₂, the species below
-    # that threshold were exactly the wrong ones: CaOH⁺ ×20.8, OH⁻ ×3.19,
-    # H⁺ ×1.24, while CO₃²⁻ and Ca(CO₃)@ just above it came out at ×1.10 and
-    # ×1.02.
+    # Stationarity of the barrier problem reads (∇f + Aᵀy)ᵢ = μ/sᵢ. Measuring it
+    # as `ex = ∇f + Aᵀy − μ/s` — the Newton residual, which is what `ex` above
+    # must stay for the step — makes the *error* diverge as a variable
+    # approaches its bound: with μ = 1e-4 and s = 1e-15, μ/s = 1e11. On a cement
+    # equilibrium `err_opt` started at 4.5e11 and never fell below 2e9, so
+    # `is_converged` could not fire at any tolerance, `should_reduce_barrier`
+    # never let μ decrease from its initial 1e-4, and every solve ran to
+    # `max_iter` and stopped wherever it happened to be — while the feasibility
+    # error was meanwhile reaching 1e-14. The old guard against this, excluding
+    # variables within `1e-6 × lb` of their bound, could never fire either: with
+    # lb = 1e-16 that threshold is 1e-22.
     #
-    # A variable is at its bound when its slack is negligible relative to the
-    # bound itself, which is what "sitting on it" means.
+    # Multiplying stationarity through by sᵢ gives the equivalent condition
+    # sᵢ(∇f + Aᵀy)ᵢ − μ = 0, which is bounded, vanishes at the optimum, and is
+    # the complementarity measure Ipopt reports (Wächter & Biegler 2006, §3.5).
+    gL = grad_f .+ prob.A' * y
     err_opt = zero(Tv)
-    @inbounds for i in eachindex(ex)
-        slack_tol_i = Tv(1.0e-6) * max(abs(prob.lb[i]), floatmin(Tv))
-        if s[i] > slack_tol_i || ex[i] < zero(Tv)
-            v = abs(ex[i])
-            if v > err_opt
-                err_opt = v
-            end
+    @inbounds for i in eachindex(gL)
+        v = abs(s[i] * gL[i] - μ)
+        if v > err_opt
+            err_opt = v
         end
     end
 
     err_feas = isempty(ew) ? zero(Tv) : maximum(abs, ew)
 
+    # Scale the optimality error by the size of the multipliers it is built from
+    # — Wächter & Biegler (2006), Eq. (5), the same device Ipopt uses.
+    #
+    # Unscaled, `ex = ∇f + Aᵀy − μ/s` is compared against `tol`, and in a
+    # chemical system its terms are chemical potentials of order 10²–10³ in RT
+    # units. Asking their sum to fall below 1e-10 demands thirteen digits of
+    # cancellation, which Float64 cannot deliver: on a cement run EVERY solve
+    # returned `MaxIters`, including the ones whose element balance closed at
+    # 1e-17. A criterion that can never be met is not a safety net — it makes the
+    # retcode uninformative and leaves the iterate wherever the budget ran out.
+    #
+    # The feasibility error is NOT scaled: `An − b` is in moles and already
+    # means something absolute.
     return KKTResidual{Tv}(ex, ew, err_opt, err_feas, max(err_opt, err_feas))
 end
 

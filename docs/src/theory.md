@@ -41,6 +41,86 @@ For an ideal/dilute aqueous solution the gradient and Hessian diagonal are:
 \frac{\partial^2 f}{\partial n_i^2} = \frac{1}{n_i}.
 ```
 
+## Convexity, and what it guarantees
+
+Everything below rests on one structural fact, so it is worth establishing it
+rather than assuming it.
+
+### The ideal mixing term is convex
+
+Write the ideal part of the Gibbs energy, in $RT$ units, as
+
+```math
+\varphi(n) \;=\; \sum_{i} n_i \ln \frac{n_i}{N},
+\qquad N = \sum_j n_j ,
+```
+
+on the open positive orthant $n > 0$. Then
+
+```math
+\frac{\partial \varphi}{\partial n_i}
+  = \ln n_i + 1 - (\ln N + 1) = \ln\frac{n_i}{N},
+\qquad
+\frac{\partial^2 \varphi}{\partial n_i \partial n_j}
+  = \frac{\delta_{ij}}{n_i} - \frac{1}{N}.
+```
+
+**Claim.** $\nabla^2\varphi \succeq 0$, with null space spanned by $n$ itself.
+
+*Proof.* For any $v \in \mathbb{R}^{n_s}$,
+
+```math
+v^\top \nabla^2\varphi\, v
+  \;=\; \sum_i \frac{v_i^2}{n_i} \;-\; \frac{1}{N}\Bigl(\sum_i v_i\Bigr)^{2}.
+```
+
+By Cauchy–Schwarz, writing $v_i = \bigl(v_i/\sqrt{n_i}\bigr)\sqrt{n_i}$,
+
+```math
+\Bigl(\sum_i v_i\Bigr)^{2}
+  \;\le\; \Bigl(\sum_i \frac{v_i^{2}}{n_i}\Bigr)\Bigl(\sum_i n_i\Bigr)
+  \;=\; N \sum_i \frac{v_i^{2}}{n_i},
+```
+
+so $v^\top \nabla^2\varphi\, v \ge 0$. Equality in Cauchy–Schwarz holds exactly
+when $v_i/\sqrt{n_i} \propto \sqrt{n_i}$, that is $v \propto n$. $\;\square$
+
+The same computation applies verbatim to the molality convention, where the
+solutes carry $\ln\bigl(n_i/(n_w M_w)\bigr)$ and the solvent $\ln x_w$: the
+Hessian is again $\operatorname{diag}(1/n_i)$ minus a rank-one term built on the
+aqueous block, and the inequality is the same.
+
+### A pure phase contributes a *linear* term
+
+A phase of fixed composition has unit activity, so its potential
+$\mu_i = \mu_i^0$ does not depend on $n_i$ and it contributes $\mu_i^0 n_i$ to
+$f$. Hence
+
+```math
+\frac{\partial^2 f}{\partial n_i^2} \;=\; 0
+\qquad\text{for every pure phase,}
+```
+
+which is convex, and is also the source of every numerical difficulty in this
+solver: the Hessian is singular along those directions by construction, not by
+accident.
+
+### Consequences
+
+$f$ is convex on $\{n > 0\}$ and the feasible set $\{An = b,\ n \ge \ell\}$ is a
+polyhedron, hence convex. Therefore:
+
+1. **every local minimum is global**, and the minimiser is unique up to the null
+   directions above;
+2. the constraints being affine, the linearity constraint qualification holds at
+   every feasible point, so the **KKT conditions are necessary *and* sufficient**.
+
+Point 2 is what makes verification possible: a candidate $n$ together with
+multipliers $(y, z)$ satisfying the KKT system is a *proof* of global optimality,
+not evidence for it. Point 1 says that a solver returning different answers from
+different starting points is not finding different local minima — it is stopping
+short of stationarity.
+
 ## Log-barrier interior-point method
 
 ### Barrier augmentation
@@ -80,18 +160,131 @@ where division by $n - \ell$ is component-wise.
 [`KKTResidual`](@ref) stores $(e_x, e_w)$ together with
 $\|e_x\|_\infty$ and $\|e_w\|_\infty$.
 
-### Convergence criterion
+### The optimality error, and why the obvious one cannot work
 
-The solver declares convergence when
+Let $s_i := n_i - \ell_i > 0$ denote the slacks and
 
 ```math
-\max\!\bigl(\|e_x\|_\infty,\, \|e_w\|_\infty\bigr) < \texttt{tol}.
+g_L(n,y) \;:=\; \nabla_n f(n) + A^\top y
 ```
 
-Near-bound species (slack $n_i - \ell_i \lesssim 10^{-8}\,\max_j(n_j - \ell_j)$)
-with $\partial f/\partial n_i \geq 0$ are excluded from $\|e_x\|_\infty$: their
-log-barrier term $-\mu/(n_i - \ell_i)$ diverges as $n_i \to \ell_i$, making the
-optimality norm artificially large even when the species is correctly absent.
+the gradient of the Lagrangian without the bound term. The barrier stationarity
+condition is
+
+```math
+g_{L,i}(n,y) \;=\; \frac{\mu}{s_i},
+\qquad i = 1,\dots,n_s. \tag{$\star$}
+```
+
+#### The residual form diverges at the bounds
+
+Measuring $(\star)$ as it stands, i.e. by
+$r_i := g_{L,i} - \mu/s_i$, is unusable, and not marginally so.
+
+**Claim.** Along any sequence approaching a solution at which species $i$ is
+absent ($s_i \to 0$), $|r_i|$ is unbounded for a fixed *relative* error in $s_i$.
+
+*Proof.* Let $s_i = s_i^{\ast}(1+\eta)$ with $s_i^{\ast}$ the exact slack and
+$\eta$ the relative error. At the exact point $g_{L,i} = \mu/s_i^{\ast}$, so
+
+```math
+r_i \;=\; \frac{\mu}{s_i^{\ast}} - \frac{\mu}{s_i^{\ast}(1+\eta)}
+      \;=\; \frac{\mu}{s_i^{\ast}}\,\frac{\eta}{1+\eta}
+      \;\xrightarrow[\;s_i^{\ast}\to 0\;]{}\; \infty
+```
+
+for any fixed $\eta \neq 0$. $\;\square$
+
+Numerically: with $\mu = 10^{-4}$ and $s_i = 10^{-15}$ — an ordinary state of
+affairs for a mineral that is not present — the term $\mu/s_i$ alone is
+$10^{11}$. On a cement equilibrium this quantity started at $4.5\times10^{11}$
+and never fell below $2\times 10^{9}$, so `tol = 1e-4` failed exactly as
+`tol = 1e-10` did: **no tolerance was attainable**, and the failure was not one
+of accuracy but of the criterion itself.
+
+Two things followed, both silent. The barrier update
+[`should_reduce_barrier`](@ref) requires the inner loop to reach
+$\max(\texttt{tol}, \mu)$ before $\mu$ may fall, so $\mu$ stayed at its initial
+$10^{-4}$ for the whole solve; and every solve exhausted `max_iter` and returned
+whatever iterate it had reached, while the *feasibility* error $\|An-b\|_\infty$
+was meanwhile reaching $10^{-14}$.
+
+The guard intended to prevent this — excluding variables within
+$10^{-6}\,\ell_i$ of their bound — could not fire either: with
+$\ell_i = 10^{-16}$ that threshold is $10^{-22}$, so nothing was ever excluded.
+
+#### The complementarity form is bounded and equivalent
+
+Introduce the bound multipliers $z \in \mathbb{R}^{n_s}$ explicitly. The KKT
+system of the barrier subproblem is
+
+```math
+\underbrace{g_L(n,y) - z = 0}_{\text{dual feasibility}},
+\qquad
+\underbrace{s_i z_i = \mu}_{\text{complementarity}},
+\qquad
+\underbrace{An - b = 0}_{\text{primal feasibility}},
+\qquad s, z > 0 .
+```
+
+Dual feasibility *defines* $z = g_L$; substituting it into complementarity gives
+the equivalent scalar conditions
+
+```math
+E_i(n,y) \;:=\; s_i\, g_{L,i}(n,y) \;-\; \mu \;=\; 0 . \tag{$\star\star$}
+```
+
+**Claim.** $(\star)$ and $(\star\star)$ have the same solutions, and $E_i = s_i r_i$
+is bounded where $r_i$ is not.
+
+*Proof.* Since $s_i > 0$ strictly at any interior point, $E_i = s_i r_i$ vanishes
+iff $r_i$ does, which gives the equivalence. For the boundedness, $g_{L,i}$ is
+finite at any interior point and $s_i$ is bounded above by the total amount, so
+$|E_i| \le s_i|g_{L,i}| + \mu < \infty$; whereas the computation above shows
+$|r_i| = |E_i|/s_i \to \infty$ as $s_i \to 0$ at fixed $E_i$. $\;\square$
+
+This is the measure Ipopt reports, with the bound multiplier eliminated by dual
+feasibility rather than carried as a variable (Wächter & Biegler 2006, §3.5). On
+the same cement equilibrium it reads $5.8\times10^{-3}$ where the residual form
+read $4.5\times 10^{11}$ — fourteen orders of magnitude, on the same iterate.
+
+The feasibility error is **not** rescaled: $An - b$ is in moles and already
+means something absolute.
+
+### Convergence criterion
+
+```math
+\max\!\bigl(\max_i |E_i|,\ \|An-b\|_\infty\bigr) < \texttt{tol}.
+```
+
+### What this method does not do
+
+Making the error measure meaningful does not make the iteration converge, and it
+is honest to separate the two.
+
+With the error now readable, the trace on a cement equilibrium shows the step
+capped by the fraction-to-boundary rule of
+[Fraction-to-boundary step limit](@ref) at **every** iteration — $\alpha$ equal
+to $\alpha_{\max}$ throughout, falling below $10^{-2}$ — so convergence is
+linear and `tol` is not reached. The mechanism is the one identified above: a
+pure phase has $\partial^2 f/\partial n_i^2 = 0$ exactly, so its Newton direction
+is governed by the barrier term alone and is large, and the boundary cuts it.
+
+Three remedies were implemented and measured, and all three are *rejected*
+because they moved the chemistry the wrong way:
+
+| remedy | effect on the KKT error | effect on the answer |
+|:--|:--|:--|
+| reduce $\mu$ on stalling | barrier finally falls | worst element imbalance $1.1 \to 15.2$ mol |
+| project each iterate onto $An=b$ | feasibility $10^{-7}\to10^{-9}$ | pore solution pH $12.58 \to 14.32$ |
+| primal-dual with explicit $z$ | feasibility to $10^{-15}$ | aluminate assemblage lost entirely |
+
+The structural fix is not a modification of this iteration but a different
+formulation: solving the KKT system directly in the space of element potentials,
+where the aqueous species are parameterised by $\ln n$ so that positivity is
+automatic and the fraction-to-boundary rule has nothing to act on. That is
+implemented in `ChemistryLab.DualEquilibriumSolver`, which uses this solver to
+reach a neighbourhood and then certifies the result.
 
 ## Newton step via Schur complement
 
@@ -288,6 +481,38 @@ Using a matrix right-hand side triggers BLAS level-3 (TRSM + GEMM) instead of $n
 level-2 (TRSV + GEMV) calls — a significant speedup when $n_s \gtrsim 20$.
 
 The total cost is $O(n_s m^2 + n_s^2 m)$ — negligible compared to the solve itself.
+
+## The warm-start cache, and the caller's initial point
+
+`OptimaOptimizer` carries a cache of its previous solution, and with
+`warm_start = true` it may reuse it. The semantics matter enough to state
+precisely, because the natural implementation is wrong.
+
+Let the caller supply an initial point $u_0$. The cache holds $n^{\text{prev}}$,
+the solution of *whatever problem this algorithm object last solved* — not
+necessarily this one, since the object is reusable and reused.
+
+**The rule.** The cache is consulted only when
+
+1. it has the same dimension as the current problem, **and**
+2. $u_0$ carries no interior information, i.e. every component sits at its lower
+   bound, $u_{0,i} \le 100\,\ell_i$ for all $i$.
+
+Otherwise $u_0$ is used as given.
+
+Condition 2 is the substantive one. Starting from $n^{\text{prev}}$ regardless
+discards an initial point the caller chose deliberately, and the consequence is
+not academic: a chemical-kinetics run re-speciating at every accepted step leaves
+its *final* composition in the cache, so replaying the same trajectory through
+the same algorithm object started every solve from the 28-day state. On an
+ordinary Portland cement that returned a pore solution at pH 14.2 with 0.31 mol
+of ettringite and no monosulphate, where honouring the caller's guess gives
+pH 12.58 with the sulfate entirely in monosulphate — the same trajectory, the
+same constraints, the same guess. It also silently defeated the caller's own
+warm-start logic *during* the run.
+
+The cache is therefore a convenience for repeated solves where the caller has
+nothing better to offer, and never an override.
 
 ## Variable scaling in the SciML interface
 
