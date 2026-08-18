@@ -288,10 +288,10 @@ reach a neighborhood and then certifies the result.
 
 ## Newton on the KKT system in multiplier space
 
-The interior-point method above minimises `f` by walking the interior. This
+The interior-point method above minimizes `f` by walking the interior. This
 section describes the alternative the package also provides,
 [`dual_newton_solve`](@ref), which solves the KKT conditions directly. It is the
-Brinkley–Karpov formulation of the geochemical Gibbs-minimisation codes, stated
+Brinkley–Karpov formulation of the geochemical Gibbs-minimization codes, stated
 here for the general convex program.
 
 ### The formulation
@@ -316,14 +316,14 @@ chemical system it is the statement that a phase is present iff it is saturated.
 
 ### Why it is well conditioned
 
-Parameterising the interior variables by ``w = \ln x`` makes their positivity
+Parameterizing the interior variables by ``w = \ln x`` makes their positivity
 automatic. The fraction-to-boundary rule of
 [Fraction-to-boundary step limit](@ref) — which caps the interior-point step at
 *every* iteration on a cement equilibrium — therefore has nothing to act on for
 them. Only the bounded variables carry a bound, and they are handled by an
 active set, exactly.
 
-This is **not** the log reparameterisation that `variable_space = Val(:log)`
+This is **not** the log reparameterization that `variable_space = Val(:log)`
 performs, and the distinction matters. Composing the objective with `exp` gives
 
 ```math

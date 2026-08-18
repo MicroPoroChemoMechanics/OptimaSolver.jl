@@ -33,7 +33,7 @@ end
 
 @testset "dual_newton_solve on a problem with a known answer" begin
 
-    # A two-variable ideal mixture with one linear constraint, whose minimiser is
+    # A two-variable ideal mixture with one linear constraint, whose minimizer is
     # available in closed form. With `f = Σ xᵢ(gᵢ + ln xᵢ)` and `x₁ + x₂ = 1`,
     # stationarity gives `g₁ + ln x₁ = g₂ + ln x₂`, so
     # `x₁ = 1/(1 + e^{g₁-g₂})`.

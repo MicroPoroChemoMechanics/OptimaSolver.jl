@@ -12,7 +12,7 @@ treats a minor bump as breaking regardless, so a downstream
 
 ### `dual_newton_solve`: Newton on the KKT system in multiplier space
 
-The interior-point method of `solve!` minimises `f` by walking the interior, and
+The interior-point method of `solve!` minimizes `f` by walking the interior, and
 on a problem whose bounded variables have zero curvature it does not reach its
 tolerance: the fraction-to-boundary rule caps the step at every iteration. That
 is intrinsic to a primal barrier method.
@@ -23,12 +23,12 @@ system — and a bounded variable is positive exactly when `gᵢ = uᵢ`, zero w
 `gᵢ ≥ uᵢ`. That second line is a stability criterion, and the active set on it is
 finite for a convex problem.
 
-Parameterising the interior variables by `ln x` makes their positivity automatic,
+Parameterizing the interior variables by `ln x` makes their positivity automatic,
 so the fraction-to-boundary rule has nothing left to act on. The outer system is
 `1 + m + |P|` unknowns, some fourteen for a cement partition against forty-seven
 variables in the interior-point route.
 
-This is **not** the log reparameterisation of `variable_space = Val(:log)`:
+This is **not** the log reparameterization of `variable_space = Val(:log)`:
 `f ∘ exp` has second derivative `xᵢ(∇fᵢ + 1)`, negative wherever `∇fᵢ < −1`,
 hence not convex. The logarithm is applied to the KKT *equations*, and convexity
 of the original problem is what makes their solution unique.
@@ -94,7 +94,7 @@ pure water the certified pH is 9.90 against an interior-point 6.96.
   consulted only when the problem has the same size *and* `u0` carries no
   interior information. A kinetics run leaves its final composition in the cache,
   so replaying the same trajectory through the same algorithm object started
-  every solve from the end state, returning pH 14.2 where honouring the guess
+  every solve from the end state, returning pH 14.2 where honoring the guess
   gives 12.58.
 
 - **A dead test dependency on ChemistryLab**, pinned at `"0.2, 0.3"` while no

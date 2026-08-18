@@ -5,7 +5,7 @@
 #
 # Exact Newton on the KKT system, in the space of the equality multipliers.
 #
-# THE PROBLEM. Minimise `f(x) = Σᵢ xᵢ(gᵢ + hᵢ(x))` subject to `A x = b`, `x ≥ 0`,
+# THE PROBLEM. Minimize `f(x) = Σᵢ xᵢ(gᵢ + hᵢ(x))` subject to `A x = b`, `x ≥ 0`,
 # where `h` is a callback supplying the state-dependent part of the gradient and
 # `∇f = g + h(x)` (this identity holds whenever `Σⱼ xⱼ ∂hⱼ/∂xᵢ = 0`, which is
 # the Gibbs–Duhem relation of a chemical system and the Euler relation of any
@@ -24,13 +24,13 @@
 # The second line is a phase-stability criterion: a bounded variable is positive
 # exactly when its "saturation index" `uᵢ − gᵢ` vanishes, and zero when negative.
 #
-# WHY IT IS WELL CONDITIONED. Parameterising the interior variables by `w = ln x`
+# WHY IT IS WELL CONDITIONED. Parameterizing the interior variables by `w = ln x`
 # makes their positivity automatic, so no fraction-to-boundary rule applies to
 # them — and that rule is what caps the step of the interior-point method in
 # `solve!` at every single iteration. Only the bounded variables carry a bound,
 # and they are handled by an active set, exactly and finitely.
 #
-# This is NOT the log reparameterisation of the objective that
+# This is NOT the log reparameterization of the objective that
 # `variable_space = Val(:log)` performs. `f ∘ exp` is not convex — its second
 # derivative `xᵢ(∇fᵢ + 1)` is negative wherever `∇fᵢ < −1`, which for a chemical
 # potential of order −200 is everywhere. Here the logarithm is applied to the KKT
@@ -103,7 +103,7 @@ A convex program in the form solved by [`dual_newton_solve`](@ref):
 # Keywords
 
   - `idx_log`: variables that are strictly positive at any solution, hence
-    parameterised by `ln x` and inverted through their stationarity condition.
+    parameterized by `ln x` and inverted through their stationarity condition.
   - `idx_bounded`: variables that may vanish, handled by an active set.
   - `j_ref`: position **within `idx_log`** of a variable whose `hᵢ` is bounded
     above and therefore *cannot* be inverted — in a chemical system the solvent,
@@ -164,7 +164,7 @@ end
 """
     _invert_stationarity!(prob, w, y, x_ref, active, xB, x_buf; dead) -> x_log
 
-Solve `hᵢ(x) = uᵢ − gᵢ` for the log-parameterised variables at fixed multipliers
+Solve `hᵢ(x) = uᵢ − gᵢ` for the log-parameterized variables at fixed multipliers
 and fixed reference variable, where `u = −Aᵀy`.
 
 For a variable whose `hᵢ` behaves like `ln xᵢ` plus a slowly varying part —
@@ -260,14 +260,14 @@ end
 
 Solve `prob` for the right-hand side `b`, starting from `x0`.
 
-`x0` supplies a neighbourhood, not a feasible point: this is a Newton method, and
+`x0` supplies a neighborhood, not a feasible point: this is a Newton method, and
 the intended use is to hand it the answer of an interior-point solve. Verify the
 result with [`kkt_certificate`](@ref); for a convex problem that certificate is a
 proof of **global** optimality and not a plausibility argument.
 
 # Structure
 
-Two levels. The inner one inverts the stationarity of the log-parameterised
+Two levels. The inner one inverts the stationarity of the log-parameterized
 variables at fixed multipliers and fixed reference variable — always solvable,
 and a few sweeps. The outer is a Newton on `1 + m + |P|` unknowns against the
 reference variable's own stationarity, the equality constraints, and the
