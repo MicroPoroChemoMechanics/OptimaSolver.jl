@@ -15,7 +15,7 @@
   every accepted step leaves the final composition in the cache; replaying the
   same trajectory through the same algorithm object then starts every solve from
   the end state. On an ordinary Portland cement that returned a pore solution at
-  pH 14.2 with 0.31 mol of ettringite and no monosulphate, where honouring the
+  pH 14.2 with 0.31 mol of ettringite and no monosulphate, where honoring the
   caller's guess gives pH 12.58 with the sulfate entirely in monosulphate — same
   trajectory, same constraints, same guess. It also quietly defeated the caller's
   own warm-start logic during the run itself.

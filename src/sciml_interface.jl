@@ -150,7 +150,7 @@ function SciMLBase.solve(
     # 28-day composition in the cache, and a later replay of the SAME trajectory
     # through the same algorithm object then starts every solve from the end
     # state. On an ordinary Portland cement that returned pH 14.2 with 0.31 mol
-    # of ettringite and no AFm, where honouring the caller's guess gives pH 12.58
+    # of ettringite and no AFm, where honoring the caller's guess gives pH 12.58
     # with the sulfate entirely in AFm. It also quietly defeated the caller's own
     # warm-start logic during the run itself.
     #
