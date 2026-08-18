@@ -110,7 +110,7 @@ accident.
 $f$ is convex on $\{n > 0\}$ and the feasible set $\{An = b,\ n \ge \ell\}$ is a
 polyhedron, hence convex. Therefore:
 
-1. **every local minimum is global**, and the minimiser is unique up to the null
+1. **every local minimum is global**, and the minimizer is unique up to the null
    directions above;
 2. the constraints being affine, the linearity constraint qualification holds at
    every feasible point, so the **KKT conditions are necessary *and* sufficient**.
@@ -281,10 +281,10 @@ because they moved the chemistry the wrong way:
 
 The structural fix is not a modification of this iteration but a different
 formulation: solving the KKT system directly in the space of element potentials,
-where the aqueous species are parameterised by $\ln n$ so that positivity is
+where the aqueous species are parameterized by $\ln n$ so that positivity is
 automatic and the fraction-to-boundary rule has nothing to act on. That is
 implemented in `ChemistryLab.DualEquilibriumSolver`, which uses this solver to
-reach a neighbourhood and then certifies the result.
+reach a neighborhood and then certifies the result.
 
 ## Newton step via Schur complement
 
@@ -506,7 +506,7 @@ not academic: a chemical-kinetics run re-speciating at every accepted step leave
 its *final* composition in the cache, so replaying the same trajectory through
 the same algorithm object started every solve from the 28-day state. On an
 ordinary Portland cement that returned a pore solution at pH 14.2 with 0.31 mol
-of ettringite and no monosulphate, where honouring the caller's guess gives
+of ettringite and no monosulphate, where honoring the caller's guess gives
 pH 12.58 with the sulfate entirely in monosulphate — the same trajectory, the
 same constraints, the same guess. It also silently defeated the caller's own
 warm-start logic *during* the run.
