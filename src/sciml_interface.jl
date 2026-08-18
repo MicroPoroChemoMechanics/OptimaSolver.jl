@@ -141,6 +141,29 @@ function SciMLBase.solve(
     # ── Warm-start: determine starting point ─────────────────────────────────
     prev = alg.options.warm_start ? alg._cache[] : nothing
 
+    # The cache must never override a starting point the caller actually chose.
+    #
+    # `_cache` holds the previous solution of whatever problem this algorithm
+    # object last solved — not necessarily this one. Reusing it unconditionally
+    # means an explicit `u0` is silently discarded, and the consequences are not
+    # academic: a kinetics run re-speciating at every accepted step leaves the
+    # 28-day composition in the cache, and a later replay of the SAME trajectory
+    # through the same algorithm object then starts every solve from the end
+    # state. On an ordinary Portland cement that returned pH 14.2 with 0.31 mol
+    # of ettringite and no AFm, where honouring the caller's guess gives pH 12.58
+    # with the sulfate entirely in AFm. It also quietly defeated the caller's own
+    # warm-start logic during the run itself.
+    #
+    # So the cache is now what it was meant to be: a convenience for repeated
+    # solves where the caller has nothing better to offer. It is used only when
+    # the problem has the same size and `u0` carries no interior information —
+    # i.e. every variable still sits at its lower bound.
+    if !isnothing(prev)
+        same_size = length(prev.n) == length(u0)
+        caller_supplied_guess = any(u0 .> lb .* 100)
+        (same_size && !caller_supplied_guess) || (prev = nothing)
+    end
+
     if isnothing(prev)
         # Cold start: use opt_prob.u0 as base, but lift absent species.
         # ChemistryLab leaves un-set species at the lower bound lb ≈ 1e-16.

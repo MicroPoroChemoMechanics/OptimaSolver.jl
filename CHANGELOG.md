@@ -1,5 +1,39 @@
 # Changelog
 
+## v0.2.7 — the warm-start cache no longer overrides the caller's guess
+
+### Fixed
+
+- **`OptimaOptimizer` silently discarded an explicit `u0`.** The algorithm object
+  carries `_cache`, the previous solution, and with `warm_start = true` (the
+  default) it started every solve from that cache — even when the caller had
+  supplied a deliberate starting point, and even when the cached solution came
+  from a *different* problem that the same algorithm object happened to solve
+  earlier.
+
+  The consequence is not academic. A chemical-kinetics run re-speciating at
+  every accepted step leaves the final composition in the cache; replaying the
+  same trajectory through the same algorithm object then starts every solve from
+  the end state. On an ordinary Portland cement that returned a pore solution at
+  pH 14.2 with 0.31 mol of ettringite and no monosulphate, where honouring the
+  caller's guess gives pH 12.58 with the sulfate entirely in monosulphate — same
+  trajectory, same constraints, same guess. It also quietly defeated the caller's
+  own warm-start logic during the run itself.
+
+  The cache is now what it was meant to be: a convenience for repeated solves
+  where the caller has nothing better to offer. It is consulted only when the
+  problem has the same size **and** `u0` carries no interior information, i.e.
+  every variable still sits at its lower bound. A caller who supplies a real
+  starting point now gets it.
+
+  No API changed and nothing was removed. `reset_cache!` keeps its meaning.
+
+- **A dead test dependency on ChemistryLab is removed.** It sat in `[extras]`,
+  `[targets]` and `[compat]` pinned at `"0.2, 0.3"` — six minor versions behind —
+  while no test file referenced it. It also closed a dependency loop, since
+  ChemistryLab depends on this package: resolving the test environment demanded
+  an ancient ChemistryLab that cannot coexist with the current one.
+
 ## v0.2.6 — The nullspace step no longer throws
 
 ### Fixed
