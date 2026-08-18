@@ -30,6 +30,20 @@ OptimaSolver.solve
 OptimaSolver.solve!
 ```
 
+## KKT solver and certificate
+
+Newton on the KKT conditions, and the proof that a point is optimal. Derived in
+[Newton on the KKT system in multiplier space](@ref).
+
+```@docs
+DualNewtonProblem
+DualNewtonOptions
+dual_newton_solve
+kkt_certificate
+degenerate_components
+OptimaSolver.DEGENERATE_POTENTIAL
+```
+
 ## Sensitivity
 
 ```@docs

@@ -32,6 +32,7 @@ import SciMLBase: solve
 # ── Source files (dependency order) ──────────────────────────────────────────
 include("problem.jl")           # OptimaProblem, OptimaState, OptimaResult, OptimaOptions
 include("canonicalizer.jl")     # Canonicalizer — A → [B N], LU cache, Schur complement
+include("dual_newton.jl")
 include("residual.jl")          # KKTResidual, kkt_residual, hessian_diagonal
 include("newton_step.jl")       # NewtonStep, compute_step!, clamp_step
 include("stability.jl")         # classify_variables, reduced_step_for_unstable!
@@ -59,7 +60,9 @@ export SensitivityResult, sensitivity
 export OptimaOptimizer, reset_cache!, solve
 
 # Internal components (exported for testing and extension)
-export KKTResidual, kkt_residual, hessian_diagonal, gibbs_hessian_diag
+export DualNewtonProblem, DualNewtonOptions, dual_newton_solve,
+    kkt_certificate, degenerate_components,
+    KKTResidual, kkt_residual, hessian_diagonal, gibbs_hessian_diag
 export NewtonStep, compute_step!, compute_step_nullspace!, clamp_step
 export LineSearchFilter, line_search
 export classify_variables, reduced_step_for_unstable!, stability_measure

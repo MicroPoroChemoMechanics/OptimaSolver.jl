@@ -1,66 +1,112 @@
 # Changelog
 
-## v0.3.0 — a primal-dual interior-point method
+## v0.3.0 — a KKT solver that proves its answer
 
 ### Breaking changes
 
-No name was removed or renamed, and every public signature is unchanged. The
-bump is a minor one because **the numbers move**: this replaces the primal
-barrier iteration with a primal-dual one, so a solve returns a different — and
-much better — iterate. Below 1.0 the resolver treats a minor bump as breaking
-regardless, so a downstream `[compat] OptimaSolver = "0.2"` must be widened.
+Five new exported names — `DualNewtonProblem`, `DualNewtonOptions`,
+`dual_newton_solve`, `kkt_certificate`, `degenerate_components`. Nothing was
+removed or renamed and no existing signature changed, but below 1.0 the resolver
+treats a minor bump as breaking regardless, so a downstream
+`[compat] OptimaSolver = "0.2"` must be widened.
 
-### The bound multipliers are now independent variables
+### `dual_newton_solve`: Newton on the KKT system in multiplier space
 
-The method substituted `z = μ/s` for the bound multipliers. That is the textbook
-primal barrier method, and it has a textbook failure mode: as a variable
-approaches its bound, `μ/s` diverges. Measured on a cement equilibrium, the
-optimality residual started at 4.5e11 and never fell below 2e9, so
-`is_converged` could not fire at ANY tolerance — `tol = 1e-4` failed exactly as
-`tol = 1e-10` did. The barrier therefore never fell from its initial 1e-4, the
-step was capped by the fraction-to-boundary rule at every single iteration, and
-the solver ran to `max_iter` and stopped wherever it happened to be.
+The interior-point method of `solve!` minimises `f` by walking the interior, and
+on a problem whose bounded variables have zero curvature it does not reach its
+tolerance: the fraction-to-boundary rule caps the step at every iteration. That
+is intrinsic to a primal barrier method.
 
-`z` is now carried explicitly, with its own Newton step
-`dzᵢ = (μ − sᵢzᵢ − zᵢdnᵢ)/sᵢ`, its own fraction-to-boundary limit, and a
-central-path box that keeps it from drifting away from `μ/s` and poisoning the
-curvature `Σ = Z S⁻¹`. The Hessian seen by the step is `hf + z/s` rather than
-`hf + μ/s²`, so it tracks the actual multiplier instead of the barrier
-parameter.
+The alternative solves the KKT conditions directly. With `u = −Aᵀy`, an interior
+variable obeys `hᵢ(x) = uᵢ − gᵢ` — invertible, a mass-action law in a chemical
+system — and a bounded variable is positive exactly when `gᵢ = uᵢ`, zero when
+`gᵢ ≥ uᵢ`. That second line is a stability criterion, and the active set on it is
+finite for a convex problem.
 
-Convergence is measured on the two conditions that must both vanish — dual
-feasibility scaled by the slack, and complementarity `sᵢzᵢ − μ` — rather than on
-the raw Newton residual.
+Parameterising the interior variables by `ln x` makes their positivity automatic,
+so the fraction-to-boundary rule has nothing left to act on. The outer system is
+`1 + m + |P|` unknowns, some fourteen for a cement partition against forty-seven
+variables in the interior-point route.
 
-### What it buys
+This is **not** the log reparameterisation of `variable_space = Val(:log)`:
+`f ∘ exp` has second derivative `xᵢ(∇fᵢ + 1)`, negative wherever `∇fᵢ < −1`,
+hence not convex. The logarithm is applied to the KKT *equations*, and convexity
+of the original problem is what makes their solution unique.
 
-On the equilibrium partition of a full ordinary Portland cement, replayed at
-seven instants over 28 days, the element balance goes from
+Three points had to be right:
 
-| instant | before | after |
-|:--|--:|--:|
-| 0.05 d | 5.3e-3 | 3.3e-9 |
-| 0.25 d | 3.3e-4 | 7.1e-15 |
-| 1 d | 1.4e-7 | 1.8e-15 |
-| 28 d | 5.0e-9 | 2.8e-11 |
+  - **a variable whose `hᵢ` is bounded above cannot be inverted.** In a chemical
+    system that is the solvent, whose activity is a mole fraction, so `ln a ≤ 0`
+    always and an arbitrary `y` may demand more, for which no finite `x` exists.
+    It is declared through `j_ref` and carried by the outer system. An inner loop
+    that included it could never report convergence, which then invalidated the
+    outer Jacobian, that Jacobian being derived on the assumption the inner
+    conditions hold exactly.
+  - **the active set must change during the Newton, one variable at a time.** Two
+    variables both declared stationary over-determine `y` and their rows are
+    jointly infeasible; admitting a batch feeds a cycle. Visited sets are
+    recorded, which bounds the loop by the number of subsets and therefore
+    terminates. Observed on a cement without limestone as a solve converged to
+    `2e-12` — of the wrong subproblem, an excluded variable violated by 10.9.
+  - **`bₖ = 0` does not mean degenerate.** With `x ≥ 0` the row forces its
+    variables to vanish only when its non-zero entries share a sign;
+    `degenerate_components` implements that test. The `H+` row of a chemical
+    system carries `+1` for `H+` and `−1` for `OH-`, so its zero total is the
+    ordinary state of pure water — treating it as degenerate removes the entire
+    acid–base system and returns pH 7.000 with the solid undissolved.
 
-with the worst over the 201 accepted steps of the coupled run falling from
-4.3e-4 mol to 6.0e-6, and the median to 2.7e-9. The six-hour instant — the AFt
-peak, where the assemblage switches and which had resisted every other remedy —
-is now solved to machine precision.
+### `kkt_certificate`: a proof, not a plausibility argument
 
-### Also fixed
+For a convex program the KKT conditions are sufficient, so checking them settles
+optimality. The check reports the stationarity of the interior variables, the
+feasibility of the equalities, and the worst violation among variables at their
+bound.
 
-- A dead test dependency on ChemistryLab, pinned at `"0.2, 0.3"` while no test
-  referenced it. It closed a dependency loop, ChemistryLab depending on this
-  package.
+Two splits decide whether it means anything: a variable at its bound obeys the
+inequality, not the equality — imposing the equality on an amount held at `1e-16`
+whose stationarity value is `e⁻³⁰⁰` misstates `hᵢ` by 263 units, and the check
+then reports 74 for a point solved to `5e-12` — and a variable carrying a
+degenerate component is excluded from both tests.
 
-### Still open
+Used through ChemistryLab on its Reaktoro reference, the certified answer matches
+**every** species to 1 %, including one the reference test records as
+`@test_broken` because the interior-point answer is 147 % high. On calcite in
+pure water the certified pH is 9.90 against an interior-point 6.96.
 
-The solver does not report `converged` on a cement equilibrium even now: the
-iterate is right and the balance is at machine precision, but the KKT error does
-not cross `tol`. Judge these solves on the element balance, not on the return
-code.
+### Fixed
+
+- **`is_converged` could never fire on a chemical equilibrium.** The optimality
+  error was the Newton residual `g_L − μ/s`, which diverges at the bounds:
+  writing `s = s*(1+η)`, it equals `(μ/s*)·η/(1+η)`, unbounded as `s* → 0` at
+  fixed *relative* error. No tolerance was attainable — `tol = 1e-4` failed
+  exactly as `tol = 1e-10` did. The error began at `4.5e11` and never fell below
+  `2e9`, the barrier therefore never fell from its initial `1e-4`, and every
+  solve ran to `max_iter` while the feasibility error was reaching `1e-14`. The
+  guard meant to prevent this, excluding variables within `1e-6 × lb` of their
+  bound, could not fire either: with `lb = 1e-16` that threshold is `1e-22`.
+
+  Stationarity is now measured in complementarity form, `Eᵢ = sᵢ·g_{L,i} − μ`,
+  obtained by eliminating the bound multiplier through dual feasibility. Same
+  zeros, bounded where the residual form is not; on the same iterate it reads
+  `5.8e-3` instead of `4.5e11`.
+
+- **The warm-start cache overrode the caller's initial point.** It is now
+  consulted only when the problem has the same size *and* `u0` carries no
+  interior information. A kinetics run leaves its final composition in the cache,
+  so replaying the same trajectory through the same algorithm object started
+  every solve from the end state, returning pH 14.2 where honouring the guess
+  gives 12.58.
+
+- **A dead test dependency on ChemistryLab**, pinned at `"0.2, 0.3"` while no
+  test referenced it; it closed a dependency loop.
+
+### Documentation
+
+The theory page now proves the convexity of the objective — the ideal mixing
+Hessian is `diag(1/x) − 11ᵀ/N`, positive semidefinite by Cauchy–Schwarz, and the
+bounded variables enter linearly — derives the failure of the residual form and
+the equivalence and boundedness of the complementarity form, and states the
+KKT-space formulation with its three subtleties and its termination argument.
 
 ## v0.2.8 — the optimality error was unattainable by construction
 

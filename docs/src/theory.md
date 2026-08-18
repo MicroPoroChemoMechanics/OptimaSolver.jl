@@ -286,6 +286,118 @@ automatic and the fraction-to-boundary rule has nothing to act on. That is
 implemented in `ChemistryLab.DualEquilibriumSolver`, which uses this solver to
 reach a neighborhood and then certifies the result.
 
+## Newton on the KKT system in multiplier space
+
+The interior-point method above minimises `f` by walking the interior. This
+section describes the alternative the package also provides,
+[`dual_newton_solve`](@ref), which solves the KKT conditions directly. It is the
+Brinkley–Karpov formulation of the geochemical Gibbs-minimisation codes, stated
+here for the general convex program.
+
+### The formulation
+
+Let `u := -A^\top y`. The stationarity conditions split by the nature of the
+variable:
+
+```math
+\text{interior } i:\quad h_i(x) = u_i - g_i
+\qquad\Longleftrightarrow\qquad
+x_i \text{ recovered from its own condition,}
+```
+
+```math
+\text{bounded } i:\quad g_i = u_i \ \text{ if } x_i > 0,
+\qquad g_i \ge u_i \ \text{ if } x_i = 0 .
+```
+
+The second line is a **stability criterion**: a bounded variable is positive
+exactly when `u_i - g_i` vanishes, and zero when that index is negative. In a
+chemical system it is the statement that a phase is present iff it is saturated.
+
+### Why it is well conditioned
+
+Parameterising the interior variables by ``w = \ln x`` makes their positivity
+automatic. The fraction-to-boundary rule of
+[Fraction-to-boundary step limit](@ref) — which caps the interior-point step at
+*every* iteration on a cement equilibrium — therefore has nothing to act on for
+them. Only the bounded variables carry a bound, and they are handled by an
+active set, exactly.
+
+This is **not** the log reparameterisation that `variable_space = Val(:log)`
+performs, and the distinction matters. Composing the objective with `exp` gives
+
+```math
+\frac{\partial^2 (f\circ\exp)}{\partial w_i^2}
+  = x_i\bigl(\nabla f_i + 1\bigr),
+```
+
+which is negative wherever ``\nabla f_i < -1`` — for a chemical potential of
+order ``-200``, everywhere. `f ∘ exp` is not convex. Here the logarithm is
+applied to the KKT **equations**, solved as a square nonlinear system;
+convexity of the original problem is what makes that system's solution unique.
+
+### The reference variable
+
+One interior variable may have `h_i` **bounded above**, so that its condition
+`h_i = u_i - g_i` has no solution for an arbitrary `y`. In a chemical system
+that is the solvent: its activity is a mole fraction, so ``\ln a \le 0`` always.
+Inverting it is not merely slow, it can be **infeasible**, and an inner loop
+that included it can never report convergence — which then invalidates the outer
+Jacobian, since that Jacobian is derived on the assumption that the inner
+conditions hold exactly.
+
+Such a variable is declared through `j_ref` and carried by the outer system,
+where the equality constraints determine it.
+
+### Degenerate components
+
+A row `k` with ``b_k = 0`` need not be degenerate. With ``x \ge 0``,
+
+```math
+\sum_i A_{ki} x_i = 0
+\quad\Longrightarrow\quad
+x_i = 0 \ \ \forall i:\ A_{ki}\neq 0
+```
+
+**only if the non-zero entries of the row share a sign** — a sum of non-negative
+terms vanishes only term by term. A row with entries of both signs permits
+cancellation and forces nothing. [`degenerate_components`](@ref) implements
+exactly this test.
+
+The distinction is not academic: the `H+` row of a chemical system carries `+1`
+for `H+` and `−1` for `OH-`, so its zero total is the ordinary state of pure
+water. Declaring it degenerate removes the entire acid–base system and returns
+pH 7.000 with the solid undissolved.
+
+Where a row *is* degenerate its multiplier is determined by nothing and the
+Jacobian is singular in that direction. The row is then replaced by
+``y_k = \texttt{DEGENERATE\_POTENTIAL}``, which keeps the system square and makes
+the pinning of those variables consistent with their stationarity rather than
+merely imposed on it.
+
+### Termination
+
+The outer loop admits **one** variable per round, the most violated, and records
+the active sets it has visited. Since there are finitely many subsets and each
+round either terminates or visits a new one, the loop terminates. Admitting a
+batch instead feeds a cycle in which a variable is admitted, driven negative,
+dropped, and readmitted — observed on a cement without limestone as a solve
+converged to `2e-12` of the *wrong* subproblem, with an excluded variable
+violated by 10.9.
+
+### The certificate
+
+[`kkt_certificate`](@ref) checks the conditions at any point, whatever produced
+it. For a convex program they are sufficient, so a certificate is a proof of
+global optimality.
+
+Two splits decide whether the check means anything. A variable **at its bound**
+obeys the inequality, not the equality: imposing the equality on an amount held
+at `1e-16` whose stationarity value is `e^{-300}` misstates `h_i` by 263 units,
+and the check then reports a residual of 74 for a point solved to `5e-12`. And a
+variable carrying a **degenerate component** is excluded from both tests, for the
+reason above.
+
 ## Newton step via Schur complement
 
 ### KKT linear system
