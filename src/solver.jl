@@ -92,8 +92,22 @@ function solve!(
     err_best = T(Inf)
     μ_best = μ
 
+    # Lexicographic, feasibility first.
+    #
+    # `kkt.error` is `max(error_opt, error_feas)` and on a chemical system the
+    # optimality term dominates by orders of magnitude, so ranking on it alone
+    # lets an iterate win on optimality while being WORSE on the element balance —
+    # and the balance is a hard constraint, not something to trade. Measured on an
+    # LC³ budget the returned point carried `‖An − b‖∞ = 2.6e-4` where the
+    # iteration had been holding 1e-15 throughout.
+    feas_best = T(Inf)
+    opt_best = T(Inf)
+
     function _keep_best!(kkt, μ_now)
-        if kkt.error < err_best
+        feas_ok = kkt.error_feas <= max(feas_best, T(opts.tol))
+        if feas_ok && kkt.error_opt < opt_best
+            feas_best = T(kkt.error_feas)
+            opt_best = T(kkt.error_opt)
             err_best = T(kkt.error)
             n_best .= n
             y_best .= y
@@ -127,6 +141,8 @@ function solve!(
         # and the dual solve that warm-started from it admitted portlandite as a
         # phase and diverged.
         best_err = T(Inf)
+        feas_best = T(Inf)
+        opt_best = T(Inf)
         n_best .= n
         y_best .= y
         μ_best = μ
@@ -209,6 +225,28 @@ function solve!(
             # Variable stability: cap step for near-bound variables
             _, ju = classify_variables(n, prob.lb, kkt.ex)
             reduced_step_for_unstable!(dn, ju, n, prob.lb)
+
+            # Clipping individual components takes the step OUT of the null space
+            # of `A`, and with it the one property the null-space branch exists to
+            # provide: that `A(n + α dn) = An` for every `α`, so feasibility once
+            # attained is never lost. Silently, because nothing downstream checks.
+            # On an LC³ equilibrium the start was feasible to 3e-10 and the solve
+            # finished at `‖An − b‖∞ = 4.5e-3`, drifting a little at every
+            # iteration where a variable near its bound was clipped.
+            #
+            # Re-projecting onto `{A d = 0}` restores it exactly and keeps what the
+            # clip was for. The projection is the minimum-norm correction, so it
+            # changes the clipped components as little as it can.
+            if opts.nullspace_step
+                r_dn = prob.A * dn
+                if maximum(abs, r_dn) > eps(T) * max(one(T), maximum(abs, dn))
+                    dn .-= can.A' * (
+                        LinearAlgebra.qr(
+                            can.A * can.A', LinearAlgebra.ColumnNorm(),
+                        ) \ r_dn
+                    )
+                end
+            end
 
             # Line search with filter
             f_val = prob.f(n, prob.p)
@@ -536,35 +574,12 @@ function _initialise_feasible!(
         n[i] = max(n[i], prob.lb[i] + eps(T))
     end
 
-    # A point that is ALREADY nearly feasible is corrected, not rebuilt.
-    #
-    # The exact routes below reconstruct the composition, which is what a cold
-    # start needs and precisely what a warm start must not get: a converged
-    # solution perturbed by a small change in `b` is the best guess available, and
-    # moving its abundant species by the whole discrepancy throws that away. Here
-    # the minimum-norm correction is the right tool — it is the smallest change
-    # that restores the constraint — and alternating it with the bound projection
-    # converges quickly when the starting residual is already small.
-    # The exact routes RECONSTRUCT the composition; the correction below merely
-    # nudges it. Which is wanted depends on whether the point carries information.
-    #
-    # A point already near the affine set is the best guess available — a
-    # converged solution perturbed by a small change in `b`, which is what every
-    # step of a kinetics run hands over — and the minimum-norm correction is by
-    # definition the smallest change that restores the constraint. Reconstructing
-    # from it instead throws the guess away: NNLS puts the budget on `rank(A)`
-    # species and leaves the rest at the barrier's own floor, which is a fine
-    # cold start and a poor warm one. Measured on the sensitivity reference, that
-    # cost three digits on the perturbed solve.
-    #
-    # So the exact routes are reserved for a point that is genuinely far off,
-    # where there is nothing to preserve and approaching feasibility is hopeless.
-    scale0 = max(one(T), maximum(abs, prob.b))
-    if maximum(abs, prob.A * n .- prob.b) < T(1.0e-2) * scale0
-        return _project_alternating!(n, prob; maxit = maxit, tol = tol)
-    end
-
-    # ── exact route: solve for the basic amounts ─────────────────────────────
+    # Everything below RECONSTRUCTS the composition, which is what a cold start
+    # needs. The least-disturbance route above has already been tried and did not
+    # reach the affine set, so trying it a second time — as an earlier version did,
+    # under a `1e-2` threshold — returns whatever it stalled at and never gets
+    # here. On an LC³ budget that stall was `2.6e-4`, which is enough to deadlock
+    # the filter line search on the first iteration.
     rhs = collect(prob.b)
     @inbounds for j in jn
         for i in eachindex(rhs)
@@ -596,42 +611,29 @@ function _initialise_feasible!(
     # perturbation is then removed exactly, on the support, by a minimum-norm
     # correction — so the point stays feasible to machine precision AND strictly
     # interior.
-    f_rhs = prob.b .- prob.A * prob.lb
-    v = _nnls(prob.A, f_rhs)
-    scale = max(one(T), maximum(abs, f_rhs))
-    if maximum(abs, prob.A * v .- f_rhs) <= sqrt(eps(T)) * scale
-        δ = T(1.0e-6) * scale
-        S = findall(>(zero(T)), v)
-        if !isempty(S)
-            lifted = zeros(T, length(v))
-            @inbounds for j in eachindex(v)
-                v[j] <= zero(T) && (lifted[j] = δ)
-            end
-            drift = prob.A * lifted
-            AS = prob.A[:, S]
-            # minimum-norm correction inside the support only
-            corr = AS' * (LinearAlgebra.qr(AS * AS', LinearAlgebra.ColumnNorm()) \ drift)
-            ok = true
-            @inbounds for (k, j) in enumerate(S)
-                v[j] - corr[k] > zero(T) || (ok = false)
-            end
-            if ok
-                @inbounds for (k, j) in enumerate(S)
-                    v[j] -= corr[k]
-                end
-                v .+= lifted
-            end
-        end
-        n .= prob.lb .+ v
-        # `lb + v` need not satisfy `n - lb > 0` in floating point: in the scaled
-        # space the caller works in, `lb` can be `1e-6` while `v` is `1e-30`, and
-        # the sum rounds to `lb` — or just below it. The barrier then takes the
-        # logarithm of a slack of `-3e-25` and the solve dies on a `DomainError`.
-        # A slack is required, not merely a non-negative amount.
-        s_floor = eps(T) * max(one(T), maximum(abs, prob.lb))
-        @inbounds for i in eachindex(n)
-            n[i] - prob.lb[i] > s_floor || (n[i] = prob.lb[i] + s_floor)
-        end
+    # `v = n − lb ≥ δ` with `A v = b − A·lb`. When the budget is attainable — and
+    # it is, since it came from a real composition — the NNLS residual is zero, so
+    # this lands ON the affine set rather than near it.
+    #
+    # The margin `δ` is part of the SAME problem, not a correction applied
+    # afterwards. A barrier method cannot be started from a point with zero slack:
+    # the fraction-to-boundary rule then gives `α = 0` on the first negative step
+    # component. Substituting `v = δ + w` and solving `A w = f − A·δ` for `w ≥ 0`
+    # gives a point that is strictly interior AND exactly feasible, both by
+    # construction.
+    #
+    # Lifting after the fact does not work, and the reason is worth recording:
+    # NNLS returns a solution supported on at most `rank(A)` variables, and on an
+    # LC³ budget that was 10 of 12. Correcting the drift `A·δ` from within that
+    # support can only remove its component in `range(A_S)`; the remaining two
+    # dimensions stayed, and the start carried `‖An − b‖∞ = 2.6e-4` — enough to
+    # deadlock the filter line search on the very first iteration.
+    scale = max(one(T), maximum(abs, prob.b))
+    δ = T(1.0e-6) * scale
+    f_rhs = prob.b .- prob.A * (prob.lb .+ δ)
+    w = _nnls(prob.A, f_rhs)
+    if maximum(abs, prob.A * w .- f_rhs) <= sqrt(eps(T)) * scale
+        n .= prob.lb .+ δ .+ w
         return n
     end
 

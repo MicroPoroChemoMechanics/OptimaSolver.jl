@@ -4,7 +4,8 @@
 
 ### Breaking changes
 
-One new exported name, `SolutionPhase`, and a new keyword `mole_fraction` on it.
+Two new exported names, `SolutionPhase` and `stationarity_capacity`, and a new
+keyword `mole_fraction` on the first.
 Nothing was removed or renamed and no existing signature changed, but below 1.0
 the resolver treats a minor bump as breaking regardless, so a downstream
 `[compat] OptimaSolver = "0.3"` must be widened to `"0.4"`.
@@ -32,6 +33,82 @@ unknown, and its outer equation is `logsumexp(uᵢ − gᵢ − ln γᵢ) = 0`. 
 evaluated with the maximum factored out, so nothing overflows. The phase equation
 is now the same expression as the tangent-plane admission test, so a phase is
 admitted and held stationary by one quantity rather than two that could disagree.
+
+### The active-set search had no leaving rule, and no way out of a wrong set
+
+Three moves were missing, and without them the search could not reach the answer
+on a system with many candidate phases. Each is a KKT condition, not a tuning
+choice.
+
+**Gibbs' phase rule was not enforced.** A bound-constrained variable held active
+imposes `uᵢ = gᵢ`, i.e. `aᵢᵀ y = −gᵢ`, one linear equation in `y`; a mole-fraction
+mixing phase imposes `logsumexp(uᵢ − gᵢ) = 0`, one more. With `y ∈ ℝᵐ` no `y`
+satisfies more than `m` of them, and the composition vectors of the active
+variables must in addition be linearly INDEPENDENT — two dependent columns demand a
+fixed relation between their `gᵢ` that no database satisfies, which is what two
+polymorphs of one composition amount to. An active set breaking either condition
+cannot support a solution: the residual cannot reach zero for any iterate and the
+least-squares step merely spreads the violation. On an LC³ equilibrium the set grew
+to 15 pure phases and 5 solid solutions — **19 conditions on 12 components** — and
+the solve returned a stationarity residual of 18 having never had a solution to
+find. Both conditions are now invariants of the active set, maintained by exchange:
+`stationarity_capacity` and the rank test decide, and admitting a violated
+candidate releases the incumbent that makes room.
+
+**Complementarity was tested on one side only.** The conditions for a
+bound-constrained variable are `xᵢ ≥ 0`, `sᵢ ≤ 0`, `xᵢ sᵢ = 0`. The drop test read
+`xᵢ → 0` and nothing else, so a variable held active while UNDERSATURATED — `sᵢ`
+strictly negative — stayed for ever, and no Newton iteration could repair it
+because its own equation `sᵢ = 0` is the one that cannot hold. Measured on an LC³
+equilibrium at a quarter of full reaction, the search settled with nothing
+supersaturated, the element balance at 4.5e-2, and a stationarity residual of 9.86
+carried entirely by such a phase. The test now covers both halves, evaluated on a
+point that actually solves the current subproblem — while the inner Newton is still
+working, `sᵢ` is a transient and not a violation.
+
+**The search was not a descent method.** Each move is a guess, and a guess that
+makes things worse has to be undone rather than built upon; there was no such
+mechanism, and the search wandered — 16.04 → 8.05 → 16.04 → 514 on an LC³ budget,
+passing through and abandoning its best state. It now keeps the best state and
+returns that, and the measure it descends is the KKT error of the WHOLE problem,
+not the residual of the subproblem the current set defines. That distinction
+decides the search: a set omitting a phase the solution needs solves its own
+equations exactly — residual 1e-12 — while the omitted phase sits absent and
+supersaturated by ten RT, so ranking on the subproblem residual rewards leaving
+phases out.
+
+**A phase whose every member carries a vanished component was seeded as present.**
+Its stationarity condition is evaluated over an empty set: every exponent is
+`-Inf`, the log-sum-exp is `-Inf`, and the outer residual is `Inf` from the first
+evaluation. The admission test already excluded such a phase; the seeding did not,
+and against an interior-point warm start that matters, because a barrier point
+holds even a dead species near `μ` rather than at zero. On an LC³ budget, which
+carries no magnesium at all, that seeded the M-S-H or hydrotalcite solution as
+present and no finite residual was ever produced.
+
+**The seeding itself read a threshold that means nothing after a barrier solve.**
+`n0[i] > 1e-6` was the test for "the guess holds this phase", and a barrier point at
+`μ` holds every ABSENT phase at `sᵢ = μ/gᵢ` — for `μ = 1e-6`, exactly the threshold.
+Candidates are now taken in order of decreasing amount, since the phase rule says
+at most `m` are present and the abundant ones are the best guess as to which, and
+admitted only while the set still supports a solution.
+
+Measured together: the LC³ sweep of the private low-carbon work — a limestone
+calcined clay cement from 0 % to 40 % clay replacement — is **certified optimal at
+every point**, with stationarity 1.1e-11 and element balance 5.0e-11 at LC³-50, no
+phase supersaturated, and a pore solution at pH 12.71. It previously returned a
+stationarity residual near 20 with an element balance of several hundred moles.
+
+### The difference step was scaled to the unknown, not to the residual
+
+The outer Jacobian is differenced, and the step was `1e-5·|v_k|`. For the
+multipliers that is the wrong scale by five orders of magnitude: the `gᵢ` are Gibbs
+energies of formation FROM THE ELEMENTS, of order 10²–10³ in RT units, `y` carries
+that offset, and the residual depends on `y` only through `u = −Aᵀy` and
+exponentially so. The step came out near `5e-3`, moving `u` by `|A|·5e-3 ≈ 0.15` and
+every `exp(uᵢ − gᵢ)` by some sixteen percent — a secant across a wide interval, not
+a derivative. The scale over which the residual varies with `y_k` is
+`1/maxᵢ|A[k,i]|`, and that is what now sets the step.
 
 ### An active set that rejected the variable it should have exchanged
 

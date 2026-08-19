@@ -42,6 +42,7 @@ DualNewtonOptions
 dual_newton_solve
 kkt_certificate
 degenerate_components
+stationarity_capacity
 OptimaSolver.DEGENERATE_POTENTIAL
 ```
 

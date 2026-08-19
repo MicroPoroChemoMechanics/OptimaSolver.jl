@@ -430,6 +430,45 @@ dropped, and readmitted — observed on a cement without limestone as a solve
 converged to `2e-12` of the *wrong* subproblem, with an excluded variable
 violated by 10.9.
 
+### What an active set must satisfy, and how it is searched
+
+Two conditions decide whether an active set can support a solution at all, and
+both are consequences of the KKT system rather than choices.
+
+A bound-constrained variable held active imposes `u_i = g_i`, i.e.
+``a_i^\mathsf{T} y = -g_i`` — one **linear** equation in `y`. A mole-fraction
+mixing phase imposes ``\log\sum_i e^{u_i-g_i} = 0``, one more, nonlinear but still
+a condition on `y` alone. A phase with a solvent does not, since its reference
+equation involves the composition. Hence
+
+```math
+\#\{\text{active bounded}\} + \#\{\text{active mole-fraction phases}\} \;\le\; m ,
+```
+
+which is Gibbs' phase rule in the form the dual system takes, and in addition
+``\operatorname{rank} A[:,\text{active}] = |\text{active}|`` — two dependent
+columns demand a fixed relation between their `g_i` that no database satisfies,
+which is exactly what two polymorphs of one composition amount to. An active set
+breaking either condition has no solution: the residual cannot reach zero for any
+iterate, and the least-squares step spreads the violation over the rows instead of
+removing it.
+
+Complementarity supplies the leaving rule. For a bound-constrained variable the
+conditions are ``x_i \ge 0``, ``s_i \le 0``, ``x_i s_i = 0`` with
+``s_i = u_i - g_i - h_i``. Testing only ``x_i \to 0`` covers one half: a variable
+held active while **undersaturated** violates complementarity as plainly, and no
+Newton iteration repairs it, because its own equation ``s_i = 0`` is the one that
+cannot hold. That test is meaningful only on a point that solves the current
+subproblem — while the inner Newton is still working, ``s_i`` is a transient.
+
+The search over sets is a **descent method**, and the quantity it descends is the
+KKT error of the whole problem — stationarity, element balance, and the worst
+violation among the phases held absent — not the residual of the subproblem the
+current set defines. The distinction decides the outcome: a set that omits a phase
+the solution needs solves its own equations exactly, so ranking states on that
+residual rewards leaving phases out. The best state visited is what the solver
+returns.
+
 ### Exchange, not rejection
 
 An admission that fails to converge is not evidence against the variable

@@ -195,3 +195,44 @@ end
     @test u_A < 0                       # the reference potential, for the record
 
 end
+
+@testset "an active set has to satisfy the phase rule" begin
+
+    # A bound-constrained variable held active imposes `aᵢᵀy = −gᵢ`, one linear
+    # equation in `y`; a mole-fraction phase imposes `logsumexp(uᵢ − gᵢ) = 0`, one
+    # more. With `y ∈ ℝᵐ` there is no `y` satisfying more than `m` of them, so an
+    # active set carrying more cannot support a solution at any iterate — the
+    # least-squares step spreads the violation instead of removing it.
+    #
+    # Four pure phases in a two-component system: at most two can coexist, and the
+    # solver must return an assemblage that respects it rather than grinding on an
+    # unsolvable one.
+    A = Float64[1 0 1 1 2; 0 1 1 2 1]
+    g = [0.0, 0.0, -1.0, -2.0, -1.5]
+    h(x, _) = zeros(length(x))          # every variable a pure phase
+    prob = DualNewtonProblem(
+        A, g, h;
+        phases = [SolutionPhase([1, 2], 1; always_present = true)],
+        idx_bounded = [3, 4, 5],
+    )
+    @test stationarity_capacity(prob) == 2
+
+    b = [1.0, 1.0]
+    r = dual_newton_solve(prob, b, [0.5, 0.5, 0.1, 0.1, 0.1])
+
+    # Whatever it returns, it must not hold more phases stationary than the
+    # components allow: three bound variables plus the solution's own condition
+    # would be four conditions on two multipliers.
+    n_cond = length(r.active) + count(k -> prob.phases[k].mole_fraction, r.active_phases)
+    @test n_cond <= stationarity_capacity(prob)
+
+    # And the active bounded variables must be linearly independent, else their
+    # `uᵢ = gᵢ` conditions fix a relation between the `gᵢ` that does not hold.
+    if !isempty(r.active)
+        @test rank(A[:, r.active]) == length(r.active)
+    end
+
+    # Matter is conserved whatever the active set.
+    @test A * r.x ≈ b rtol = 1.0e-6
+
+end

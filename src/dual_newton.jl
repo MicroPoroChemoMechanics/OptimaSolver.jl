@@ -214,6 +214,64 @@ function DualNewtonProblem(
 end
 
 """
+    stationarity_capacity(prob) -> Int
+
+The number of conservation rows `m`, which is the largest number of simultaneous
+stationarity conditions the element potentials can carry.
+
+This is Gibbs' phase rule, in the form the dual system takes. A bound-constrained
+variable held ACTIVE contributes `uᵢ = gᵢ`, i.e. `aᵢᵀ y = −gᵢ`, one **linear**
+equation in `y`; a mole-fraction mixing phase contributes
+`logsumexp(uᵢ − gᵢ) = 0`, one more, nonlinear but still a condition on `y` alone.
+A phase with a solvent does not, because its reference equation involves the
+composition. With `y ∈ ℝᵐ` there is no `y` satisfying more than `m` of them, so an
+active set carrying more cannot support a solution — the Newton residual cannot
+reach zero for any iterate, and the least-squares step merely spreads the
+violation over the rows.
+
+That is not a slow case, it is an unsolvable one, and it has to be excluded by
+construction rather than discovered. Measured on an LC³ equilibrium the active set
+grew to 15 pure phases and 5 solid solutions — **19 conditions on 12 components** —
+and the solve came back with a stationarity residual of 18 and an element balance
+of 800 having never had a solution to find.
+"""
+stationarity_capacity(prob::DualNewtonProblem) = size(prob.A, 1)
+
+"""
+    _n_stationarity_conditions(prob, active, act_ph) -> Int
+
+How many conditions on `y` alone the active set imposes: one per active
+bound-constrained variable, one per active mole-fraction phase.
+"""
+function _n_stationarity_conditions(prob, active, act_ph)
+    n = length(active)
+    for k in act_ph
+        prob.phases[k].mole_fraction && (n += 1)
+    end
+    return n
+end
+
+"""
+    _active_set_supports_a_solution(prob, active, act_ph) -> Bool
+
+Whether the stationarity block of this active set can be satisfied at some `y`.
+
+Two conditions, both necessary. The count must not exceed
+[`stationarity_capacity`](@ref). And the active bound-constrained variables'
+composition vectors must be linearly INDEPENDENT: `A[:, active]ᵀ y = −g[active]`
+is solvable for some `y` only then, since two dependent columns demand a fixed
+relation between their `gᵢ` that the database will not happen to satisfy. That
+second test is what catches two polymorphs of one composition — `Gbs` and
+`AlOHmic` are both Al(OH)₃ — which impose `uᵢ = gᵢ` twice on the same vector.
+"""
+function _active_set_supports_a_solution(prob, active, act_ph)
+    _n_stationarity_conditions(prob, active, act_ph) <= stationarity_capacity(prob) ||
+        return false
+    isempty(active) && return true
+    return LinearAlgebra.rank(prob.A[:, active]) == length(active)
+end
+
+"""
     DualNewtonOptions(; tol, maxit, max_active_updates, si_tol, verbose)
 
   - `tol`: tolerance on the KKT residual.
@@ -488,10 +546,23 @@ function dual_newton_solve(
         i in dead && (W[k][j] = -700.0)
     end
 
-    # A phase starts active if it is always present or if the guess holds it.
+    # A phase starts active if it is always present or if the guess holds it — and
+    # never if every one of its members carries a vanished component.
+    #
+    # That last clause is not defensive tidying. A phase whose components are all
+    # absent from the budget cannot exist, and its stationarity condition
+    # `logsumexp(uᵢ − gᵢ) = 0` is evaluated over an empty set: every exponent is
+    # `-Inf`, the log-sum-exp is `-Inf`, and the outer residual is `Inf` from the
+    # first evaluation onwards. The admission test below already excludes such a
+    # phase; the seeding did not, and against an interior-point warm start that
+    # matters, because a barrier point holds even a dead species near `μ` rather
+    # than at zero. On an LC³ budget, which carries no magnesium at all, that
+    # seeded the M-S-H or hydrotalcite solution as present and the solve never
+    # produced a finite residual.
     act_ph = Int[
         k for (k, ph) in pairs(prob.phases)
-            if ph.always_present || sum(n0[i] for i in ph.members) > 1.0e-9
+            if !all(i in dead for i in ph.members) &&
+            (ph.always_present || sum(n0[i] for i in ph.members) > 1.0e-9)
     ]
     isempty(act_ph) && (act_ph = Int[1])
     # `refs[a]` is the reference member's amount for a phase with a solvent, and
@@ -504,11 +575,37 @@ function dual_newton_solve(
         end for k in act_ph
     ]
 
-    # Admit only bound-constrained variables the guess holds in QUANTITY: a trace
-    # left over by an interior-point start is not evidence, and two variables both
-    # declared stationary over-determine `y`.
-    active = Int[i for i in prob.idx_bounded if n0[i] > 1.0e-6 && !(i in dead)]
-    xB = Float64[n0[i] for i in active]
+    # The initial active set must already satisfy the phase rule, and reading it
+    # off a threshold does not.
+    #
+    # `n0[i] > 1e-6` was the test, and against an interior-point warm start it is
+    # no test at all: a barrier point at `μ` holds every ABSENT phase at
+    # `sᵢ = μ/gᵢ`, which for `μ = 1e-6` is exactly the threshold. On an LC³ budget
+    # that seeded 15 pure phases, 5 solid solutions on top, and 19 stationarity
+    # conditions on 12 components — an active set with no solution, from the first
+    # iteration, and no way back since the loop only ever rejects the variable it
+    # just added.
+    #
+    # Candidates are therefore taken in order of decreasing amount — the phase
+    # rule says at most `m` phases are present, and the abundant ones are the best
+    # guess as to which — and admitted only while the set still supports a
+    # solution. What the seeding leaves out is not lost: the saturation index
+    # brings it back in below, by exchange.
+    active = Int[]
+    xB = Float64[]
+    let cand0 = sort(
+            [i for i in prob.idx_bounded if n0[i] > 1.0e-6 && !(i in dead)];
+            by = i -> -n0[i],
+        )
+        for i in cand0
+            push!(active, i)
+            if _active_set_supports_a_solution(prob, active, act_ph)
+                push!(xB, n0[i])
+            else
+                pop!(active)
+            end
+        end
+    end
 
     # `y` from a WEIGHTED least-squares fit of the phase stationarity at the
     # guess. It holds for every phase member at the solution, but as a starting
@@ -606,6 +703,19 @@ function _dual_newton_attempt(
     drop_ph_prev = Int[]
     last_added = 0
 
+    # The active-set search is a DESCENT method on the outer residual.
+    #
+    # Each move — admit the most violated candidate, release the most violated
+    # incumbent — is a guess, and a guess that makes the residual worse has to be
+    # undone, not built upon. Without that the search wanders: on an LC³
+    # equilibrium the residual went 16.04 → 8.05 → 16.04 → 514 and stalled there,
+    # having passed through and abandoned its best state. Accepting only
+    # improvements makes the sequence of visited sets strictly decreasing in
+    # residual, hence finite, and the answer is the best set found rather than the
+    # last one tried.
+    best_res = Inf
+    best_state = nothing
+
     for _ in 1:(opts.max_active_updates)
         nph = length(act_ph)
         na = length(active)
@@ -615,7 +725,15 @@ function _dual_newton_attempt(
         for _ in 1:(opts.maxit)
             R = _outer_residual(prob, v, W, act_ph, active, bv, x_buf; dead, degenerate)
             res = maximum(abs, R)
-            opts.verbose && @info "dual-newton" res = res nphases = nph nactive = na
+            if opts.verbose
+                # Split by block: the three carry different units — log-activities
+                # for the phase and stationarity rows, moles for the balance — and
+                # a single maximum says nothing about which of them is stuck.
+                rp = nph == 0 ? 0.0 : maximum(abs, @view R[1:nph])
+                rb = maximum(abs, @view R[(nph + 1):(nph + m)])
+                rs = na == 0 ? 0.0 : maximum(abs, @view R[(nph + m + 1):(nph + m + na)])
+                @info "dual-newton" res res_phase = rp res_balance = rb res_stat = rs nph na
+            end
             if res <= opts.tol
                 inner_ok = true
                 break
@@ -625,7 +743,34 @@ function _dual_newton_attempt(
             J = zeros(N, N)
             W_ref = [copy(w) for w in W]
             for kk in 1:N
-                hk = 1.0e-5 * max(abs(v[kk]), 1.0)
+                # The difference step is scaled to the RESIDUAL's sensitivity, not
+                # to the size of the unknown, and for the multipliers those are not
+                # the same thing at all.
+                #
+                # The residual depends on `y` only through `u = −Aᵀy`, and
+                # exponentially so. A relative step `1e-5·|y_k|` looks harmless
+                # until one notices what `|y_k|` is: the `gᵢ` are Gibbs energies of
+                # formation FROM THE ELEMENTS, of order 10²–10³ in RT units, and
+                # `y` carries that offset — an offset that says nothing about the
+                # problem. The step came out near `5e-3`, which moves `u` by
+                # `|A|·5e-3 ≈ 0.15` and every `exp(uᵢ − gᵢ)` by some sixteen
+                # percent. That is a secant across a wide interval, not a
+                # derivative: on an LC³ equilibrium the resulting direction reduced
+                # the residual at no step length, all forty backtracks were
+                # refused, and the residual sat at 30.94 while moving by 1e-11 per
+                # iteration.
+                #
+                # The scale over which the residual varies with `y_k` is
+                # `1/maxᵢ|A[k,i]|`, so that is what sets the step; `√eps` in `u`
+                # is the usual forward-difference compromise between truncation and
+                # roundoff. `ln x_ref` and the bounded amounts are O(1) in their own
+                # right and keep the relative rule.
+                hk = if kk > nph && kk <= nph + m
+                    krow = kk - nph
+                    1.0e-8 / max(1.0, maximum(abs, @view prob.A[krow, :]))
+                else
+                    1.0e-5 * max(abs(v[kk]), 1.0)
+                end
                 vp = copy(v)
                 vp[kk] += hk
                 W_t = [copy(w) for w in W_ref]
@@ -677,8 +822,61 @@ function _dual_newton_attempt(
         hv = prob.h(x_buf, prob.params)
         si = u .- (prob.g .+ hv)
 
+        # Record this set if it is the best seen, measured by the KKT error of the
+        # WHOLE problem — not by the residual of the subproblem this set defines.
+        #
+        # The distinction decides the search. An active set that omits a phase the
+        # solution needs still solves its own equations exactly: the outer residual
+        # goes to 1e-12 while the omitted phase sits absent and supersaturated by
+        # ten RT. Ranking states on that residual therefore rewards leaving phases
+        # out. The measure below is the one the certificate applies — stationarity,
+        # element balance, and the worst violation among the phases held absent —
+        # so descending it descends the distance to a KKT point.
+        let res_outer = maximum(
+                abs, _outer_residual(prob, v, W, act_ph, active, bv, x_buf; dead, degenerate),
+            )
+            viol = 0.0
+            for i in prob.idx_bounded
+                (i in active || i in dead) && continue
+                viol = max(viol, si[i])
+            end
+            for k in eachindex(prob.phases)
+                k in act_ph && continue
+                all(i in dead for i in prob.phases[k].members) && continue
+                viol = max(viol, _phase_tangent(prob, k, u, x_buf))
+            end
+            kkt_err = max(res_outer, viol)
+            if kkt_err < best_res * (1 - 1.0e-9)
+                best_res = kkt_err
+                # `v` carries refs, `y` and the bounded amounts together, so the
+                # state is that vector plus the sets it is indexed by.
+                best_state = (copy(act_ph), copy(active), copy(v), [copy(w) for w in W])
+            end
+        end
+
         # ── bound-constrained variables ──
-        drop = [j for j in eachindex(xB) if xB[j] < opts.si_tol]
+        # Complementarity, not just the amount.
+        #
+        # For a bound-constrained variable the KKT conditions are `xᵢ ≥ 0`,
+        # `sᵢ ≤ 0` and `xᵢ sᵢ = 0` with `sᵢ = uᵢ − gᵢ − hᵢ`. Testing only
+        # `xᵢ → 0` catches one half: a variable held ACTIVE while it is
+        # UNDERSATURATED — `sᵢ` strictly negative — violates complementarity just as
+        # plainly, and no amount of Newton iteration will repair it, because its own
+        # equation `sᵢ = 0` is the one that cannot hold. It has to leave.
+        #
+        # Measured on an LC³ equilibrium at a quarter of full reaction, the search
+        # settled with nothing supersaturated, the element balance at 4.5e-2 and a
+        # stationarity residual of 9.86 carried entirely by such a phase: present,
+        # and undersaturated by ten RT.
+        # …and only on a point that solves the current subproblem. While the inner
+        # Newton is still working, `sᵢ` on an active variable is a transient, not a
+        # violation, and dropping on it removes phases that were on their way to
+        # stationarity.
+        drop = [
+            j for j in eachindex(xB)
+                if xB[j] < opts.si_tol ||
+                (inner_ok && si[active[j]] < -max(opts.si_tol, opts.tol))
+        ]
 
         # An admission that does not converge used to be undone by rejecting the
         # entrant for good. That reads the failure backwards.
@@ -699,6 +897,29 @@ function _dual_newton_attempt(
         # for: two bound variables declared stationary whose formulas are
         # dependent modulo the mixing phases, where the residual cannot reach
         # zero at all.
+        # A stalled Newton with nothing leaving and nothing newly admitted means the
+        # active set itself cannot be satisfied, and until now the loop had no way
+        # out of that: `drop` tests only the AMOUNTS, so a phase that is held
+        # active while its stationarity `uᵢ = gᵢ` is unreachable stays for ever.
+        # Measured on an LC³ equilibrium the stationarity residual sat at 12.5 with
+        # the element balance at 0.02 — the least-squares step sacrificing the one
+        # to hold the other, which is what an inconsistent system looks like.
+        #
+        # The variable to release is the one whose own equation carries the
+        # residual: removing that equation is precisely what lets the rest be
+        # satisfied, and `si[i] = uᵢ − gᵢ − hᵢ` IS the residual of active variable
+        # `i`. This is the leaving rule of an active-set method — the entering rule
+        # is the most violated candidate, the leaving rule the most violated
+        # incumbent — and `seen` still bounds the search.
+        if !inner_ok && isempty(drop) && last_added == 0 && !isempty(active)
+            worst = argmax([abs(si[active[j]]) for j in eachindex(active)])
+            if abs(si[active[worst]]) > opts.tol
+                push!(rejected, active[worst])
+                active = active[setdiff(eachindex(active), [worst])]
+                xB = xB[setdiff(eachindex(xB), [worst])]
+            end
+        end
+
         if !inner_ok && isempty(drop) && last_added != 0 && last_added in active
             push!(rejected, last_added)
             j = findfirst(==(last_added), active)
@@ -757,18 +978,86 @@ function _dual_newton_attempt(
             i_best = cand[argmax([si[i] for i in cand])]
             push!(active, i_best)
             push!(xB, 1.0e-9)
-            last_added = i_best
+            # Admitting a variable may leave the active set unable to support a
+            # solution at all, either because the stationarity capacity `m` is
+            # already spent or because the entrant's composition is a combination
+            # of those already active. Neither is a reason to refuse it — it is
+            # violated, so it belongs — but one of the incumbents has to leave.
+            #
+            # Removal candidates are tried in order of increasing amount: the
+            # smallest is the one closest to leaving on its own and the one whose
+            # removal perturbs the primal least. Where the entrant is DEPENDENT on
+            # the active set, only a variable it is dependent with restores the
+            # rank, and trying them in turn finds it. This is a basis exchange, and
+            # the choice among admissible incumbents is a heuristic — what is not
+            # heuristic is that the set must satisfy the rank and capacity
+            # conditions, since otherwise no `y` exists. Termination is unaffected:
+            # `seen` records the active sets visited and there are finitely many.
+            if !_active_set_supports_a_solution(prob, active, act_ph)
+                for j in sort(1:(length(active) - 1); by = j -> xB[j])
+                    trial = active[setdiff(eachindex(active), [j])]
+                    if _active_set_supports_a_solution(prob, trial, act_ph)
+                        active = trial
+                        xB = xB[setdiff(eachindex(xB), [j])]
+                        break
+                    end
+                end
+            end
+            # If nothing worked the entrant itself goes back out: the set it would
+            # make is unsolvable whatever leaves.
+            if _active_set_supports_a_solution(prob, active, act_ph)
+                last_added = i_best
+            else
+                j = findfirst(==(i_best), active)
+                if j !== nothing
+                    active = active[setdiff(eachindex(active), [j])]
+                    xB = xB[setdiff(eachindex(xB), [j])]
+                end
+                push!(rejected, i_best)
+            end
         end
         if !isempty(cand_ph)
             k_best = cand_ph[argmax([_phase_tangent(prob, k, u, x_buf) for k in cand_ph])]
             push!(act_ph, k_best)
             push!(refs, 1.0e-9)
+            # A mole-fraction phase also spends one unit of stationarity capacity.
+            if !_active_set_supports_a_solution(prob, active, act_ph)
+                for j in sort(eachindex(active); by = j -> xB[j])
+                    trial = active[setdiff(eachindex(active), [j])]
+                    if _active_set_supports_a_solution(prob, trial, act_ph)
+                        active = trial
+                        xB = xB[setdiff(eachindex(xB), [j])]
+                        break
+                    end
+                end
+            end
+            if !_active_set_supports_a_solution(prob, active, act_ph)
+                pop!(act_ph)
+                pop!(refs)
+            end
         end
 
         drop_ph_prev = drop_ph
         key = (sort(copy(act_ph)), sort(copy(active)))
         key in seen && break
         push!(seen, key)
+    end
+
+    # Return the best state the search passed through, not the last one tried.
+    #
+    # `v` already holds the solution of the inner Newton on that active set, so
+    # there is nothing to re-solve: refs, `y` and the bounded amounts are read back
+    # out of it and the residual is evaluated once to set `converged`.
+    if best_state !== nothing
+        act_ph, active, v, W = best_state
+        nph = length(act_ph)
+        na = length(active)
+        refs = [exp(v[a]) for a in 1:nph]
+        y = v[(nph + 1):(nph + m)]
+        xB = na == 0 ? Float64[] : v[(nph + m + 1):(nph + m + na)]
+        converged = maximum(
+            abs, _outer_residual(prob, v, W, act_ph, active, bv, x_buf; dead, degenerate),
+        ) <= opts.tol
     end
 
     _invert_phases!(prob, W, y, refs, act_ph, active, xB, x_buf; dead = dead)
