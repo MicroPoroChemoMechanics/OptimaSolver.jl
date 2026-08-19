@@ -22,6 +22,22 @@ chemical potentials can be resolved to in Float64 — fell from 0.17–0.21 s to
 0.03–0.07 s each. In a coupled kinetics run there is one such solve per accepted
 step plus the Jacobian probes, so it compounds.
 
+### One assertion corrected because it measured the wrong thing
+
+`test_solver.jl` asserted that a warm-started solve costs fewer iterations than the
+cold solve of a **different** problem, at `tol = 1e-12`. Neither half of that is a
+test of warm starting: two problems need not cost the same, and twelve digits of an
+objective of size 0.6 puts both solves in the regime where the Armijo test is
+settled by rounding, where the iteration count is not even reproducible across
+environments — Julia 1.13.0-rc3 under coverage instrumentation reported 46 where a
+plain 1.12 and 1.13 both report 55, and the assertion failed at `52 < 51` while the
+warm start was working.
+
+The control is now the same problem solved cold, at `tol = 1e-10`. Measured
+identically on 1.12 and 1.13: 21 iterations warm against 26 cold, with the answer
+right to 4.9e-10; the saving is a consistent four to five iterations at 1e-6, 1e-8
+and 1e-10, and only at 1e-12 does it invert.
+
 ### A complete primal-dual port, measured, and deliberately not adopted
 
 The one substantive difference between this primal barrier method and the
