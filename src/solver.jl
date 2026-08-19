@@ -294,33 +294,51 @@ function _default_initial_n(prob::OptimaProblem{T}) where {T}
 end
 
 """
-    _initialise_feasible!(n, prob, can)
+    _initialise_feasible!(n, prob, can; maxit=100, tol=1e-12)
 
-Project n onto the feasibility manifold An = b by a single Newton step
-on the feasibility subproblem (holding the direction orthogonal to A fixed).
+Project `n` onto `{A n = b, n ≥ lb}` by alternating projections.
 
-This corrects gross infeasibility in the initial guess without an inner loop.
+A single minimum-norm correction `Δn = −Aᵀ(AAᵀ)⁻¹(An − b)` lands on the affine
+set but not in the box, and the clamp that follows it puts the point straight
+back off the affine set. That is not a detail. On a cement most candidate species
+sit at their lower bound, so the clamp restores a large amount of matter: the
+starting point came out with `‖An − b‖ = 0.29` on a budget whose largest entry is
+3.3, the barrier method then spent its whole iteration budget chasing feasibility
+it never reached, and every solver warm-started from it inherited the error.
+
+Both sets are convex and their intersection is non-empty whenever the budget is
+attainable, so alternating the two projections converges to a point in it. The
+loop stops when the residual is small or stops improving.
 """
-function _initialise_feasible!(n::AbstractVector{T}, prob::OptimaProblem{T}, ::Canonicalizer{T}) where {T}
-    ew = prob.A * n .- prob.b
-    # Solve A Aᵀ Δy = ew  →  Δn = -Aᵀ Δy  (minimum-norm correction).
-    # Tikhonov regularization (same as in compute_step!): when some
-    # conservation rows involve only absent species (e.g. Na⁺ row at V=0),
-    # the corresponding diagonal of A Aᵀ is near zero and the solve diverges.
+function _initialise_feasible!(
+        n::AbstractVector{T}, prob::OptimaProblem{T}, ::Canonicalizer{T};
+        maxit::Int = 100, tol::T = T(1.0e-12),
+    ) where {T}
+    # `A Aᵀ` is formed once: the projection is the same operator every round.
+    # Tikhonov regularization covers the rows that involve only absent species
+    # (a Na⁺ row on a sodium-free budget), whose diagonal is otherwise zero.
     AAT = prob.A * prob.A'
     diag_max = one(T)
     @inbounds for i in axes(AAT, 1)
         diag_max = max(diag_max, AAT[i, i])
     end
-    δ_reg = diag_max * T(1.0e-14)
     @inbounds for i in axes(AAT, 1)
-        AAT[i, i] += δ_reg
+        AAT[i, i] += diag_max * T(1.0e-14)
     end
-    Δy = AAT \ ew
-    n .-= prob.A' * Δy
-    # Re-clamp
-    @inbounds for i in eachindex(n)
-        n[i] = max(n[i], prob.lb[i] + eps(T))
+    F = LinearAlgebra.cholesky(LinearAlgebra.Symmetric(AAT); check = false)
+    solve_aat = LinearAlgebra.issuccess(F) ? (r -> F \ r) : (r -> AAT \ r)
+
+    prev = T(Inf)
+    for _ in 1:maxit
+        ew = prob.A * n .- prob.b
+        res = maximum(abs, ew)
+        res <= tol && break
+        res > prev * T(0.999) && break        # stalled: the sets barely overlap here
+        prev = res
+        n .-= prob.A' * solve_aat(ew)
+        @inbounds for i in eachindex(n)
+            n[i] = max(n[i], prob.lb[i] + eps(T))
+        end
     end
     return n
 end

@@ -42,7 +42,11 @@ end
     A = Float64[1 1]
     b = [1.0]
 
-    prob = DualNewtonProblem(A, g, h; idx_log = [1, 2], idx_bounded = Int[], j_ref = 2)
+    prob = DualNewtonProblem(
+        A, g, h;
+        phases = [SolutionPhase([1, 2], 2; always_present = true)],
+        idx_bounded = Int[],
+    )
     res = dual_newton_solve(prob, b, [0.5, 0.5])
 
     x1 = 1 / (1 + exp(g[1] - g[2]))
@@ -65,14 +69,129 @@ end
 
 end
 
-@testset "an empty set of interior variables is refused" begin
+@testset "a variable cannot be in two places at once" begin
+
+    h(x, _) = log.(max.(x, 1.0e-300))
+    # A variable in two phases, and a variable both in a phase and bounded, are
+    # both contradictions: the first has two mixing contexts, the second is asked
+    # to be interior and to be allowed to vanish.
+    @test_throws ArgumentError DualNewtonProblem(
+        Float64[1 1 1], zeros(3), h;
+        phases = [SolutionPhase([1, 2], 1), SolutionPhase([2, 3], 1)],
+    )
+    @test_throws ArgumentError DualNewtonProblem(
+        Float64[1 1 1], zeros(3), h;
+        phases = [SolutionPhase([1, 2], 1)], idx_bounded = [2],
+    )
+    # And `j_ref` must point inside the phase.
+    @test_throws ArgumentError DualNewtonProblem(
+        Float64[1 1], zeros(2), h; phases = [SolutionPhase([1, 2], 3)],
+    )
+
+end
+
+@testset "an empty set of mixing phases is refused" begin
 
     # The multipliers are determined by the stationarity of the strictly positive
     # variables. With none, nothing determines them, and saying so beats
     # returning a number.
     @test_throws ArgumentError DualNewtonProblem(
         Float64[1 1], [0.0, 1.0], (x, _) -> log.(x);
-        idx_log = Int[], idx_bounded = [1, 2],
+        phases = SolutionPhase[], idx_bounded = [1, 2],
     )
+
+end
+
+@testset "a mixing phase is admitted by the tangent plane, not by a sign" begin
+
+    # Two variables that mix ideally, and one bound-constrained variable that
+    # does not. The mixing pair obeys `hᵢ = ln(xᵢ/N)`; the third has `h ≡ 0` and
+    # is either present at its stationarity or exactly zero.
+    #
+    # The distinction the solver has to make: a member of the mixing phase is
+    # never exactly absent while the phase exists, so no saturation index decides
+    # it — only the phase as a whole is admitted or not, on Michelsen's measure
+    # `Σᵢ exp(uᵢ − gᵢ) > 1`.
+    g = [0.0, 1.0, 5.0]
+    function h(x, _)
+        N = x[1] + x[2]
+        return [
+            log(max(x[1], 1.0e-300) / max(N, 1.0e-300)),
+            log(max(x[2], 1.0e-300) / max(N, 1.0e-300)), 0.0,
+        ]
+    end
+    A = Float64[1 1 1]
+    b = [1.0]
+
+    prob = DualNewtonProblem(
+        A, g, h;
+        phases = [SolutionPhase([1, 2], 2; always_present = true)],
+        idx_bounded = [3],
+    )
+    res = dual_newton_solve(prob, b, [0.5, 0.5, 1.0e-9])
+    cert = kkt_certificate(prob, res.x, b)
+
+    @test cert.optimal
+    @test cert.feasibility < 1.0e-9
+
+    # `g₃ = 5` is far above the potential the mixture settles at, so the
+    # bound-constrained variable must stay out — and it is the ONLY variable that
+    # can be exactly zero.
+    @test res.x[3] < 1.0e-8
+    @test res.x[1] > 0 && res.x[2] > 0
+
+    # The mixture itself follows the ideal law `x₁/x₂ = exp(g₂ − g₁)`.
+    @test res.x[1] / res.x[2] ≈ exp(g[2] - g[1]) rtol = 1.0e-6
+
+end
+
+@testset "a second mixing phase is admitted only when it is stable" begin
+
+    # Two mixing phases sharing one component: the first always present, the
+    # second — a solid solution — admitted or not by the tangent-plane measure
+    # `Σᵢ exp(uᵢ − gᵢ) > 1` over ITS members. A saturation index cannot decide
+    # this: the phase has no single one, and its members are never exactly absent
+    # while it exists.
+    function h2(x, _)
+        NA = x[1] + x[2]
+        NB = x[3] + x[4]
+        return [
+            log(max(x[1], 1.0e-300) / max(NA, 1.0e-300)),
+            log(max(x[2], 1.0e-300) / max(NA, 1.0e-300)),
+            log(max(x[3], 1.0e-300) / max(NB, 1.0e-300)),
+            log(max(x[4], 1.0e-300) / max(NB, 1.0e-300)),
+        ]
+    end
+    A2 = Float64[1 1 1 1]
+    b2 = [1.0]
+    phases(alwaysB) = [
+        SolutionPhase([1, 2], 2; always_present = true),
+        SolutionPhase([3, 4], 1; always_present = alwaysB),
+    ]
+
+    # The first phase settles at `u = −ln(e^{-g₁} + e^{-g₂}) = −ln(1 + e^{-1})`.
+    u_A = -log(1 + exp(-1.0))
+
+    # Members far ABOVE that potential: the second phase cannot form.
+    prob_out = DualNewtonProblem(
+        A2, [0.0, 1.0, 8.0, 9.0], h2; phases = phases(false), idx_bounded = Int[],
+    )
+    r_out = dual_newton_solve(prob_out, b2, [0.5, 0.5, 1.0e-9, 1.0e-9])
+    @test kkt_certificate(prob_out, r_out.x, b2).optimal
+    @test r_out.x[3] + r_out.x[4] < 1.0e-6
+    @test r_out.x[1] / r_out.x[2] ≈ exp(1.0) rtol = 1.0e-6
+
+    # Members far BELOW it: the tangent-plane measure is positive and the phase
+    # must be ADMITTED. What the two phases then settle at is a different
+    # question — with a single component the phase rule leaves them no room to
+    # coexist, so one of them must empty — and the assertion here is about the
+    # admission, which is what the criterion decides.
+    prob_in = DualNewtonProblem(
+        A2, [0.0, 1.0, -8.0, -9.0], h2; phases = phases(false), idx_bounded = Int[],
+    )
+    r_in = dual_newton_solve(prob_in, b2, [0.5, 0.5, 1.0e-9, 1.0e-9])
+    @test 2 in r_in.active_phases
+    @test r_in.x[3] + r_in.x[4] > r_out.x[3] + r_out.x[4]
+    @test u_A < 0                       # the reference potential, for the record
 
 end

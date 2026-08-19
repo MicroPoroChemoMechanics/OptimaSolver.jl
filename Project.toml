@@ -1,6 +1,6 @@
 name = "OptimaSolver"
 uuid = "24efeca9-a785-406e-adb3-83609348bee7"
-version = "0.3.0"
+version = "0.4.0"
 authors = ["Jean-François Barthélémy <jean-francois.barthelemy@cerema.fr>"]
 
 [deps]

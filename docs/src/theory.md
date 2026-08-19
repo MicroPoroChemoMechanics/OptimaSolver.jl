@@ -349,6 +349,51 @@ conditions hold exactly.
 Such a variable is declared through `j_ref` and carried by the outer system,
 where the equality constraints determine it.
 
+### Phases with no solvent
+
+The paragraph above is written for a phase that *has* a solvent. A solid
+solution has none: **every** member is a mole fraction, so every `h_i` is bounded
+above by zero, and the argument that singled out one variable now applies to all
+of them at once. Inverting `h_i = u_i - g_i` member by member is then impossible
+whenever the right-hand side is positive, and an iteration that tries answers by
+sending the member's amount to infinity.
+
+Fixing the reference's amount and inverting the others does not repair it. With
+`x_\text{ref}` held and ideal mixing, the fixed point gives
+``x_i = \Sigma\,e^{u_i-g_i}`` with ``\Sigma = x_\text{ref} + \sum_{i\neq\text{ref}} x_i``,
+hence
+
+```math
+\Sigma = \frac{x_\text{ref}}{1 - S},
+\qquad S = \sum_{i \neq \text{ref}} e^{u_i - g_i},
+```
+
+which has **no positive solution once ``S \ge 1``** — precisely the situation in
+which the phase is supersaturated at the current `y` and the reference cannot
+hold it back. Measured on a cement, the four C-S-H end-members all ran to the
+clamp at ``e^{20} = 4.85\times10^{8}`` mol, and the outer Jacobian was then
+computed on that.
+
+What the potentials *do* determine, always, is the **composition**. Stationarity
+of every member gives ``x_i/N = e^{u_i - g_i - \ln\gamma_i}``, so
+
+```math
+\frac{x_i}{N} = \operatorname{softmax}_i\bigl(u_i - g_i - \ln\gamma_i\bigr),
+\qquad
+\underbrace{\log\!\sum_i e^{\,u_i - g_i - \ln\gamma_i}}_{\text{the phase equation}} = 0 ,
+```
+
+with the phase total `N` as the outer unknown. Both are evaluated with the
+maximum factored out, so nothing overflows for any `y`. The phase equation is
+the same expression as the tangent-plane measure below, which is what one would
+want: a phase is admitted and held stationary by one quantity, not by two that
+could disagree.
+
+`SolutionPhase` carries this as `mole_fraction`. It must stay `false` for an
+aqueous phase: there the solutes' activities are molalities, unbounded above,
+and their dependence on `u` is exactly what determines the multipliers — remove
+it and `y` is barely determined at all.
+
 ### Degenerate components
 
 A row `k` with ``b_k = 0`` need not be degenerate. With ``x \ge 0``,
@@ -384,6 +429,29 @@ batch instead feeds a cycle in which a variable is admitted, driven negative,
 dropped, and readmitted — observed on a cement without limestone as a solve
 converged to `2e-12` of the *wrong* subproblem, with an excluded variable
 violated by 10.9.
+
+### Exchange, not rejection
+
+An admission that fails to converge is not evidence against the variable
+admitted. The inner Newton stops the moment an active variable falls below its
+bound, and that is the *departing* variable announcing itself: the entrant stays,
+the drop list removes the other, and the two together are the active-set
+exchange.
+
+Reading that failure as the entrant's fault is what an earlier version did, and
+the consequence was silent. On a cement, ettringite and monosulphate compete for
+the same sulfate, so admitting one necessarily drives the other out; rejecting
+ettringite permanently let the solve converge — to `2e-12` stationarity and
+`5e-12` element balance — onto an assemblage in which ettringite was **absent and
+supersaturated by 14.8**. Only the certificate caught it.
+
+The entrant is reconsidered only when the Newton failed with *nothing* leaving,
+which is the genuine over-determination this guard was written for: two bound
+variables declared stationary whose formulas are dependent modulo the mixing
+phases, where the residual cannot reach zero at all. Even then the veto lasts
+only as long as the context that produced it, and a vetoed variable that is still
+supersaturated prevents the run from being reported as converged — the candidate
+list is filtered, the KKT conditions are not.
 
 ### The certificate
 
@@ -467,6 +535,36 @@ The LU factorization of $B$ is cached and reused across Newton steps, reducing
 each back-substitution to $O(m^2)$ rather than $O(m^3)$.
 When $A$ is fixed across a sequence of solves (e.g. a temperature scan), pass
 the pre-built `Canonicalizer` to `solve` to skip the QR entirely.
+
+The basis is chosen on a **column-equilibrated** copy, and that is not a
+refinement. ``\operatorname{rank}(A\,\mathrm{diag}(s)) = \operatorname{rank}(A)``
+for any positive `s`, so scaling cannot change which columns are independent —
+but the pivoted-QR rank test compares each pivot to the *largest* one, and the
+SciML interface scales columns by each variable's starting value. Warm-starting
+from a converged equilibrium spreads those over some ten orders of magnitude, a
+trace ion sitting near `1e-16` against a solvent of order one, and the smallest
+honest pivot then falls below the tolerance. The rank came out one short, `B` was
+built with `m-1` columns, and the failure surfaced as a "matrix is not square"
+error from LAPACK. Equilibrating first makes the test scale-invariant, which is
+what it was always meant to be. A genuinely rank-deficient `A` — a conservation
+law that is a combination of the others — is now reported as such instead of
+being discovered inside a factorization.
+
+## Feasibility of the starting point
+
+The barrier method is started from a point projected onto
+``\{A n = b,\; n \ge \ell\}``. One minimum-norm correction
+``\Delta n = -A^\mathsf{T}(AA^\mathsf{T})^{-1}(An-b)`` lands on the affine set but
+not in the box, and the clamp that follows puts the point straight back off the
+affine set.
+
+That is not a detail. On a cement most candidate species sit at their lower
+bound, so the clamp restores a large amount of matter: the starting point came
+out with ``\|An-b\|_\infty = 0.29`` on a budget whose largest entry is 3.3, and
+the whole iteration budget was then spent chasing a feasibility it never reached.
+Both sets are convex and their intersection is non-empty whenever the budget is
+attainable, so the two projections are **alternated** until the residual is small
+or stops improving.
 
 ## Fraction-to-boundary step limit
 

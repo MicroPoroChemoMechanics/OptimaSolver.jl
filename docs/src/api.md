@@ -36,6 +36,7 @@ Newton on the KKT conditions, and the proof that a point is optimal. Derived in
 [Newton on the KKT system in multiplier space](@ref).
 
 ```@docs
+SolutionPhase
 DualNewtonProblem
 DualNewtonOptions
 dual_newton_solve

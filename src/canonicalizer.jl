@@ -56,15 +56,47 @@ function Canonicalizer(A::AbstractMatrix{T}; tol::Float64 = 1.0e-12) where {T <:
     m, ns = size(A)
     @assert m <= ns "A must have more columns than rows (m=$m, ns=$ns)"
 
-    # QR with column pivoting to identify linearly independent columns
-    F = LinearAlgebra.qr(A, LinearAlgebra.ColumnNorm())
-    Q = F.p                           # column permutation
-    R_qr = F.R
+    # The basis is chosen on a COLUMN-EQUILIBRATED copy, and this is not a
+    # refinement — without it the factorization is wrong on exactly the problems
+    # it is needed for.
+    #
+    # `rank(A * diag(s)) = rank(A)` for any positive `s`, so scaling cannot
+    # change which columns are independent. The pivoted-QR rank test, however,
+    # compares each pivot to the LARGEST one, and the caller scales columns by
+    # the starting value of each variable. Warm-starting from a converged
+    # equilibrium makes that span some ten orders of magnitude — a trace ion sits
+    # at its bound near 1e-16 while the solvent is O(1) — and the smallest honest
+    # pivot then falls below `tol` times the largest. The rank came out one short,
+    # `B = A[:, jb]` was built with m-1 columns, and the LU solve failed with a
+    # "matrix is not square" deep inside LAPACK.
+    #
+    # Equilibrating first makes the test scale-invariant, which is what it was
+    # always meant to be.
+    colnorm = [LinearAlgebra.norm(@view A[:, j]) for j in 1:ns]
+    Aeq = similar(Matrix{T}(A))
+    @inbounds for j in 1:ns
+        c = colnorm[j] > 0 ? colnorm[j] : one(T)
+        Aeq[:, j] .= @view(A[:, j]) ./ c
+    end
 
-    # Determine rank from diagonal of R
-    diag_R = abs.(diag(R_qr))
+    F = LinearAlgebra.qr(Aeq, LinearAlgebra.ColumnNorm())
+    Q = F.p
+    diag_R = abs.(diag(F.R))
     rank_A = count(d -> d > tol * diag_R[1], diag_R)
     rank_A = max(rank_A, 1)
+
+    # A genuinely rank-deficient A means a conservation law that is a combination
+    # of the others. It is not an error in itself — the primal solution is
+    # unaffected and the multipliers are simply not unique — but every downstream
+    # step here assumes a square basic block, so say so plainly instead of
+    # failing later inside a factorization.
+    rank_A < m && throw(
+        ArgumentError(
+            "the conservation matrix has rank $rank_A for $m rows: $(m - rank_A) " *
+                "constraint(s) are linear combinations of the others. Remove the " *
+                "redundant rows (and the matching entries of b) before solving.",
+        ),
+    )
 
     jb = sort(Q[1:rank_A])           # basic variable indices (sorted for stability)
     jn = sort(setdiff(1:ns, jb))     # non-basic variable indices

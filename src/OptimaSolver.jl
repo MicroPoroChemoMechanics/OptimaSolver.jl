@@ -60,7 +60,7 @@ export SensitivityResult, sensitivity
 export OptimaOptimizer, reset_cache!, solve
 
 # Internal components (exported for testing and extension)
-export DualNewtonProblem, DualNewtonOptions, dual_newton_solve,
+export SolutionPhase, DualNewtonProblem, DualNewtonOptions, dual_newton_solve,
     kkt_certificate, degenerate_components,
     KKTResidual, kkt_residual, hessian_diagonal, gibbs_hessian_diag
 export NewtonStep, compute_step!, compute_step_nullspace!, clamp_step

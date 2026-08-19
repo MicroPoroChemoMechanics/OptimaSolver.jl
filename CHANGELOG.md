@@ -1,5 +1,82 @@
 # Changelog
 
+## v0.4.0 — mixing phases that cannot run away, and an active set that exchanges
+
+### Breaking changes
+
+One new exported name, `SolutionPhase`, and a new keyword `mole_fraction` on it.
+Nothing was removed or renamed and no existing signature changed, but below 1.0
+the resolver treats a minor bump as breaking regardless, so a downstream
+`[compat] OptimaSolver = "0.3"` must be widened to `"0.4"`.
+
+### A solid solution could not be solved at all, and said so by diverging
+
+`dual_newton_solve` recovered every non-reference member of a mixing phase from
+its own stationarity, `hᵢ = uᵢ − gᵢ`. That is right for an aqueous solution,
+where the solutes carry molalities and `hᵢ` is unbounded above. It is impossible
+for a solid solution: there every member is a mole fraction, every `hᵢ` is
+bounded above by zero, and a positive right-hand side simply cannot be met. The
+iteration answered by growing the member without bound and stopped only at the
+internal clamp — `exp(20) = 4.85e8` mol of C-S-H, with the outer Jacobian then
+computed on that.
+
+Fixing the reference's amount and inverting the rest does not repair it either:
+the phase total works out to `x_ref / (1 − S)` with `S = Σ_{i≠ref} exp(uᵢ − gᵢ)`,
+which has no positive solution once `S ≥ 1` — exactly when the phase is
+supersaturated at the current multipliers.
+
+What the potentials do determine, for any `y`, is the *composition*. A phase
+declared `mole_fraction = true` is now recovered as
+`xᵢ = N · softmax(uᵢ − gᵢ − ln γᵢ)` with the phase total `N` as the outer
+unknown, and its outer equation is `logsumexp(uᵢ − gᵢ − ln γᵢ) = 0`. Both are
+evaluated with the maximum factored out, so nothing overflows. The phase equation
+is now the same expression as the tangent-plane admission test, so a phase is
+admitted and held stationary by one quantity rather than two that could disagree.
+
+### An active set that rejected the variable it should have exchanged
+
+An admission that failed to converge was undone by rejecting the entrant
+permanently. That reads the failure backwards. The inner Newton stops the moment
+an active variable falls below its bound — that is the *departing* variable
+announcing itself, and letting the ordinary drop path remove it while the entrant
+stays is the exchange an active-set method is supposed to perform.
+
+On a cement, ettringite and monosulphate compete for the same sulfate, so
+admitting one necessarily drives the other out. Rejecting ettringite let the
+solve converge — to `2e-12` stationarity and `5e-12` element balance — onto an
+assemblage in which ettringite was **absent and supersaturated by 14.8**. Only
+the certificate caught it, and nothing in the run said so.
+
+The entrant is now reconsidered only when the Newton failed with *nothing*
+leaving, which is the genuine over-determination the guard was written for. A
+veto lasts only as long as the active set that produced it, and a vetoed variable
+that is still supersaturated prevents the run from being reported as converged:
+the candidate list is filtered, the KKT conditions are not.
+
+### The rank test was not scale-invariant
+
+`Canonicalizer` chose its basis from a pivoted QR of `A` as handed to it, and the
+SciML interface hands it `A · diag(s)` with `s` the starting value of each
+variable. Warm-starting from a converged equilibrium spreads those over some ten
+orders of magnitude, and the pivoted-QR test — which compares each pivot to the
+largest — then lost a rank it should not have: `B` was built with `m−1` columns
+and the run died inside LAPACK with "matrix is not square".
+
+`rank(A · diag(s)) = rank(A)` for any positive `s`, so the basis is now chosen on
+a column-equilibrated copy. A genuinely rank-deficient conservation matrix is
+reported as such, naming the redundant constraints, instead of surfacing as a
+factorization error.
+
+### Feasibility of the starting point was undone by its own clamp
+
+The starting point was projected onto `A n = b` by a single minimum-norm
+correction and then clamped to the bounds, which puts it straight back off the
+affine set. With most candidate species at their lower bound the clamp restores a
+large amount of matter: on a cement the starting point carried
+`‖An − b‖∞ = 0.29` against a budget whose largest entry is 3.3, and the barrier
+iterations spent themselves chasing a feasibility they never reached. Both sets
+are convex, so the two projections are now alternated.
+
 ## v0.3.0 — a KKT solver that proves its answer
 
 ### Breaking changes
