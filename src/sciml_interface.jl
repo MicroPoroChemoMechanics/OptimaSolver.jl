@@ -46,7 +46,9 @@ function OptimaOptimizer(;
         warm_start::Bool = true,
         barrier_init::Float64 = 1.0e-4,
         barrier_min::Float64 = 1.0e-14,
-        barrier_decay::Float64 = 0.1,
+        barrier_decay::Float64 = 0.2,
+        barrier_eps_factor::Float64 = 1.0,
+        barrier_stall_iters::Int = 8,
         ls_alpha::Float64 = 1.0e-4,
         ls_beta::Float64 = 0.5,
         ls_max_iter::Int = 40,
@@ -66,7 +68,8 @@ function OptimaOptimizer(;
     )
     opts = OptimaOptions(;
         tol, max_iter, warm_start,
-        barrier_init, barrier_min, barrier_decay,
+        barrier_init, barrier_min, barrier_decay, barrier_eps_factor,
+        barrier_stall_iters,
         ls_alpha, ls_beta, ls_max_iter, verbose, use_fd_hessian,
         nullspace_step,
     )

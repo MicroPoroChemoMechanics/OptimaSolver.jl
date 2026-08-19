@@ -55,21 +55,83 @@ function solve!(
     y = state.y
     μ = state.μ
 
-    # ── Feasibility initialization (ensure An ≈ b) ───────────────────────────
-    # If the initial n is badly infeasible, project it: add a feasibility step.
+    # ── Feasibility initialization (ensure An = b, n ≥ lb) ───────────────────
+    #
+    # Positivity FIRST, then feasibility. The reverse order — which is what this
+    # did — has the clamp undo the projection it just performed, and on a system
+    # where most candidate species sit at their bound the clamp restores enough
+    # matter to leave the start visibly infeasible. `_initialise_feasible!` solves
+    # for the basic amounts given the others, so it is exact and there is nothing
+    # left to clamp afterwards.
+    @inbounds for i in eachindex(n)
+        n[i] = max(n[i], prob.lb[i] + eps(T))
+    end
     ew0 = prob.A * n .- prob.b
     if maximum(abs, ew0) > sqrt(opts.tol)
         _initialise_feasible!(n, prob, can)
-    end
-    # Enforce strict positivity
-    @inbounds for i in eachindex(n)
-        n[i] = max(n[i], prob.lb[i] + eps(T))
+        opts.verbose && println(
+            "  start | ‖An-b‖ ", _fmt_sci(maximum(abs, ew0)), " -> ",
+            _fmt_sci(maximum(abs, prob.A * n .- prob.b)),
+        )
     end
 
     state.iter = 0
 
+    # The BEST iterate seen, not the last one, is what gets returned.
+    #
+    # `is_converged` rarely fires on a cement, so the solver's answer is whichever
+    # point the iteration budget happened to end on — and that point can be far
+    # worse than one it passed through. Measured on an LC³ equilibrium the run
+    # reached `err_opt = 1.4e-4` with the element balance at 2.7e-15, then
+    # destabilized while `μ` was tightened further and finished at `err_opt = 2.3`
+    # with the balance at 8.8e-9. Returning the last point throws away the answer
+    # in favor of a worse one, and the caller — a warm start, or a certificate —
+    # has no way to know.
+    n_best = copy(n)
+    y_best = copy(y)
+    err_best = T(Inf)
+    μ_best = μ
+
+    function _keep_best!(kkt, μ_now)
+        if kkt.error < err_best
+            err_best = T(kkt.error)
+            n_best .= n
+            y_best .= y
+            μ_best = μ_now
+        end
+        return nothing
+    end
+
     # ── Outer loop: barrier reduction ─────────────────────────────────────────
     for _ in 1:opts.max_iter
+        # The barrier subproblem does not have to be solved, only advanced. If it
+        # stops advancing, reducing μ is what unlocks it — and refusing to is a
+        # deadlock, not caution.
+        #
+        # The fraction-to-boundary rule caps each step at roughly `s/|δn|`, so a
+        # phase on its way out approaches its bound geometrically and the error
+        # settles a little ABOVE `κ_ε μ` without crossing it. Measured on an LC³
+        # equilibrium the error then drifted upward — 3.17e-4 to 3.36e-4 over a
+        # hundred iterations — with `μ` frozen at 1e-5 and `α` shrinking, and the
+        # solve stopped on `MaxIters` having tightened nothing. Ipopt requires
+        # only `E_μ ≤ κ_ε μ` before reducing; a subproblem that has stalled well
+        # short of that has nothing more to give at this `μ`.
+        # The best iterate is tracked WITHIN a barrier level, never across them.
+        #
+        # `err_opt` is the complementarity measure `max |sᵢ gᵢ − μ|`, which is a
+        # function of `μ`: an early point at `μ = 1e-4` can carry a smaller number
+        # than a far better one at `μ = 1e-10`, simply because the target it is
+        # measured against is looser. Comparing across levels therefore hands back
+        # a point from the beginning of the run — on calcite in pure water it
+        # returned the lifted starting guess, portlandite still sitting at 4.8e-6,
+        # and the dual solve that warm-started from it admitted portlandite as a
+        # phase and diverged.
+        best_err = T(Inf)
+        n_best .= n
+        y_best .= y
+        μ_best = μ
+        stalled = 0
+
         # ── Inner loop: Newton iterations for fixed μ ─────────────────────────
         for _ in 1:opts.max_iter
             state.iter += 1
@@ -81,6 +143,7 @@ function solve!(
             kkt = kkt_residual(prob, n, y, grad, μ)
             state.error_opt = kkt.error_opt
             state.error_feas = kkt.error_feas
+            _keep_best!(kkt, μ)
 
             # Global convergence check
             if is_converged(kkt, opts)
@@ -95,6 +158,15 @@ function solve!(
             # Inner convergence: ready to reduce μ
             if should_reduce_barrier(kkt, μ, opts)
                 break
+            end
+
+            # …or the subproblem has stopped advancing at this μ.
+            if kkt.error < best_err * (one(T) - T(1.0e-3))
+                best_err = kkt.error
+                stalled = 0
+            else
+                stalled += 1
+                stalled >= opts.barrier_stall_iters && break
             end
 
             # Hessian diagonal of f(n) — diagonal of ∂²f/∂n².
@@ -152,7 +224,10 @@ function solve!(
                 add_to_filter!(filter, T(θ_new), T(real(f_new)))
             end
 
-            log_iteration(state.iter, μ, kkt, α; verbose = opts.verbose)
+            log_iteration(
+                state.iter, μ, kkt, α;
+                verbose = opts.verbose, α_max = α_max, dn = dn, dy = dy,
+            )
 
             # If the line search returned a negligible step, the Newton direction
             # gives no progress at this barrier level — break to force barrier
@@ -165,9 +240,25 @@ function solve!(
             y .= y_new
 
             if state.iter >= opts.max_iter
+                # The best iterate replaces the last one only when it is
+                # MATERIALLY better. This safeguard exists for the run that
+                # destabilizes — on an LC³ equilibrium the error reached 1.4e-4
+                # and finished at 2.3, four orders worse — not to second-guess a
+                # healthy solve, where best and last differ by rounding and
+                # swapping them costs the caller the last few digits it earned.
+                if err_best < T(0.1) * kkt.error
+                    n .= n_best
+                    y .= y_best
+                    μ = μ_best
+                end
                 state.n .= n
                 state.y .= y
                 state.μ = μ
+                eval_gradient!(grad, prob, n)
+                kkt_f = kkt_residual(prob, n, y, grad, μ)
+                state.error_opt = kkt_f.error_opt
+                state.error_feas = kkt_f.error_feas
+                state.converged = is_converged(kkt_f, opts)
                 log_final(state, opts)
                 return state
             end
@@ -181,9 +272,17 @@ function solve!(
         end
     end  # outer
 
-    # Final check
+    # Final check. The best iterate replaces the last one only when it is
+    # materially better — see the note at the max-iteration exit above.
     eval_gradient!(grad, prob, n)
     kkt = kkt_residual(prob, n, y, grad, μ)
+    if err_best < T(0.1) * kkt.error
+        n .= n_best
+        y .= y_best
+        μ = μ_best
+        eval_gradient!(grad, prob, n)
+        kkt = kkt_residual(prob, n, y, grad, μ)
+    end
     state.error_opt = kkt.error_opt
     state.error_feas = kkt.error_feas
     state.converged = is_converged(kkt, opts)
@@ -294,29 +393,265 @@ function _default_initial_n(prob::OptimaProblem{T}) where {T}
 end
 
 """
+    _nnls(E, f; tol) -> v
+
+Lawson-Hanson non-negative least squares: `min ‖E v − f‖₂` subject to `v ≥ 0`.
+
+Used to place the starting point exactly on `A n = b` with `n ≥ lb`. When such a
+point exists the residual is zero, so this does not approximate feasibility, it
+attains it — and it terminates finitely, because each outer round adds one index
+to the passive set and the inner loop only ever releases indices that reached
+zero.
+
+Alternating projections onto the affine set and the box converge to the same place
+in theory, and far too slowly here to be usable: on an LC³ equilibrium they went
+from `‖An − b‖ = 0.86` to `6.8e-3` and then advanced by less than a tenth of a
+percent per sweep. The solve that followed never left its starting point.
+"""
+function _nnls(E::AbstractMatrix{T}, f::AbstractVector{T}; tol::T = T(1.0e-13)) where {T}
+    n = size(E, 2)
+    v = zeros(T, n)
+    passive = falses(n)
+    w = E' * f
+    for _ in 1:(4 * n)
+        # Most promising index still held at zero.
+        jbest, wbest = 0, tol
+        @inbounds for j in 1:n
+            if !passive[j] && w[j] > wbest
+                jbest, wbest = j, w[j]
+            end
+        end
+        jbest == 0 && break
+        passive[jbest] = true
+
+        for _ in 1:(4 * n)
+            P = findall(passive)
+            isempty(P) && break
+            z = LinearAlgebra.qr(E[:, P], LinearAlgebra.ColumnNorm()) \ f
+            if all(>(zero(T)), z)
+                fill!(v, zero(T))
+                @inbounds for (k, j) in enumerate(P)
+                    v[j] = z[k]
+                end
+                break
+            end
+            # Fraction-to-zero along v → z, then release whatever reached zero.
+            α = T(Inf)
+            @inbounds for (k, j) in enumerate(P)
+                if z[k] <= zero(T)
+                    d = v[j] - z[k]
+                    d > zero(T) && (α = min(α, v[j] / d))
+                end
+            end
+            isfinite(α) || (α = zero(T))
+            @inbounds for (k, j) in enumerate(P)
+                v[j] += α * (z[k] - v[j])
+            end
+            released = false
+            @inbounds for j in P
+                if v[j] <= tol
+                    v[j] = zero(T)
+                    passive[j] = false
+                    released = true
+                end
+            end
+            released || break
+        end
+        w = E' * (f .- E * v)
+    end
+    return v
+end
+
+"""
     _initialise_feasible!(n, prob, can; maxit=100, tol=1e-12)
 
-Project `n` onto `{A n = b, n ≥ lb}` by alternating projections.
+Make `n` satisfy `A n = b` with `n ≥ lb`, exactly if possible.
 
-A single minimum-norm correction `Δn = −Aᵀ(AAᵀ)⁻¹(An − b)` lands on the affine
-set but not in the box, and the clamp that follows it puts the point straight
-back off the affine set. That is not a detail. On a cement most candidate species
-sit at their lower bound, so the clamp restores a large amount of matter: the
-starting point came out with `‖An − b‖ = 0.29` on a budget whose largest entry is
-3.3, the barrier method then spent its whole iteration budget chasing feasibility
-it never reached, and every solver warm-started from it inherited the error.
+The basic/non-basic split is used first, which is how Optima does it and is the
+only route that gives EXACT feasibility: hold the non-basic variables where they
+are and solve `B n_b = b − N n_n` for the basic ones. `B` is square and
+factorized already, so this is one triangular solve, and the residual it leaves
+is machine precision rather than an iteration's worth. It works because the basis
+is chosen by priority weight — the abundant species — so the budget it is asked to
+absorb is small against what it holds.
 
-Both sets are convex and their intersection is non-empty whenever the budget is
-attainable, so alternating the two projections converges to a point in it. The
-loop stops when the residual is small or stops improving.
+Why exactness matters, and not marginally. The filter line search only bypasses
+its filter when the current point is feasible; while it is not, acceptance needs
+either a relative drop of `ls_alpha` in the constraint violation — impossible when
+the fraction-to-boundary limit is already below `ls_alpha` — or an Armijo decrease
+along a direction that is partly spent restoring feasibility and need not be a
+descent direction at all. Measured on an LC³ equilibrium, the start carried
+`‖An − b‖∞ = 6.8e-3`, every one of the forty trial steps was refused, and the
+solve reported `MaxIters` on the point it started from. Once the start is
+feasible the null-space step keeps `A dn = 0`, so feasibility is preserved for the
+rest of the solve and never competes with optimality for the same step length.
+
+If a basic amount comes out below its bound the split is abandoned and the point
+is projected by alternating projections onto `{A n = b}` and `{n ≥ lb}`. Both sets
+are convex and their intersection is non-empty whenever the budget is attainable,
+so the alternation converges; it is slower and only approximate, which is why it
+is the fallback and not the method.
 """
 function _initialise_feasible!(
-        n::AbstractVector{T}, prob::OptimaProblem{T}, ::Canonicalizer{T};
+        n::AbstractVector{T}, prob::OptimaProblem{T}, can::Canonicalizer{T};
         maxit::Int = 100, tol::T = T(1.0e-12),
     ) where {T}
-    # `A Aᵀ` is formed once: the projection is the same operator every round.
-    # Tikhonov regularization covers the rows that involve only absent species
-    # (a Na⁺ row on a sodium-free budget), whose diagonal is otherwise zero.
+    jb, jn = can.jb, can.jn
+    scale0 = max(one(T), maximum(abs, prob.b))
+
+    # ── least disturbance first ──────────────────────────────────────────────
+    #
+    # The minimum-norm correction is the smallest change that reaches the affine
+    # set, and for a caller replaying a trajectory that is the whole purpose of
+    # handing over a guess. The routes below instead find *some* feasible point,
+    # which is what a cold start needs and precisely what a warm start must not be
+    # given: rebuilding the point destroys the correlation between neighboring
+    # solves. So the alternating projection is tried FIRST, whatever the starting
+    # residual, and the routes below are reached only when it does not get there:
+    # they answer "find some feasible point", which is the cold-start question,
+    # and giving that answer to a caller who supplied a good guess throws the
+    # guess away.
+    AAT0 = prob.A * prob.A'
+    dmax = one(T)
+    @inbounds for i in axes(AAT0, 1)
+        dmax = max(dmax, AAT0[i, i])
+    end
+    @inbounds for i in axes(AAT0, 1)
+        AAT0[i, i] += dmax * T(1.0e-14)
+    end
+    for _ in 1:50
+        ew = prob.A * n .- prob.b
+        maximum(abs, ew) <= tol && return n
+        n .-= prob.A' * (AAT0 \ ew)
+        @inbounds for i in eachindex(n)
+            n[i] = max(n[i], prob.lb[i] + eps(T))
+        end
+    end
+    maximum(abs, prob.A * n .- prob.b) <= sqrt(eps(T)) * scale0 && return n
+
+    # Strict interiority is part of the contract: this point is handed to a
+    # barrier method, and a variable sitting exactly on its bound gives `α = 0`
+    # on the first negative step component.
+    @inbounds for i in eachindex(n)
+        n[i] = max(n[i], prob.lb[i] + eps(T))
+    end
+
+    # A point that is ALREADY nearly feasible is corrected, not rebuilt.
+    #
+    # The exact routes below reconstruct the composition, which is what a cold
+    # start needs and precisely what a warm start must not get: a converged
+    # solution perturbed by a small change in `b` is the best guess available, and
+    # moving its abundant species by the whole discrepancy throws that away. Here
+    # the minimum-norm correction is the right tool — it is the smallest change
+    # that restores the constraint — and alternating it with the bound projection
+    # converges quickly when the starting residual is already small.
+    # The exact routes RECONSTRUCT the composition; the correction below merely
+    # nudges it. Which is wanted depends on whether the point carries information.
+    #
+    # A point already near the affine set is the best guess available — a
+    # converged solution perturbed by a small change in `b`, which is what every
+    # step of a kinetics run hands over — and the minimum-norm correction is by
+    # definition the smallest change that restores the constraint. Reconstructing
+    # from it instead throws the guess away: NNLS puts the budget on `rank(A)`
+    # species and leaves the rest at the barrier's own floor, which is a fine
+    # cold start and a poor warm one. Measured on the sensitivity reference, that
+    # cost three digits on the perturbed solve.
+    #
+    # So the exact routes are reserved for a point that is genuinely far off,
+    # where there is nothing to preserve and approaching feasibility is hopeless.
+    scale0 = max(one(T), maximum(abs, prob.b))
+    if maximum(abs, prob.A * n .- prob.b) < T(1.0e-2) * scale0
+        return _project_alternating!(n, prob; maxit = maxit, tol = tol)
+    end
+
+    # ── exact route: solve for the basic amounts ─────────────────────────────
+    rhs = collect(prob.b)
+    @inbounds for j in jn
+        for i in eachindex(rhs)
+            rhs[i] -= prob.A[i, j] * n[j]
+        end
+    end
+    nb = can.BLU \ rhs
+    if all(i -> nb[i] > prob.lb[jb[i]], eachindex(nb))
+        @inbounds for (i, j) in enumerate(jb)
+            n[j] = nb[i]
+        end
+        return n
+    end
+
+    # ── exact route 2: non-negative least squares on the slacks ─────────────
+    #
+    # `v = n − lb ≥ 0` with `A v = b − A·lb`. When the budget is attainable — and
+    # it is, since it came from a real composition — the NNLS residual is zero, so
+    # this lands ON the affine set rather than near it.
+    #
+    # NNLS returns a solution supported on at most `rank(A)` variables, i.e. with
+    # the others at exactly their bound and zero slack. That is unusable as a
+    # barrier start: the fraction-to-boundary rule would give `α = 0` on the first
+    # negative step component. They are therefore lifted to the slack the barrier
+    # itself would give them — at barrier level `μ` a variable held at its bound
+    # settles at `s = μ/(∇f)ᵢ`, and with chemical potentials of order 10²–10³ in
+    # RT units that is around 1e-6 for the initial `μ = 1e-4`. Lifting a hundred
+    # variables by 1e-6 adds 1e-4 mol against a budget of a few moles, and that
+    # perturbation is then removed exactly, on the support, by a minimum-norm
+    # correction — so the point stays feasible to machine precision AND strictly
+    # interior.
+    f_rhs = prob.b .- prob.A * prob.lb
+    v = _nnls(prob.A, f_rhs)
+    scale = max(one(T), maximum(abs, f_rhs))
+    if maximum(abs, prob.A * v .- f_rhs) <= sqrt(eps(T)) * scale
+        δ = T(1.0e-6) * scale
+        S = findall(>(zero(T)), v)
+        if !isempty(S)
+            lifted = zeros(T, length(v))
+            @inbounds for j in eachindex(v)
+                v[j] <= zero(T) && (lifted[j] = δ)
+            end
+            drift = prob.A * lifted
+            AS = prob.A[:, S]
+            # minimum-norm correction inside the support only
+            corr = AS' * (LinearAlgebra.qr(AS * AS', LinearAlgebra.ColumnNorm()) \ drift)
+            ok = true
+            @inbounds for (k, j) in enumerate(S)
+                v[j] - corr[k] > zero(T) || (ok = false)
+            end
+            if ok
+                @inbounds for (k, j) in enumerate(S)
+                    v[j] -= corr[k]
+                end
+                v .+= lifted
+            end
+        end
+        n .= prob.lb .+ v
+        # `lb + v` need not satisfy `n - lb > 0` in floating point: in the scaled
+        # space the caller works in, `lb` can be `1e-6` while `v` is `1e-30`, and
+        # the sum rounds to `lb` — or just below it. The barrier then takes the
+        # logarithm of a slack of `-3e-25` and the solve dies on a `DomainError`.
+        # A slack is required, not merely a non-negative amount.
+        s_floor = eps(T) * max(one(T), maximum(abs, prob.lb))
+        @inbounds for i in eachindex(n)
+            n[i] - prob.lb[i] > s_floor || (n[i] = prob.lb[i] + s_floor)
+        end
+        return n
+    end
+
+    # ── fallback: alternating projections ───────────────────────────────────
+    return _project_alternating!(n, prob; maxit = maxit, tol = tol)
+end
+
+"""
+    _project_alternating!(n, prob; maxit, tol)
+
+Alternate the projection onto `{A n = b}` with the projection onto `{n ≥ lb}`.
+
+Both sets are convex and their intersection is non-empty whenever the budget is
+attainable, so the alternation converges — linearly, and on a cement far too
+slowly to be relied on from a cold start, which is why it is reached only when the
+point is already close or when the exact routes have failed.
+"""
+function _project_alternating!(
+        n::AbstractVector{T}, prob::OptimaProblem{T}; maxit::Int, tol::T,
+    ) where {T}
     AAT = prob.A * prob.A'
     diag_max = one(T)
     @inbounds for i in axes(AAT, 1)

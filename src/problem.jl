@@ -113,7 +113,19 @@ Base.@kwdef struct OptimaOptions
     warm_start::Bool = true
     barrier_init::Float64 = 1.0e-4
     barrier_min::Float64 = 1.0e-14
-    barrier_decay::Float64 = 0.1
+    # κ_μ of Wächter & Biegler (2006), Eq. (7). Ipopt uses 0.2; 0.1 is more
+    # aggressive, and with the convergence test taken at μ = 0 it is too
+    # aggressive to converge at all — the barrier outruns the inner Newton and
+    # the error plateaus just above the tolerance. See `should_reduce_barrier`.
+    barrier_decay::Float64 = 0.2
+    # How far above μ the barrier subproblem may be left before μ is reduced.
+    # Ipopt's κ_ε (Wächter & Biegler 2006, Eq. 7) is 10, but applies to their
+    # SCALED error; ours is unscaled, so the default here is 1. See
+    # `should_reduce_barrier`.
+    barrier_eps_factor::Float64 = 1.0
+    # Consecutive inner iterations without a relative improvement of 1e-3 after
+    # which the barrier is reduced anyway. `typemax` disables the rule.
+    barrier_stall_iters::Int = 8
     ls_alpha::Float64 = 1.0e-4
     ls_beta::Float64 = 0.5
     ls_max_iter::Int = 40

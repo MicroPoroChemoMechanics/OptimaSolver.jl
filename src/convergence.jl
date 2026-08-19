@@ -23,7 +23,8 @@
 Return `true` if the KKT residual is within tolerance.
 """
 function is_converged(kkt::KKTResidual, opts::OptimaOptions)
-    return kkt.error < opts.tol
+    # Judged at μ = 0, never at the current barrier level: see `kkt_residual`.
+    return kkt.error_0 < opts.tol
 end
 
 """
@@ -36,10 +37,19 @@ so that we tighten the barrier aggressively when far from the solution and
 gently when close.
 """
 function should_reduce_barrier(kkt::KKTResidual, μ, opts::OptimaOptions)
-    # Reduce μ when the inner loop has converged to the current barrier problem.
-    # Use max(tol, μ) so that at μ = barrier_min the threshold equals tol —
-    # meaning is_converged will fire first, not this break condition.
-    inner_tol = max(opts.tol, μ)
+    # Reduce μ once the inner loop has solved the CURRENT barrier problem, i.e.
+    # when the error falls below `barrier_eps_factor · μ`. `max(tol, ·)` keeps the
+    # threshold at `tol` once `μ = barrier_min`, so `is_converged` fires first.
+    #
+    # The factor defaults to 1, NOT to Ipopt's `κ_ε = 10`, and the difference is
+    # not a matter of taste. Ipopt applies `κ_ε` to the *scaled* error `E_μ` of
+    # Wächter & Biegler (2006) Eq. (5), divided by `s_d` and `s_c`; the error here
+    # is unscaled, so carrying `κ_ε` across is not adopting their criterion but
+    # loosening ours by an unjustified factor. Measured: with 10, a warm-started
+    # replay of a calcite trajectory came back with element-balance residuals of
+    # 4.7e-8 instead of 1.4e-11, because every solve stopped one barrier level
+    # short. The keyword is exposed for a caller who does scale the error.
+    inner_tol = max(opts.tol, opts.barrier_eps_factor * μ)
     return kkt.error < inner_tol
 end
 
@@ -55,18 +65,28 @@ function reduce_barrier(μ, opts::OptimaOptions)
 end
 
 """
-    log_iteration(iter, μ, kkt, α; verbose)
+    log_iteration(iter, μ, kkt, α; verbose, α_max = nothing)
 
 Print a one-line iteration summary when `verbose = true`.
+
+`α_max` is the fraction-to-boundary limit, reported alongside the accepted step
+because the two failures it separates are indistinguishable from `α` alone: a
+step the filter refuses looks exactly like a step the bounds never allowed.
 """
-function log_iteration(iter::Int, μ, kkt::KKTResidual, α; verbose::Bool)
+function log_iteration(
+        iter::Int, μ, kkt::KKTResidual, α;
+        verbose::Bool, α_max = nothing, dn = nothing, dy = nothing,
+    )
     if verbose
         println(
             "  iter ",
             lpad(iter, 4), " | μ = ", _fmt_sci(μ),
             " | err_opt = ", _fmt_sci(kkt.error_opt),
             " | err_feas = ", _fmt_sci(kkt.error_feas),
-            " | α = ", round(α; digits = 4),
+            " | α = ", _fmt_sci(α),
+            α_max === nothing ? "" : " | α_max = " * _fmt_sci(α_max),
+            dn === nothing ? "" : " | ‖dn‖ = " * _fmt_sci(maximum(abs, dn)),
+            dy === nothing ? "" : " | ‖dy‖ = " * _fmt_sci(maximum(abs, dy)),
         )
     end
     return nothing

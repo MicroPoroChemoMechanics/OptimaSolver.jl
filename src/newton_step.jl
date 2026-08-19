@@ -255,15 +255,59 @@ function compute_step_nullspace!(
         rhs[j] = rhs[j] - ex[jn[j]]
     end
 
+    # Jacobi equilibration of the reduced Hessian, for the same reason
+    # `compute_step!` equilibrates its Schur complement — and it is not optional
+    # here either.
+    #
+    # `h` is the barrier-augmented curvature `∇²f + μ/s²`. In a chemical system
+    # the amounts span ten orders of magnitude, so `h` spans twenty and more: on
+    # a cement it ran from 2.5 on the solvent to 1e27 on a species pinned at its
+    # bound. `K` inherits that spread, its condition number goes past anything
+    # Float64 can carry, and the Cholesky then *succeeds* while returning a
+    # direction that is noise. Measured on an LC³ equilibrium, the first Newton
+    # step came out with `‖dn‖∞ = 4.5e17` and `‖dy‖∞ = 3.1e43`, the
+    # fraction-to-boundary rule cut it to `α_max = 1.4e-22`, and the solve never
+    # moved from its starting point — through every barrier reduction down to the
+    # floor, reporting `MaxIters` on a point it had never left.
+    #
+    # Scaling by the square root of the diagonal is exact: with
+    # `D = diag(√diag K)`, solving `(D⁻¹KD⁻¹)(D dz) = D⁻¹ rhs` gives the same `dz`
+    # in exact arithmetic and a matrix whose diagonal is all ones.
+    dK = Vector{T}(undef, nn)
+    @inbounds for j in 1:nn
+        dK[j] = sqrt(max(K[j, j], eps(T)))
+    end
+    @inbounds for j in 1:nn
+        rhs[j] /= dK[j]
+        for i in 1:nn
+            K[i, j] /= dK[i] * dK[j]
+        end
+    end
     # `Zᵀ H Z` is positive definite at any interior point in exact arithmetic,
-    # since `h > 0` there whatever the curvature. It can still lose definiteness
-    # numerically when the amounts span ten orders of magnitude, so the
-    # factorization is attempted and fallen back on rather than assumed —
-    # a `PosDefException` from a default code path is not acceptable.
+    # since `h > 0` there whatever the curvature. Numerically it can still lose
+    # definiteness, and the remedy is an inertia correction: try the plain
+    # factorization, and only if it fails add a ridge, raising it until it
+    # succeeds. That is what Ipopt does, and the reason for the order is that a
+    # ridge applied unconditionally perturbs the step on problems that never
+    # needed it — a fixed `1e-12` cost three digits on a warm-started solve whose
+    # tolerance was `1e-12`, which is exactly the regime where the perturbation
+    # and the tolerance are the same size.
     Ksym = LinearAlgebra.Symmetric(K)
     chol = LinearAlgebra.cholesky(Ksym; check = false)
+    δ = T(1.0e-10)
+    while !LinearAlgebra.issuccess(chol) && δ <= T(1.0e6)
+        @inbounds for j in 1:nn
+            K[j, j] += δ
+        end
+        Ksym = LinearAlgebra.Symmetric(K)
+        chol = LinearAlgebra.cholesky(Ksym; check = false)
+        δ *= T(100)
+    end
     dz = LinearAlgebra.issuccess(chol) ? chol \ rhs :
         LinearAlgebra.bunchkaufman(Ksym; check = false) \ rhs
+    @inbounds for j in 1:nn
+        dz[j] /= dK[j]
+    end
 
     # Assemble dn = dnₚ + Z dz.
     fill!(ws.dn, zero(T))

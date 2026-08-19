@@ -53,29 +53,123 @@ veto lasts only as long as the active set that produced it, and a vetoed variabl
 that is still supersaturated prevents the run from being reported as converged:
 the candidate list is filtered, the KKT conditions are not.
 
-### The rank test was not scale-invariant
+### Convergence was judged at the current barrier level, not at the optimum
 
-`Canonicalizer` chose its basis from a pivoted QR of `A` as handed to it, and the
+`is_converged` compared `max |sᵢ (∇f + Aᵀy)ᵢ − μ|` against `tol`. That quantity
+vanishes at the solution of the barrier subproblem **whatever `μ` is**, so the
+solver could report success on a point `O(μ)` away from the actual optimum — and
+which barrier level it happened to stop at, hence whether the answer was accurate
+to 1e-8 or to 1e-10, depended on the inner-loop schedule rather than on anything
+the caller asked for.
+
+The test is now Ipopt's `E_0` (Wächter & Biegler 2006, Algorithm A, step 2): the
+same residual evaluated at `μ = 0`, which is the true KKT error and cannot be met
+at a loose barrier. `KKTResidual` gains `error_0` alongside `error`; the barrier
+schedule still uses the μ-dependent one, which is what it is for.
+
+`barrier_decay` moves from 0.1 to Ipopt's `κ_μ = 0.2`, and the two changes belong
+together: with the honest test and the aggressive schedule the barrier outruns the
+inner Newton and the error plateaus just above the tolerance without crossing it —
+312 iterations to reach 9.999e-11 against a tolerance of 1e-10. At 0.2 the same
+problem converges in 30, and a three-species ideal system reaches its exact
+Boltzmann distribution to 7.6e-12 where it previously stopped at 8.1e-8.
+
+`barrier_eps_factor` is exposed for callers who scale their optimality error, and
+**defaults to 1, not to Ipopt's `κ_ε = 10`**: `κ_ε` applies to their *scaled* `E_μ`,
+so carrying it across to an unscaled error is not adopting their criterion but
+loosening ours by an unjustified factor. Measured at 10, a warm-started replay of
+a calcite trajectory came back with element-balance residuals of 4.7e-8 instead of
+1.4e-11, every solve having stopped one barrier level short.
+
+### The rank test and the basis order are two questions, and they had one answer
+
+`Canonicalizer` chose both from one pivoted QR of `A` as handed to it, and the
 SciML interface hands it `A · diag(s)` with `s` the starting value of each
-variable. Warm-starting from a converged equilibrium spreads those over some ten
-orders of magnitude, and the pivoted-QR test — which compares each pivot to the
-largest — then lost a rank it should not have: `B` was built with `m−1` columns
-and the run died inside LAPACK with "matrix is not square".
+variable. That single answer was wrong for each question in the opposite
+direction.
 
-`rank(A · diag(s)) = rank(A)` for any positive `s`, so the basis is now chosen on
-a column-equilibrated copy. A genuinely rank-deficient conservation matrix is
-reported as such, naming the redundant constraints, instead of surfacing as a
-factorization error.
+For the RANK, the scaling is noise: `rank(A · diag(s)) = rank(A)` for any positive
+`s`, but the pivoted-QR test compares each pivot to the largest, and warm-starting
+from a converged equilibrium spreads the columns over ten orders of magnitude. The
+rank came out one short, `B` was built with `m−1` columns, and the run died inside
+LAPACK with "matrix is not square". It is now read off a column-equilibrated copy.
 
-### Feasibility of the starting point was undone by its own clamp
+For the basis ORDER, the scaling is exactly the information wanted. The null-space
+step asks the BASIC variables to absorb the infeasibility through
+`dn_b = B⁻¹(−ew)`, so they must be the ones that can move — the abundant species,
+not a trace ion pinned at its bound. Equilibrating before pivoting threw that away:
+on an LC³ equilibrium the basis then held species at 1e-16, the particular solution
+asked them for 1e4 mol, and the dual step came back at 1e31. The order is now taken
+from the matrix as given, which is how Optima prioritizes its own basis.
+
+A genuinely rank-deficient conservation matrix is reported as such, naming how
+many constraints are redundant, instead of surfacing as a factorization error.
+
+### The reduced Hessian was not equilibrated, and the default step was noise
+
+`compute_step!` equilibrates its Schur complement, with a comment explaining why.
+`compute_step_nullspace!` — which is the DEFAULT path through `OptimaOptimizer` —
+did not equilibrate its reduced Hessian `Zᵀ H Z = Rᵀ diag(h_b) R + diag(h_n)`.
+
+`h` is the barrier-augmented curvature `∇²f + μ/s²`, and in a chemical system the
+amounts span ten orders of magnitude, so `h` spans twenty and more: on a cement it
+ran from 2.5 on the solvent to 1e27 on a species at its bound. The condition number
+of the reduced Hessian went past anything Float64 can carry, and the Cholesky then
+*succeeded* while returning a direction that was noise — `‖dn‖∞ = 4.5e17`,
+`‖dy‖∞ = 3.1e43`, and `NaN` two iterations later. Scaling by the square root of the
+diagonal is exact and costs nothing.
+
+### The starting point was never feasible, and the line search could not recover
 
 The starting point was projected onto `A n = b` by a single minimum-norm
 correction and then clamped to the bounds, which puts it straight back off the
-affine set. With most candidate species at their lower bound the clamp restores a
-large amount of matter: on a cement the starting point carried
-`‖An − b‖∞ = 0.29` against a budget whose largest entry is 3.3, and the barrier
-iterations spent themselves chasing a feasibility they never reached. Both sets
-are convex, so the two projections are now alternated.
+affine set — and with most candidate species at their lower bound the clamp
+restores a large amount of matter. Positivity is now enforced FIRST and
+feasibility after, so nothing undoes it.
+
+That reordering is not enough on its own, because the projection has to be exact.
+The filter line search bypasses its filter only when the current point is
+feasible; while it is not, acceptance needs either a relative drop of `ls_alpha`
+in the constraint violation — unreachable once the fraction-to-boundary limit is
+itself below `ls_alpha` — or an Armijo decrease along a direction that is partly
+spent restoring feasibility and need not be a descent direction at all. Measured
+on an LC³ equilibrium the start carried `‖An − b‖∞ = 6.8e-3`, all forty trial
+steps were refused at every barrier level, and the solve reported `MaxIters` on
+the point it had started from, having never moved.
+
+Feasibility is now attained rather than approached, by two exact routes before the
+old fallback:
+
+  - solve for the BASIC amounts given the others, `B n_b = b − N n_n` — one
+    triangular solve on a factorization that already exists, which is how Optima
+    does it;
+  - failing that (a component total can be negative — the `H⁺` row of a cement is
+    −2.1 mol — and no basis of abundant species can produce it), Lawson–Hanson
+    **non-negative least squares** on the slacks `v = n − lb`. It terminates
+    finitely and its residual is zero whenever the budget is attainable, which it
+    is, since the budget came from a real composition.
+
+NNLS returns a solution supported on at most `rank(A)` variables, with the rest at
+exactly their bound and zero slack — unusable as a barrier start, since the first
+negative step component would give `α = 0`. They are lifted to the slack the
+barrier itself would give them, `s = μ/(∇f)ᵢ`, about 1e-6 for the initial
+`μ = 1e-4`; the matter that adds is then removed exactly, on the support, by a
+minimum-norm correction, so the point is both feasible to machine precision and
+strictly interior.
+
+Together with the two items above, on that LC³ equilibrium: the start goes from
+`‖An − b‖∞ = 0.86` to `3.4e-10`, the step lengths from 1e-19 to 0.3–0.75, the
+feasibility error stays at 3e-15 for the whole solve because the null-space step
+preserves it, and the optimality error falls from 199 to 3e-4. Before these
+changes it did not move at all.
+
+### Verbose output reports what actually stopped the step
+
+`log_iteration` now prints the fraction-to-boundary limit `α_max` beside the
+accepted `α`, and the step norms `‖dn‖∞`, `‖dy‖∞`. The two failures those separate
+are indistinguishable from `α` alone — a step the filter refuses looks exactly like
+a step the bounds never allowed — and telling them apart is what located every one
+of the defects above.
 
 ## v0.3.0 — a KKT solver that proves its answer
 

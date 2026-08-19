@@ -80,7 +80,10 @@ function line_search(
     θ_curr = sum(abs, prob.A * n .- prob.b)
 
     # Barrier objective at current point: f_μ(n) = f(n) - μ Σ ln(nᵢ - lbᵢ)
-    s_curr = n .- prob.lb
+    # A slack that has rounded to zero or below is a caller error, but it must not
+    # be a `DomainError` from inside `log`: the barrier is floored so the search
+    # can still report a step, and the point is rejected on its merits.
+    s_curr = max.(n .- prob.lb, floatmin(T))
     f_μ_val = real(f_val) - μ * sum(log, s_curr)
 
     # Directional derivative of the BARRIER objective along dn:
@@ -106,7 +109,7 @@ function line_search(
 
         f_new = prob.f(n_new, prob.p)
         θ_new = sum(abs, prob.A * n_new .- prob.b)
-        s_new = n_new .- prob.lb
+        s_new = max.(n_new .- prob.lb, floatmin(T))
         f_μ_new = real(f_new) - μ * sum(log, s_new)
 
         if use_filter

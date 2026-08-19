@@ -79,11 +79,31 @@ function Canonicalizer(A::AbstractMatrix{T}; tol::Float64 = 1.0e-12) where {T <:
         Aeq[:, j] .= @view(A[:, j]) ./ c
     end
 
-    F = LinearAlgebra.qr(Aeq, LinearAlgebra.ColumnNorm())
-    Q = F.p
-    diag_R = abs.(diag(F.R))
-    rank_A = count(d -> d > tol * diag_R[1], diag_R)
-    rank_A = max(rank_A, 1)
+    # The rank is read off the equilibrated matrix, the basis ORDER off the
+    # matrix as given. The two questions are different and each needs its own
+    # answer.
+    #
+    # Rank: `rank(A·diag(s)) = rank(A)` for any positive `s`, so scaling cannot
+    # change which columns are independent. The pivoted-QR test compares each
+    # pivot to the largest one, and the caller scales columns by the starting
+    # value of each variable; warm-starting from a converged equilibrium spreads
+    # those over ten orders of magnitude, and the smallest honest pivot falls
+    # below the tolerance. The rank then came out one short, `B` was built with
+    # `m-1` columns, and the LU failed with "matrix is not square".
+    #
+    # Basis order: the scaling is exactly the information wanted. The null-space
+    # step asks the BASIC variables to absorb the infeasibility, through
+    # `dn_b = B⁻¹(−ew)`, so they must be the ones that can move — the abundant
+    # species, not a trace ion pinned at its bound. Column norms weighted by the
+    # amounts is what makes pivoted QR prefer them, and it is how Optima
+    # prioritizes its own basis. Equilibrating before pivoting throws that away:
+    # on an LC³ equilibrium the basis then held species at 1e-16, the particular
+    # solution asked them for 1e4 mol, and the dual step came back at 1e31.
+    rank_A = let F = LinearAlgebra.qr(Aeq, LinearAlgebra.ColumnNorm())
+        d = abs.(diag(F.R))
+        max(count(x -> x > tol * d[1], d), 1)
+    end
+    Q = LinearAlgebra.qr(Matrix{T}(A), LinearAlgebra.ColumnNorm()).p
 
     # A genuinely rank-deficient A means a conservation law that is a combination
     # of the others. It is not an error in itself — the primal solution is

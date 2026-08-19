@@ -30,9 +30,10 @@ Holds the KKT residual vectors and associated norms for one evaluation.
 struct KKTResidual{T <: Real}
     ex::Vector{T}    # optimality residual  (ns,)
     ew::Vector{T}    # feasibility residual (m,)
-    error_opt::T     # ‖ex‖∞
-    error_feas::T    # ‖ew‖∞
-    error::T         # max(error_opt, error_feas)
+    error_opt::T     # complementarity at the CURRENT μ:  max |sᵢ (∇f + Aᵀy)ᵢ − μ|
+    error_feas::T    # ‖An − b‖∞
+    error::T         # max(error_opt, error_feas) — drives the barrier schedule
+    error_0::T       # the same at μ = 0: max(max |sᵢ (∇f + Aᵀy)ᵢ|, ‖An − b‖∞)
 end
 
 """
@@ -88,6 +89,27 @@ function kkt_residual(
 
     err_feas = isempty(ew) ? zero(Tv) : maximum(abs, ew)
 
+    # The error at μ = 0 — Ipopt's `E_0` (Wächter & Biegler 2006, Algorithm A,
+    # step 2) — and it is what convergence must be judged on.
+    #
+    # `err_opt` above is `max |sᵢ gᵢ − μ|`, which VANISHES at the solution of the
+    # barrier subproblem, whatever `μ` happens to be. Testing it against `tol`
+    # therefore lets the solver declare success on a point that is `O(μ)` away
+    # from the actual optimum: on a three-species ideal system it returned an
+    # answer wrong in the eighth digit while reporting convergence, and which of
+    # the two barrier levels it stopped at — hence whether the answer was accurate
+    # to 1e-8 or to 1e-10 — depended on the inner-loop schedule rather than on
+    # anything the caller asked for. Setting `μ = 0` removes the barrier from the
+    # measure, so the test is the true KKT residual and cannot be satisfied at a
+    # loose barrier.
+    err_opt_0 = zero(Tv)
+    @inbounds for i in eachindex(gL)
+        v = abs(s[i] * gL[i])
+        if v > err_opt_0
+            err_opt_0 = v
+        end
+    end
+
     # Scale the optimality error by the size of the multipliers it is built from
     # — Wächter & Biegler (2006), Eq. (5), the same device Ipopt uses.
     #
@@ -101,7 +123,9 @@ function kkt_residual(
     #
     # The feasibility error is NOT scaled: `An − b` is in moles and already
     # means something absolute.
-    return KKTResidual{Tv}(ex, ew, err_opt, err_feas, max(err_opt, err_feas))
+    return KKTResidual{Tv}(
+        ex, ew, err_opt, err_feas, max(err_opt, err_feas), max(err_opt_0, err_feas),
+    )
 end
 
 """

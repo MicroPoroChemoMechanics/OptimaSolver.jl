@@ -536,35 +536,116 @@ each back-substitution to $O(m^2)$ rather than $O(m^3)$.
 When $A$ is fixed across a sequence of solves (e.g. a temperature scan), pass
 the pre-built `Canonicalizer` to `solve` to skip the QR entirely.
 
-The basis is chosen on a **column-equilibrated** copy, and that is not a
-refinement. ``\operatorname{rank}(A\,\mathrm{diag}(s)) = \operatorname{rank}(A)``
-for any positive `s`, so scaling cannot change which columns are independent —
-but the pivoted-QR rank test compares each pivot to the *largest* one, and the
-SciML interface scales columns by each variable's starting value. Warm-starting
-from a converged equilibrium spreads those over some ten orders of magnitude, a
-trace ion sitting near `1e-16` against a solvent of order one, and the smallest
-honest pivot then falls below the tolerance. The rank came out one short, `B` was
-built with `m-1` columns, and the failure surfaced as a "matrix is not square"
-error from LAPACK. Equilibrating first makes the test scale-invariant, which is
-what it was always meant to be. A genuinely rank-deficient `A` — a conservation
-law that is a combination of the others — is now reported as such instead of
-being discovered inside a factorization.
+The rank and the basis order are two questions, and each needs its own answer.
+
+For the **rank**, the column scaling is noise:
+``\operatorname{rank}(A\,\mathrm{diag}(s)) = \operatorname{rank}(A)`` for any
+positive `s`. But the pivoted-QR test compares each pivot to the largest, and the
+SciML interface scales columns by each variable's starting value; warm-starting
+from a converged equilibrium spreads those over ten orders of magnitude and the
+smallest honest pivot falls below the tolerance. The rank came out one short, `B`
+was built with `m-1` columns, and the failure surfaced as a "matrix is not square"
+error from LAPACK. It is therefore read off a column-equilibrated copy.
+
+For the basis **order**, that same scaling is exactly the information wanted. The
+null-space step asks the basic variables to absorb the infeasibility, through
+``\delta n_b = B^{-1}(-e_w)``, so they must be the ones that can move — the
+abundant species, not a trace ion pinned at its bound. Equilibrating before
+pivoting throws that away: on an LC³ equilibrium the basis then held species at
+`1e-16`, the particular solution asked them for `1e4` mol, and the dual step came
+back at `1e31`. The order is taken from the matrix as given, which is how Optima
+prioritizes its own basis.
+
+A genuinely rank-deficient `A` — a conservation law that is a combination of the
+others — is reported as such instead of being discovered inside a factorization.
+
+## The reduced Hessian must be equilibrated
+
+With the canonical partition, the step may be taken in the null space of `A`:
+
+```math
+\delta n = \delta n_p + Z\,\delta z,
+\qquad
+Z^\mathsf{T} H Z = R^\mathsf{T}\mathrm{diag}(h_b)R + \mathrm{diag}(h_n) .
+```
+
+`h` is the barrier-augmented curvature ``\nabla^2 f + \mu/s^2``. In a chemical
+system the amounts span ten orders of magnitude, so `h` spans twenty and more — on
+a cement it ran from 2.5 on the solvent to ``10^{27}`` on a species at its bound.
+The reduced Hessian inherits that spread, its condition number passes anything
+Float64 can carry, and the Cholesky then *succeeds* while returning a direction
+that is noise: ``\|\delta n\|_\infty = 4.5\times10^{17}``,
+``\|\delta y\|_\infty = 3.1\times10^{43}``, and `NaN` two iterations later.
+
+Scaling by the square root of the diagonal is exact — with
+``D = \mathrm{diag}(\sqrt{\operatorname{diag} K})``, solving
+``(D^{-1}KD^{-1})(D\,\delta z) = D^{-1} r`` returns the same ``\delta z`` — and it
+normalizes every diagonal entry to one. The Schur-complement branch already did
+this; the null-space branch, which is the default, did not.
+
+## Convergence, and the level it is measured at
+
+The barrier subproblem's stationarity is `sᵢ (∇f + Aᵀy)ᵢ = μ`, so
+
+```math
+E_\mu = \max_i \bigl| s_i (\nabla f + A^\mathsf{T} y)_i - \mu \bigr|
+```
+
+vanishes at the solution of *that* subproblem, for **any** `μ`. It is the right
+quantity to decide when to tighten the barrier, and the wrong one to decide that
+the problem is solved: a point satisfying it at `μ = 10^{-4}` is `O(10^{-4})` from
+the optimum. Convergence is therefore declared on
+
+```math
+E_0 = \max\Bigl( \max_i \bigl| s_i (\nabla f + A^\mathsf{T} y)_i \bigr|,\; \|An-b\|_\infty \Bigr),
+```
+
+the same residual at `μ = 0` — Ipopt's `E_0`, Wächter & Biegler (2006),
+Algorithm A, step 2. It is the true KKT error and cannot be satisfied at a loose
+barrier.
+
+That test only becomes attainable with a barrier schedule the inner Newton can
+keep up with. At `κ_μ = 0.1` the barrier outruns it and `E_0` plateaus just above
+the tolerance without crossing it — 312 iterations to reach `9.999\times10^{-11}`
+against `10^{-10}`. At Ipopt's `κ_μ = 0.2` the same problem converges in 30.
 
 ## Feasibility of the starting point
 
-The barrier method is started from a point projected onto
-``\{A n = b,\; n \ge \ell\}``. One minimum-norm correction
-``\Delta n = -A^\mathsf{T}(AA^\mathsf{T})^{-1}(An-b)`` lands on the affine set but
-not in the box, and the clamp that follows puts the point straight back off the
-affine set.
+The barrier method must be started **on** ``\{A n = b,\; n \ge \ell\}``, not near
+it, and the reason is the line search. The filter is bypassed only when the current
+point is feasible; while it is not, a step is accepted either because the
+constraint violation drops by a relative ``\alpha_{\rm ls}`` — unreachable once
+the fraction-to-boundary limit is itself below ``\alpha_{\rm ls}`` — or by Armijo
+along a direction partly spent restoring feasibility, which need not be a descent
+direction at all. Measured on an LC³ equilibrium, a start carrying
+``\|An-b\|_\infty = 6.8\times10^{-3}`` had all forty trial steps refused at every
+barrier level, and the solve reported `MaxIters` on the point it began at.
 
-That is not a detail. On a cement most candidate species sit at their lower
-bound, so the clamp restores a large amount of matter: the starting point came
-out with ``\|An-b\|_\infty = 0.29`` on a budget whose largest entry is 3.3, and
-the whole iteration budget was then spent chasing a feasibility it never reached.
-Both sets are convex and their intersection is non-empty whenever the budget is
-attainable, so the two projections are **alternated** until the residual is small
-or stops improving.
+Positivity is enforced first and feasibility after, so the clamp cannot undo the
+projection. Two exact routes are then tried in order:
+
+1. **Solve for the basic amounts** given the others, ``B n_b = b - N n_n``. One
+   triangular solve on a factorization that already exists, and this is how Optima
+   does it.
+2. **Non-negative least squares** on the slacks ``v = n - \ell``, by Lawson–Hanson.
+   Needed because a component total can be negative — the `H⁺` row of a cement is
+   ``-2.1`` mol — and no basis of abundant species can produce it. NNLS terminates
+   finitely and its residual is zero whenever the budget is attainable, which it is
+   whenever the budget came from a real composition.
+
+NNLS returns a solution supported on at most ``\operatorname{rank}(A)`` variables,
+the rest at exactly their bound with zero slack — unusable as a barrier start,
+since the first negative step component gives ``\alpha = 0``. They are lifted to
+the slack the barrier itself would give them: a variable held at its bound settles
+at ``s = \mu/(\nabla f)_i``, about ``10^{-6}`` for the initial ``\mu = 10^{-4}``
+with chemical potentials of order ``10^2``–``10^3`` in RT units. The matter that
+adds is then removed exactly, on the support, by a minimum-norm correction, so the
+point is feasible to machine precision **and** strictly interior.
+
+Alternating projections onto the two sets converge to the same place in theory and
+far too slowly to be usable — on that same problem they reached ``6.8\times10^{-3}``
+and then advanced by less than a tenth of a percent per sweep. They remain only as
+a last fallback.
 
 ## Fraction-to-boundary step limit
 
