@@ -85,10 +85,28 @@ By Cauchy–Schwarz, writing $v_i = \bigl(v_i/\sqrt{n_i}\bigr)\sqrt{n_i}$,
 so $v^\top \nabla^2\varphi\, v \ge 0$. Equality in Cauchy–Schwarz holds exactly
 when $v_i/\sqrt{n_i} \propto \sqrt{n_i}$, that is $v \propto n$. $\;\square$
 
-The same computation applies verbatim to the molality convention, where the
-solutes carry $\ln\bigl(n_i/(n_w M_w)\bigr)$ and the solvent $\ln x_w$: the
-Hessian is again $\operatorname{diag}(1/n_i)$ minus a rank-one term built on the
-aqueous block, and the inequality is the same.
+### One $\varphi$ per phase, and the aqueous convention
+
+A system with several mixing phases contributes one such $\varphi$ per phase, each
+on its own block of variables, so the ideal part of $f$ is a **direct sum** of the
+Hessians above and is convex whenever each block is. A solid solution is exactly
+that: the argument does not weaken as phases are added.
+
+The molality convention needs its own completion of the square rather than the
+same one. With solutes carrying $\ln\bigl(n_i/(n_w M_w)\bigr)$ and the solvent
+$\ln x_w$, write $S = \sum_{i \ne w} n_i$ and $s = \sum_{i \ne w} v_i$. Then
+
+```math
+v^\top \nabla^2\varphi\, v
+  \;=\; \sum_{i \ne w} \frac{v_i^{2}}{n_i}
+      \;-\; \frac{2 v_w s}{n_w}
+      \;+\; \frac{S\, v_w^{2}}{n_w^{2}}
+  \;\ge\; \frac{s^{2}}{S} - \frac{2 v_w s}{n_w} + \frac{S\, v_w^{2}}{n_w^{2}}
+  \;=\; \Bigl(\frac{s}{\sqrt S} - \frac{\sqrt S\, v_w}{n_w}\Bigr)^{2} \;\ge\; 0,
+```
+
+the first inequality being Cauchy–Schwarz on the solute block. So the aqueous
+phase is convex too, and for the same reason.
 
 ### A pure phase contributes a *linear* term
 
@@ -107,8 +125,9 @@ accident.
 
 ### Consequences
 
-$f$ is convex on $\{n > 0\}$ and the feasible set $\{An = b,\ n \ge \ell\}$ is a
-polyhedron, hence convex. Therefore:
+With **ideal** mixing — every activity a mole fraction within its phase, or a
+molality referred to the solvent — $f$ is convex on $\{n > 0\}$, and the feasible
+set $\{An = b,\ n \ge \ell\}$ is a polyhedron, hence convex. Therefore:
 
 1. **every local minimum is global**, and the minimizer is unique up to the null
    directions above;
@@ -120,6 +139,41 @@ multipliers $(y, z)$ satisfying the KKT system is a *proof* of global optimality
 not evidence for it. Point 1 says that a solver returning different answers from
 different starting points is not finding different local minima — it is stopping
 short of stationarity.
+
+### Where convexity fails, and what the certificate then proves
+
+Everything above is conditional on ideal mixing, and that condition is not
+cosmetic.
+
+A non-ideal solid solution carries an excess term. For the Redlich–Kister form
+used by [`SolidSolutionPhase`](https://micropochemomechanics.github.io/ChemistryLab.jl/stable/),
+
+```math
+G^{\rm ex} = N\, x_1 x_2 \bigl(a_0 + a_1 (x_1 - x_2) + a_2 (x_1-x_2)^2\bigr),
+```
+
+and a sufficiently positive $a_0$ makes $\partial^2 G/\partial x^2 < 0$ over an
+interval. That is not a numerical nuisance, it is a **miscibility gap**: the
+non-convexity *is* the physics, and the phase splits into two of different
+composition. Aqueous excess terms — Debye–Hückel and the HKF corrections — carry
+no convexity guarantee either.
+
+Where $f$ is not convex, the KKT conditions remain **necessary** and stop being
+sufficient. [`kkt_certificate`](@ref) then proves what it always proves — that the
+point is a KKT point, feasible, complementary, and with no absent phase
+supersaturated — and no longer proves that it is the *global* minimum. Two things
+follow, and neither is automatic:
+
+- a phase inside a miscibility gap must be allowed to appear **twice**, as two
+  instances of the same [`SolutionPhase`](@ref) with different compositions, or
+  the model cannot represent the answer at all;
+- the tangent-plane test admits a phase from outside; it does not test whether an
+  already-present phase would rather split. Deciding that is Michelsen's stability
+  problem on the phase itself, and it is not what this solver does.
+
+Every mixing model this solver has been exercised on is ideal, so the certificate
+has meant global optimality throughout — but that is a property of those models,
+not of the method, and it should be checked before it is relied on.
 
 ## Log-barrier interior-point method
 
@@ -429,6 +483,36 @@ batch instead feeds a cycle in which a variable is admitted, driven negative,
 dropped, and readmitted — observed on a cement without limestone as a solve
 converged to `2e-12` of the *wrong* subproblem, with an excluded variable
 violated by 10.9.
+
+### The starting multipliers
+
+A least-squares fit of ``A^\mathsf{T} y \approx -(g+h)`` minimizes a stationarity
+residual and says nothing about `b`, so the potentials it produces are consistent
+with no composition in particular. The last candidate is therefore solved for
+instead of fitted. Treating every species as an ideal one whose activity is its own
+amount, the Lagrangian minimizes in closed form, ``x_i = e^{u_i - g_i}``, and the
+dual becomes
+
+```math
+\phi(y) = -b^\mathsf{T} y - \sum_i e^{\,u_i - g_i},
+\qquad
+\nabla\phi = Ax - b,
+\qquad
+\nabla^2\phi = -A\,\mathrm{diag}(x)\,A^\mathsf{T} \prec 0 .
+```
+
+``\phi`` is smooth and **strictly concave**, so Newton with a backtracking line
+search converges from any starting point — there is no active set to guess and
+nothing to stall in. This is Brinkley's method (White, Johnson & Dantzig, 1958),
+and its solution is the `y` for which the ideal composition conserves matter
+exactly.
+
+It is tried **last**, not first. A caller replaying a trajectory hands over a
+composition that is nearly the answer, the fits built from it converge on the first
+attempt, and this solve is then never run; ordered the other way it costs a
+warm-started replay three digits of element balance for no gain. The attempts are
+ranked by the KKT error each reaches, so the answer returned is the best of them
+whether or not any crossed the tolerance.
 
 ### What an active set must satisfy, and how it is searched
 

@@ -99,6 +99,38 @@ every point**, with stationarity 1.1e-11 and element balance 5.0e-11 at LC³-50,
 phase supersaturated, and a pore solution at pH 12.71. It previously returned a
 stationarity residual near 20 with an element balance of several hundred moles.
 
+### The initial multipliers came from fits that ignored the element budget
+
+The three starting `y` were least-squares fits of `Aᵀy ≈ −(g + h)` over subsets of
+species. That minimizes a stationarity residual and says nothing whatever about
+`b`, so the potentials it produces are consistent with no composition in
+particular — and on a cold start that showed: at a quarter of full reaction on an
+LC³ budget the inner Newton failed to converge on EVERY active set the search
+visited, residuals between 8 and 19, while the same problem reached by continuation
+from a nearby solution converged to 1e-11.
+
+A fourth candidate is now solved for properly. Treating every species as an ideal
+one whose activity is its own amount, the Lagrangian minimizes in closed form,
+`xᵢ = exp(uᵢ − gᵢ)`, and the dual becomes
+
+```
+φ(y) = −bᵀy − Σᵢ exp(uᵢ − gᵢ),   ∇φ = A x − b,   ∇²φ = −A diag(x) Aᵀ ≺ 0 .
+```
+
+`φ` is smooth and **strictly concave**, so Newton with a backtracking line search
+converges from any starting point — no active set, no combinatorics, nothing to
+stall in. This is Brinkley's method, after White, Johnson & Dantzig (1958), and its
+answer is the `y` for which the ideal composition conserves matter exactly. It is
+the last candidate tried, not the first: a caller replaying a trajectory hands over
+a composition that is nearly the answer, the fits built from it converge
+immediately, and this solve is then never run. Ordered the other way it cost a
+warm-started replay three digits of element balance for no gain.
+
+The candidates are also **ranked by the KKT error they reach** rather than by the
+order they were tried in. Keeping the first unless a later one *converges* discards
+a better answer whenever none converges: a start landing at 1e8 was returned in
+preference to one at 20, because neither had crossed the tolerance.
+
 ### The difference step was scaled to the unknown, not to the residual
 
 The outer Jacobian is differenced, and the step was `1e-5·|v_k|`. For the

@@ -268,7 +268,14 @@ function _active_set_supports_a_solution(prob, active, act_ph)
     _n_stationarity_conditions(prob, active, act_ph) <= stationarity_capacity(prob) ||
         return false
     isempty(active) && return true
-    return LinearAlgebra.rank(prob.A[:, active]) == length(active)
+    # The rank is taken on the VALUE part, so that a `ForwardDiff.Dual` matrix — a
+    # conservation matrix carrying a stoichiometric parameter, say the Mg/Al ratio
+    # of a hydrotalcite or the Si substitution of a katoite — gives the same
+    # answer as its primal. A rank IS a property of the value part: letting an
+    # infinitesimal perturbation change which phases the algorithm considers
+    # admissible would make the derivative of the answer discontinuous, which is
+    # not a subtlety one wants to discover downstream.
+    return LinearAlgebra.rank(ForwardDiff.value.(prob.A[:, active])) == length(active)
 end
 
 """
@@ -500,6 +507,91 @@ end
 # ── the solve ─────────────────────────────────────────────────────────────────
 
 """
+    _element_potential_start(A, g, b, y0; dead, maxit, tol) -> y
+
+Element potentials from the CONCAVE dual of the ideal problem — Brinkley's method,
+after White, Johnson & Dantzig (1958).
+
+Treat every species as an ideal one whose activity is its own amount. The
+Lagrangian then minimizes in closed form, `xᵢ = exp(uᵢ − gᵢ)` with `u = −Aᵀy`, and
+the dual becomes
+
+```
+φ(y) = −bᵀ y − Σᵢ exp(uᵢ − gᵢ),
+∇φ  = A x − b,
+∇²φ = −A diag(x) Aᵀ ≺ 0 .
+```
+
+`φ` is smooth and **strictly concave**, so Newton with a backtracking line search
+converges from any starting point — there is no active set, no combinatorics, and
+no way to stall in a wrong one. Its solution is the `y` for which the ideal
+composition conserves matter exactly.
+
+That is not the model this solver goes on to solve — the real phases carry mole
+fractions and molalities, not bare amounts — but it is the right place to start
+from, and it is what the three least-squares fits were standing in for. Those fits
+minimize `‖Aᵀy + g + h‖` over a subset of species, which says nothing about the
+element budget; the potentials they produce are consistent with no composition in
+particular. Measured on an LC³ equilibrium at a quarter of full reaction, the inner
+Newton failed to converge on EVERY active set the search visited, with residuals
+between 8 and 19, and the same problem reached by continuation from a nearby
+solution converged to 1e-11.
+"""
+function _element_potential_start(
+        A::AbstractMatrix{T}, g::AbstractVector, b::AbstractVector, y0::AbstractVector;
+        dead = Set{Int}(), maxit::Int = 200, tol::Float64 = 1.0e-10,
+    ) where {T <: Real}
+    m = size(A, 1)
+    y = collect(float.(y0))
+    alive = [i for i in eachindex(g) if !(i in dead)]
+    Aa = Matrix(@view A[:, alive])
+    ga = collect(float.(g[alive]))
+    bscale = max(1.0, maximum(abs, b))
+
+    xa = similar(ga)
+    φ(yv) = begin
+        u = -(transpose(Aa) * yv)
+        # `exp` is clamped only against overflow; the line search below is what
+        # keeps the iterates in a range where that clamp is never reached.
+        -dot(b, yv) - sum(exp(clamp(u[j] - ga[j], -700.0, 300.0)) for j in eachindex(ga))
+    end
+
+    φ_cur = φ(y)
+    for _ in 1:maxit
+        u = -(transpose(Aa) * y)
+        @inbounds for j in eachindex(ga)
+            xa[j] = exp(clamp(u[j] - ga[j], -700.0, 300.0))
+        end
+        r = Aa * xa .- b
+        maximum(abs, r) <= tol * bscale && break
+
+        H = Aa * Diagonal(xa) * transpose(Aa)
+        dmax = maximum(abs, diag(H))
+        @inbounds for k in 1:m
+            H[k, k] += max(dmax, 1.0) * 1.0e-12
+        end
+        δ = qr(H, ColumnNorm()) \ r
+
+        # Backtracking on a concave function: an ascent step exists for small
+        # enough `α`, so this cannot fail to make progress unless `∇φ = 0`.
+        α = 1.0
+        improved = false
+        for _ in 1:60
+            φ_try = φ(y .+ α .* δ)
+            if isfinite(φ_try) && φ_try > φ_cur
+                y .+= α .* δ
+                φ_cur = φ_try
+                improved = true
+                break
+            end
+            α /= 2
+        end
+        improved || break
+    end
+    return y
+end
+
+"""
     dual_newton_solve(prob, b, x0; opts) -> (; x, y, active_phases, active, converged)
 
 Solve `prob` for the right-hand side `b`, starting from `x0`.
@@ -642,7 +734,15 @@ function dual_newton_solve(
     gh_fit = -(prob.g[all_members] .+ h0[all_members])
     A_all = Matrix(@view prob.A[:, all_members])
 
+    # Candidates are ordered from the most informed by the caller's guess to the
+    # least, and the loop stops at the first that converges. A caller replaying a
+    # trajectory hands over a composition that is nearly the answer, and the fits
+    # built from it succeed immediately; the element-potential solve at the end is
+    # the cold-start device and is then never even run. Putting it first cost a
+    # warm-started replay three digits of element balance — 5.7e-10 against
+    # 1.4e-11 — for no gain, because the fits it displaced were the better guess.
     y_starts = Vector{Vector{Float64}}()
+
     let wgt = [sqrt(max(x_buf[i], 1.0e-30)) for i in all_members]
         push!(y_starts, qr(transpose(A_all * Diagonal(wgt)), ColumnNorm()) \ (gh_fit .* wgt))
     end
@@ -653,22 +753,38 @@ function dual_newton_solve(
     end
     push!(y_starts, qr(transpose(A_all), ColumnNorm()) \ gh_fit)
 
+    # Last candidate: the concave dual of the ideal problem, solved globally. See
+    # `_element_potential_start` — it is the only one of these that knows the
+    # element budget exists, and the only one that does not depend on the guess.
+    let y_ls = copy(y_starts[end])
+        for k in degenerate
+            y_ls[k] = DEGENERATE_POTENTIAL
+        end
+        push!(
+            y_starts,
+            _element_potential_start(prob.A, prob.g, bv, y_ls; dead = dead),
+        )
+    end
+
     for yk in y_starts
         for k in degenerate
             yk[k] = DEGENERATE_POTENTIAL
         end
     end
 
+    # Attempts are ranked by the KKT error they reach, not by the order they were
+    # tried in. Keeping the first unless a later one CONVERGES throws away a better
+    # answer whenever none converges: a start that lands at 1e8 was returned in
+    # preference to one at 20, because neither had crossed the tolerance.
     best = nothing
     for y0 in y_starts
         out = _dual_newton_attempt(
             prob, bv, y0, W, act_ph, refs, active, xB, x_buf, dead, degenerate, m, opts,
         )
-        best === nothing && (best = out)
-        if out.converged
+        if best === nothing || out.kkt_error < best.kkt_error
             best = out
-            break
         end
+        out.converged && break
     end
     return best
 end
@@ -846,6 +962,7 @@ function _dual_newton_attempt(
                 viol = max(viol, _phase_tangent(prob, k, u, x_buf))
             end
             kkt_err = max(res_outer, viol)
+            opts.verbose && @info "active-set round" kkt_err res_outer viol nph na inner_ok
             if kkt_err < best_res * (1 - 1.0e-9)
                 best_res = kkt_err
                 # `v` carries refs, `y` and the bounded amounts together, so the
@@ -1066,7 +1183,10 @@ function _dual_newton_attempt(
         x[i] = max(xB[j], 0.0)
     end
 
-    return (; x = x, y = y, active_phases = act_ph, active = active, converged = converged)
+    return (;
+        x = x, y = y, active_phases = act_ph, active = active, converged = converged,
+        kkt_error = best_res,
+    )
 end
 
 """
