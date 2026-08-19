@@ -56,12 +56,12 @@ end
     @test can.rank_A == m
     @test size(can.B) == (m, m)
 
-    # and the factorisation it hands out is usable
+    # and the factorization it hands out is usable
     rhs = [1.0, 2.0, 3.0]
     @test (can.B * OptimaSolver.solve_B(can, rhs)) ≈ rhs
 
     # A truly redundant conservation law is reported, not discovered later
-    # inside a factorisation.
+    # inside a factorization.
     Ar = vcat(A, A[1, :]' .+ A[2, :]')
     @test_throws ArgumentError Canonicalizer(Ar)
 
