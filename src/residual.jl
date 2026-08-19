@@ -137,6 +137,32 @@ Return the diagonal of the barrier-augmented Hessian:
 
 where `hess_f_diag` is the diagonal of ∇²f(n) (caller-provided).
 For a convex Gibbs function with positive curvature, H_diag > 0 always.
+
+!!! note "Why this is `μ/sᵢ²` and not the primal-dual `zᵢ/sᵢ`"
+    Optima and Ipopt build this term from an iterated bound multiplier,
+    `Σᵢ = zᵢ/sᵢ`, and that is the one substantive difference between a primal
+    barrier method and a primal-dual one. It was implemented here in full — the
+    `z` iterate, its own Newton step `δz = μ/s − z − Σ δn`, its own
+    fraction-to-boundary step length, and the `κ_Σ` safeguard of Wächter & Biegler
+    (2006) Eq. (16) — and then removed, because it is measurably worse on the
+    problems this package exists for.
+
+    The reason is structural, not incidental. A pure phase's Gibbs energy is
+    linear in its amount, so `∂²f/∂nᵢ² = 0` exactly and `Σᵢ` is not a correction
+    to the curvature — it IS the whole curvature in that direction. `μ/sᵢ²` is
+    then the exact Hessian of the barrier subproblem actually being solved, and
+    Newton's method on it is exact; `zᵢ/sᵢ` replaces it with a quantity that only
+    tracks the central path approximately, turning an exact Newton step for the
+    pure phases into an inexact one. A primal-dual method earns its keep where
+    `∇²f` supplies the curvature and the multipliers carry information the barrier
+    does not — the opposite regime.
+
+    Measured, with everything else identical: on the LC³ clay sweep, `μ/sᵢ²`
+    certified all five replacement levels and `zᵢ/sᵢ` failed at 30 % (stationarity
+    2.07e-10 against 2.91e-11, same composition to four decimals); on the coupled
+    calcite trajectory the two were indistinguishable (one solve short of
+    tolerance, element balance 4.81e-11 mol in both); on the three-species ideal
+    solution they agreed to the last digit, cold and warm-started. No case gained.
 """
 function hessian_diagonal(
         prob::OptimaProblem,

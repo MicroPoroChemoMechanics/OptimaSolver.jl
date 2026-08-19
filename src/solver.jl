@@ -302,12 +302,19 @@ function solve!(
             end
         end  # inner
 
-        # Reduce barrier
+        # Reduce barrier.
+        #
+        # `reduce_barrier` clamps at `barrier_min`, so `μ < barrier_min` never holds
+        # and cannot end the outer loop: the test below asks instead whether the
+        # barrier was ALREADY at its floor. If it was, the inner loop has just
+        # exited without `is_converged` firing, no further reduction is available,
+        # and re-entering the inner loop only re-evaluates the same residual and
+        # breaks again on `should_reduce_barrier` — without taking a single step, so
+        # not one of those iterations can help. Measured, a warm-started
+        # three-species solve reported 312 iterations for work that had finished at
+        # 27, and a cement solve spent the same 285 wasted evaluations per call.
+        μ <= opts.barrier_min && break
         μ = reduce_barrier(μ, opts)
-
-        if μ < opts.barrier_min
-            break
-        end
     end  # outer
 
     # Final check. The best iterate replaces the last one only when it is

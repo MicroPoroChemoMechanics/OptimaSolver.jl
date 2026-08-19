@@ -97,6 +97,36 @@ function line_search(
     θ_tol = sqrt(eps(T)) * max(one(T), θ_curr)
     use_filter = θ_curr > θ_tol
 
+    # !!! note "Armijo below the resolution of `f`, and why it is left alone"
+    #     Both sides of the test below are numbers of the size of `f_μ`. Once the
+    #     decrease being asked for, `c α |∇f_μ·dn|`, falls under the spacing of
+    #     floating-point numbers near `f_μ`, the comparison is settled by rounding
+    #     rather than by the function, and backtracking halves `α` at random.
+    #     Measured on the three-species ideal solution, iterations 22 through 39
+    #     returned `α = 0.0039`, `0.0078`, then `1.91e-6` four times running while
+    #     `‖dn‖` sat at `4e-12`; the KKT error took those seventeen iterations to
+    #     crawl from 5.1e-11 to 6.5e-12. The noise is in `f` itself — the barrier
+    #     term contributes `1e-11` against `f ≈ 0.6`, so nothing inside this
+    #     function can be reformulated to recover the digits.
+    #
+    #     Two remedies were implemented and both measured worse, so neither is here:
+    #
+    #     - Taking `α_max` whole when the predicted decrease is below the noise
+    #       floor. It cut the toy problem from 55 iterations to 32 at equal
+    #       accuracy, but a step whose merit cannot be assessed is a gamble, and on
+    #       the Reaktoro coupling reference it moved the `t = 0` speciation of pure
+    #       water from 0.9 % to 18.8 % wrong on OH⁻.
+    #     - Treating the same condition as "this barrier level is finished" and
+    #       reducing `μ`. That is not a proximity test at all: `∇f_μ·dn` is small
+    #       whenever the curvature `μ/sᵢ²` is large, which happens far from the
+    #       solution too, so the barrier raced to its floor and the solver returned
+    #       an answer wrong at `1.3e-6` without converging.
+    #
+    #     Ipopt's own tiny-step check (`IpoptAlgorithm::CheckTinyStep`) tests
+    #     `maxᵢ|dnᵢ|/max(1,|nᵢ|)` against `10·eps`, which is `6e-12` against
+    #     `2.2e-15` here: faithful Ipopt does nothing in this regime either. Until
+    #     there is a device with evidence behind it, neither does this.
+
     for _ in 1:(opts.ls_max_iter)
         n_new = n .+ α .* dn
         y_new = y .+ α .* dy

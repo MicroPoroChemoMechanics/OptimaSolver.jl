@@ -81,6 +81,7 @@ function log_iteration(
         println(
             "  iter ",
             lpad(iter, 4), " | μ = ", _fmt_sci(μ),
+            " | err0 = ", _fmt_sci(kkt.error_0),
             " | err_opt = ", _fmt_sci(kkt.error_opt),
             " | err_feas = ", _fmt_sci(kkt.error_feas),
             " | α = ", _fmt_sci(α),

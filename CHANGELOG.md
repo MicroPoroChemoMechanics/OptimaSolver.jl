@@ -1,5 +1,73 @@
 # Changelog
 
+## v0.4.1 — the barrier floor no longer costs 285 empty iterations
+
+No API change, and no numerical change to any answer: the same compositions, the
+same certificates, the same element balances.
+
+### `reduce_barrier` clamps at `barrier_min`, so the exit test never fired
+
+The outer loop ended on `μ < barrier_min`, and `reduce_barrier` returns
+`max(barrier_min, decay·μ)` — a value that is never below the floor. Once `μ`
+reached it, the loop therefore re-entered the inner iteration up to `max_iter`
+times, each round re-evaluating the same residual and breaking again on
+`should_reduce_barrier` **without taking a single step**, so not one of those
+iterations could help. The test now asks whether the barrier was already at its
+floor, which is the condition that means nothing further is available.
+
+Measured: a warm-started three-species solve reported 312 iterations for work that
+had finished at 27, and cement equilibria that stop short of the requested
+tolerance — which is most of them, the tolerance being tighter than a difference of
+chemical potentials can be resolved to in Float64 — fell from 0.17–0.21 s to
+0.03–0.07 s each. In a coupled kinetics run there is one such solve per accepted
+step plus the Jacobian probes, so it compounds.
+
+### A complete primal-dual port, measured, and deliberately not adopted
+
+The one substantive difference between this primal barrier method and the
+primal-dual method Optima and Ipopt implement is the curvature term: `Σᵢ = zᵢ/sᵢ`
+with an iterated bound multiplier, against `Σᵢ = μ/sᵢ²`. It was implemented in full
+— the `z` iterate, its Newton step `δz = μ/s − z − Σ δn`, its own
+fraction-to-boundary step length, the `κ_Σ` safeguard of Wächter & Biegler (2006)
+Eq. (16) — and then removed, because it is measurably worse on the problems this
+package exists for. The finding is recorded at `hessian_diagonal` so it is not
+re-attempted blindly.
+
+The reason is structural. A pure phase's Gibbs energy is linear in its amount, so
+`∂²f/∂nᵢ² = 0` exactly and `Σᵢ` is not a correction to the curvature — it is the
+whole curvature in that direction. `μ/sᵢ²` is then the exact Hessian of the barrier
+subproblem being solved, and Newton's method on it is exact; `zᵢ/sᵢ` replaces it
+with a quantity that only tracks the central path approximately. A primal-dual
+method earns its keep where `∇²f` supplies the curvature and the multipliers carry
+information the barrier does not, which is the opposite regime.
+
+| | `Σ = μ/s²` | `Σ = z/s` |
+|---|---|---|
+| LC³ clay sweep, five replacement levels | **5/5 certified** | 4/5, fails at 30 % |
+| stationarity at LC³-50 | 2.9e-11 | 2.1e-10 |
+| coupled calcite trajectory | 1 solve short of tolerance | identical |
+| three-species ideal solution | — | identical to the last digit |
+
+Two further errors of that port are recorded at `kkt_residual`, both about what
+convergence may be judged on: measuring `‖∇f + Aᵀy − z‖∞` reported twelve solves
+short of tolerance where the primal barrier reported one, the answers being
+identical, because a raw difference of chemical potentials of order 10²–10⁵ RT
+cannot cancel to 1e-10 in Float64; and replacing complementarity by `max|sᵢzᵢ|` to
+compensate is vacuous, since `zᵢ → 0` wherever a variable is interior.
+
+### One noise-dominated regime, diagnosed and left alone
+
+Below the resolution of the objective the Armijo test is settled by rounding rather
+than by the function, and backtracking then halves the step at random: on the
+three-species solution, seventeen consecutive iterations returned `α` of 0.0039,
+0.0078 and 1.91e-6 while `‖dn‖` sat at 4e-12. Two remedies were implemented and
+both measured worse — taking the full step gained 55 → 32 iterations on the toy
+problem but moved the Reaktoro coupling reference's `t = 0` pure-water speciation
+from 0.9 % to 18.8 % wrong on OH⁻, and treating the condition as "this barrier
+level is finished" is not a proximity test at all and returned an answer wrong at
+1.3e-6. Ipopt's own tiny-step check does nothing in this regime either. The
+diagnosis is recorded in `line_search`; the code is unchanged.
+
 ## v0.4.0 — mixing phases that cannot run away, and an active set that exchanges
 
 ### Breaking changes
