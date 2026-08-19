@@ -50,7 +50,7 @@
     # the wrong instrument before: it divides the solver's error by the step, so
     # with `δb = 1e-5` and solves accurate to 1e-10 the quotient carries 1e-5 of
     # noise — exactly the tolerance it was asked to meet. It passed by
-    # coincidence, through error cancellation between two neighbouring warm-started
+    # coincidence, through error cancellation between two neighboring warm-started
     # solves, and any change to the iteration path flipped it while the analytic
     # sensitivity stayed right to nine digits.
     S = sum(exp.(-μ⁰))
