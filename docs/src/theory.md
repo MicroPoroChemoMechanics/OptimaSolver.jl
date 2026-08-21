@@ -146,7 +146,7 @@ Everything above is conditional on ideal mixing, and that condition is not
 cosmetic.
 
 A non-ideal solid solution carries an excess term. For the Redlich–Kister form
-used by [`SolidSolutionPhase`](https://micropochemomechanics.github.io/ChemistryLab.jl/stable/),
+used by [`SolidSolutionPhase`](https://microporochemomechanics.github.io/ChemistryLab.jl/stable/),
 
 ```math
 G^{\rm ex} = N\, x_1 x_2 \bigl(a_0 + a_1 (x_1 - x_2) + a_2 (x_1-x_2)^2\bigr),
