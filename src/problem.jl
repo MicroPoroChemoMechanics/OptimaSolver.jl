@@ -59,12 +59,30 @@ passed (`p = (μ⁰ = ..., T = ...)`). Anything it does not recognize as numeric
 contributes `Union{}`, which is neutral for `promote_type`.
 """
 param_eltype(::Nothing) = Union{}
-param_eltype(x::Number) = typeof(x)
-param_eltype(x::AbstractArray{<:Number}) = eltype(x)
+param_eltype(x::Number) = _concrete_numeric(typeof(x))
+param_eltype(x::AbstractArray) = _concrete_numeric(eltype(x))
 function param_eltype(x::Union{Tuple, NamedTuple})
     return mapreduce(param_eltype, promote_type, values(x); init = Union{})
 end
 param_eltype(::Any) = Union{}
+
+"""
+    _concrete_numeric(T) -> Type
+
+`T` if it is a concrete number type, `Union{}` otherwise.
+
+The concreteness test is what keeps this safe, and it is not a detail. A
+parameter may perfectly well carry an abstractly typed container — the SciML
+path of `ChemistryLab` passes `A::Matrix{Real}` and `b::Vector{Any}` inside `p`,
+because its stoichiometric matrices are built that way. `eltype` of those is
+`Real` and `Any`, which name no working precision: promoting to them made
+`OptimaProblem{Real}`, and the solver died on `eps(Real)`, which has no method.
+
+Only a concrete type can be the arithmetic the solver runs in — and that is
+exactly what the case this promotion exists for provides, since a
+`ForwardDiff.Dual` seeded into `p` is always concretely typed.
+"""
+_concrete_numeric(::Type{T}) where {T} = (isconcretetype(T) && T <: Number) ? T : Union{}
 
 function OptimaProblem(
         A::AbstractMatrix,

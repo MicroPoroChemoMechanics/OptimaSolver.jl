@@ -1,5 +1,39 @@
 # Changelog
 
+## v0.4.3 — an abstractly typed parameter is not a working precision
+
+Fixes a regression introduced in v0.4.2. **If you are on v0.4.2, upgrade.**
+
+### `param_eltype` promoted to `Real`, and the solver died on `eps(Real)`
+
+v0.4.2 added `p` to the promotion that fixes an `OptimaProblem`'s element type, so
+that a parameter seeded with `ForwardDiff.Dual` numbers reaches every workspace.
+It promoted to whatever `eltype` the parameter's containers reported — including
+an **abstract** one.
+
+That is not a hypothetical. `ChemistryLab`'s SciML path passes its stoichiometric
+data inside `p` as `A::Matrix{Real}` and `b::Vector{Any}`, because that is how its
+matrices are built. `eltype` of those is `Real` and `Any`, which name no
+arithmetic: the promotion produced `OptimaProblem{Real}`, `solve!` asked for
+`eps(Real)`, and there is no such method. Every equilibrium solve through that
+interface failed — `ChemistryLab`'s own test suite went red on v0.4.2.
+
+`param_eltype` now contributes a type only when it is **concrete** and a
+`Number`. That is precisely the case the promotion exists for, since a
+`ForwardDiff.Dual` is always concretely typed, and it ignores the abstract
+containers that carry no precision. A parameter mixing both — the real
+`ChemistryLab` case, `Float64` scalars beside a `Matrix{Real}` — contributes
+`Float64` from its concrete leaves alone.
+
+### What the v0.4.2 tests missed, and what now covers it
+
+v0.4.2 shipped a regression test for the case it fixed: differentiating a full
+solve with respect to `μ⁰`. It passed, and it still does. What no test exercised
+was a parameter carrying an abstractly typed container, which is the shape every
+real caller of the SciML interface uses. The suite now builds a problem with
+`p` holding `Matrix{Real}` and `Vector{Any}`, asserts the element type stays
+`Float64`, and solves it.
+
 ## v0.4.2 — differentiating with respect to a parameter
 
 No API change and no numerical change to any answer that already computed: the

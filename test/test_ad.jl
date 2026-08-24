@@ -123,4 +123,31 @@
     @test OptimaSolver.param_eltype((label = "x", μ⁰ = μ⁰)) === Float64
     # neutral for promote_type, so a parameterless problem is unaffected
     @test promote_type(Float64, OptimaSolver.param_eltype(nothing)) === Float64
+
+    # ── an abstractly typed parameter must NOT set the working precision ──────
+    # Only a *concrete* number type can be the arithmetic the solver runs in.
+    # A parameter may carry an abstractly typed container: the SciML path of
+    # `ChemistryLab` passes `A::Matrix{Real}` and `b::Vector{Any}` inside `p`,
+    # because its stoichiometric matrices are built that way. Promoting to
+    # `eltype` of those gave `OptimaProblem{Real}`, and the solver died on
+    # `eps(Real)`, which has no method — a full equilibrium solve, not a corner
+    # case. `Float64` here comes from the concrete leaves only.
+    p_abstract = (
+        μ⁰ = μ⁰,                              # what `G`/`∇G!` above read
+        T = 298.15,
+        A = Matrix{Real}(ones(1, 3)),         # abstract, as ChemistryLab builds it
+        b = Vector{Any}([1.0]),
+    )
+    @test OptimaSolver.param_eltype(p_abstract) === Float64
+    @test OptimaSolver.param_eltype((A = Matrix{Real}(ones(1, 3)),)) === Union{}
+    @test OptimaSolver.param_eltype((b = Vector{Any}([1.0]),)) === Union{}
+    @test OptimaSolver.param_eltype((v = Real[1.0, 2.0],)) === Union{}
+
+    prob_abstract = OptimaProblem(
+        A, b, G, ∇G!; lb = fill(1.0e-16, 3), p = p_abstract
+    )
+    @test eltype(prob_abstract.A) === Float64
+    @test isfinite(eps(eltype(prob_abstract.A)))     # what `solve!` needs
+    res_abstract = solve(prob_abstract, OptimaOptions(tol = 1.0e-12))
+    @test res_abstract.converged
 end
