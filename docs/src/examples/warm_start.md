@@ -5,14 +5,21 @@ CurrentModule = OptimaSolver
 # Warm Start
 
 When solving a sequence of related problems (varying temperature, pH, element amounts,
-etc.), passing the solution of one solve as the initial guess of the next typically
-reduces the iteration count by 50–90 % and avoids the cold-start lifting heuristic.
+etc.), passing the solution of one solve as the initial guess of the next reduces the
+iteration count and avoids the cold-start lifting heuristic.
+
+How much it saves depends on how far apart the two problems are, and on how hard
+the cold start was to begin with. The deliberately easy three-species problem
+below converges from scratch without difficulty, so the gain it shows is
+modest — the counts printed by the block are the real ones. The saving is
+largest where it matters: a system with pure solids or gases, where a cold start
+pays for the lifting heuristic and several barrier reductions before it moves.
 
 ## Direct API warm-start
 
 Pass a previous [`OptimaResult`](@ref) as the `u0` keyword argument:
 
-```julia
+```@example warm
 using OptimaSolver
 
 μ⁰ = [0.0, 1.0, 2.0]
@@ -43,8 +50,12 @@ near the new solution, so the outer loop converges in 1–3 steps.
 Combine warm-start with a pre-built [`Canonicalizer`](@ref) to minimize overhead
 when both $A$ and $\mu^0$ change slowly:
 
-```julia
+```@example warm
 can = Canonicalizer(A)   # fixed A, build QR + LU once
+
+# Stand-in for whatever supplies standard chemical potentials at a temperature.
+# A placeholder, not thermodynamics: the subject here is warm-starting.
+μ⁰_at_temperature(T_K) = μ⁰ .* (298.15 / T_K)
 
 results = OptimaResult[]
 prev = nothing
@@ -54,8 +65,10 @@ for T_K in range(298.15, 400.0; step=5.0)
     prob_T = OptimaProblem(A, b, G, ∇G!; lb=fill(1e-16, 3), p=p_T)
     r = solve(prob_T, can, opts; u0=prev)
     push!(results, r)
-    prev = r   # warm-start next step
+    global prev = r   # warm-start next step
 end
+
+println(length(results), " solves, iterations: ", [r.iterations for r in results])
 ```
 
 !!! note "Non-converged results"

@@ -5,3 +5,6 @@ OptimaSolver = "24efeca9-a785-406e-adb3-83609348bee7"
 [compat]
 Documenter = "1"
 julia = "1"
+
+[sources]
+OptimaSolver = {path = ".."}

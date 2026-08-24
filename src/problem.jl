@@ -24,6 +24,15 @@ Gibbs-energy minimization problem in the form:
 - `lb`: lower bounds on n (default: fill(ε, ns))
 - `ub`: upper bounds on n (default: fill(Inf, ns))
 - `p`:  parameter tuple passed through to f and g!
+
+# Element type
+
+`T` is promoted over `A`, `b`, `lb`, `ub` **and the numeric leaves of `p`**. The
+last one is what makes forward-mode differentiation with respect to a parameter
+work: `ForwardDiff` seeds `p` with `Dual` numbers, and if `T` were inferred from
+the constraint data alone it would stay `Float64`, so the solver's gradient
+buffer would be a `Vector{Float64}` and the user's `g!` would fail trying to
+write a `Dual` into it.
 """
 struct OptimaProblem{T <: Real, F <: Function, G <: Function}
     A::Matrix{T}
@@ -37,6 +46,26 @@ struct OptimaProblem{T <: Real, F <: Function, G <: Function}
     p::Any
 end
 
+"""
+    param_eltype(p) -> Type
+
+Numeric element type carried by the parameter object `p`, or `Union{}` when it
+carries none. Used to promote an `OptimaProblem`'s element type, so that a
+parameter seeded with `ForwardDiff.Dual` numbers propagates into every workspace
+the solver allocates.
+
+Descends into tuples and named tuples, which is how parameters are normally
+passed (`p = (μ⁰ = ..., T = ...)`). Anything it does not recognize as numeric
+contributes `Union{}`, which is neutral for `promote_type`.
+"""
+param_eltype(::Nothing) = Union{}
+param_eltype(x::Number) = typeof(x)
+param_eltype(x::AbstractArray{<:Number}) = eltype(x)
+function param_eltype(x::Union{Tuple, NamedTuple})
+    return mapreduce(param_eltype, promote_type, values(x); init = Union{})
+end
+param_eltype(::Any) = Union{}
+
 function OptimaProblem(
         A::AbstractMatrix,
         b::AbstractVector,
@@ -46,7 +75,7 @@ function OptimaProblem(
         ub::AbstractVector = fill(Inf, size(A, 2)),
         p = nothing,
     ) where {F <: Function, G <: Function}
-    T = promote_type(eltype(A), eltype(b), eltype(lb), eltype(ub))
+    T = promote_type(eltype(A), eltype(b), eltype(lb), eltype(ub), param_eltype(p))
     ns = size(A, 2)
     m = size(A, 1)
     @assert length(b) == m "b length $(length(b)) must match A rows $m"

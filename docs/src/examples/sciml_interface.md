@@ -10,6 +10,12 @@ and is designed as a drop-in replacement for `IpoptOptimizer` inside
 
 ## Usage with ChemistryLab.jl
 
+The block below is illustrative and is **not** executed when this documentation is
+built: `ChemistryLab` depends on `OptimaSolver`, not the other way round, so
+adding it to this package's documentation environment would invert the dependency.
+The blocks further down that build a `SciMLBase.OptimizationProblem` directly are
+executed, and are the ones to trust as an API reference.
+
 ```julia
 using ChemistryLab, OptimaSolver
 
@@ -29,7 +35,10 @@ state_eq = equilibrate(state0; solver=OptimaOptimizer(tol=1e-10, verbose=false))
 
 ## Constructor options
 
-```julia
+```@example sciml
+using OptimaSolver
+import SciMLBase
+
 alg = OptimaOptimizer(;
     tol            = 1e-10,  # KKT convergence tolerance
     max_iter       = 300,    # maximum Newton iterations
@@ -50,7 +59,7 @@ alg = OptimaOptimizer(;
 
 Alternatively, pass a pre-built [`OptimaOptions`](@ref):
 
-```julia
+```@example sciml
 opts = OptimaOptions(tol=1e-12, verbose=true, use_fd_hessian=true)
 alg  = OptimaOptimizer(opts)
 ```
@@ -81,9 +90,7 @@ unchanged and the next call falls back to a cold start from `opt_prob.u0`.
 `OptimaOptimizer` works with any `SciMLBase.OptimizationProblem` encoding mass-balance
 constraints as equalities:
 
-```julia
-using OptimaSolver
-
+```@example sciml
 ns = 3
 A = ones(1, ns)
 b = [1.0]
@@ -96,8 +103,10 @@ f_sci = SciMLBase.OptimizationFunction(
 )
 u0  = fill(1/ns, ns)
 lb  = fill(1e-16, ns)
+ub  = fill(Inf, ns)     # SciMLBase requires both bounds as soon as one is given
 opt_prob = SciMLBase.OptimizationProblem(f_sci, u0, (μ⁰=μ⁰,);
                                           lb     = lb,
+                                          ub     = ub,
                                           lcons  = zeros(1),
                                           ucons  = zeros(1))
 
@@ -108,7 +117,7 @@ println(sol.retcode)  # SciMLBase.ReturnCode.Success
 
 The raw [`OptimaResult`](@ref) is accessible via `sol.original`:
 
-```julia
+```@example sciml
 raw = sol.original           # OptimaResult
 println(raw.converged)       # true
 println(raw.iterations)      # number of Newton iterations
@@ -131,10 +140,12 @@ It extracts them via one of three paths (in order of preference):
 
 To use path 1 directly:
 
-```julia
-opt_prob = SciMLBase.OptimizationProblem(f_sci, u0, (μ⁰=μ⁰, A=A, b=b);
-                                          lb=lb, lcons=zeros(1), ucons=zeros(1))
-sol = SciMLBase.solve(opt_prob, OptimaOptimizer())
+```@example sciml
+opt_prob_direct = SciMLBase.OptimizationProblem(f_sci, u0, (μ⁰=μ⁰, A=A, b=b);
+                                                lb=lb, ub=ub,
+                                                lcons=zeros(1), ucons=zeros(1))
+sol_direct = SciMLBase.solve(opt_prob_direct, OptimaOptimizer())
+println(sol_direct.u)
 ```
 
 ## Variable scaling details

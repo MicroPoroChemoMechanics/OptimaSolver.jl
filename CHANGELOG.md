@@ -1,5 +1,71 @@
 # Changelog
 
+## v0.4.2 — differentiating with respect to a parameter
+
+No API change and no numerical change to any answer that already computed: the
+same compositions, the same certificates, the same element balances.
+
+### `OptimaProblem` ignored the element type of `p`, so AD through a parameter failed
+
+`OptimaProblem` inferred its element type as
+
+    T = promote_type(eltype(A), eltype(b), eltype(lb), eltype(ub))
+
+`p` is typed `Any` and was left out. Seeding it with `ForwardDiff.Dual` numbers —
+differentiating an equilibrium with respect to standard chemical potentials, say —
+therefore left `T` at `Float64`, so `solve!` allocated its gradient buffer as a
+`Vector{Float64}` and the caller's `g!` died on the first write:
+
+    MethodError: no method matching Float64(::ForwardDiff.Dual{...})
+
+What made this hard to notice is that everything around it worked. Differentiating
+with respect to `b` was fine, because `eltype(b)` *is* in the promotion, and the
+test suite exercised exactly that. Every building block — `gibbs_hessian_diag`,
+`kkt_residual`, `hessian_diagonal`, the objective — was separately verified to be
+Dual-compatible. Only a full solve seeded through `p` was not, and that is the case
+the documentation claimed worked: *"Because Optima uses generic arithmetic
+throughout, ForwardDiff can differentiate the entire sensitivity computation with
+respect to parameters"*.
+
+`param_eltype` now contributes the numeric element type carried by `p`, descending
+into tuples and named tuples, and returning `Union{}` — neutral for
+`promote_type` — for anything it does not recognize as numeric. A parameterless
+problem is unaffected.
+
+The regression test differentiates a full solve with respect to `μ⁰` and compares
+against the analytic sensitivity `∂n_∂μ0`, which never sees a dual: the two routes
+to the same Jacobian, implicit function theorem and forward AD, now agree to
+`7e-12`.
+
+### The documented examples are executed, and four of them did not run
+
+`docs/src/examples/` held twenty-three `julia` blocks that Documenter never
+executed, so nothing checked them. They are now `@example` blocks, and making
+them run required fixing what they said:
+
+- `basic_usage.md` and `warm_start.md` called `μ⁰_at_temperature`, a function
+  defined nowhere in the package or the documentation. Both now define an
+  explicit placeholder, labeled as such — the subject of those sections is
+  reusing a `Canonicalizer` and warm-starting, not thermodynamics.
+- `sciml_interface.md` built its central `SciMLBase.OptimizationProblem` with
+  `lb` and no `ub`, which SciMLBase rejects outright: *"If any of `lb` or `ub` is
+  provided, both must be provided."* The page's main example had never run.
+- `basic_usage.md` set bounds on a problem built from `f, g!`, names that do not
+  exist on that page, and omitted `p` — so the objective would have failed on
+  `p.μ⁰`.
+- The "Sample output" transcription of the verbose iteration log had neither the
+  right columns nor the right prefix. The executed block prints the real log, so
+  the transcription is gone.
+
+Two blocks remain illustrative on purpose and say so: the `ChemistryLab` usage
+example, because `ChemistryLab` depends on `OptimaSolver` and not the reverse, and
+the warm-start cache sequence, which refers to problems built elsewhere.
+
+`docs/Project.toml` gained `[sources] OptimaSolver = {path = ".."}`. Continuous
+integration already ran `Pkg.develop(path=pwd())`, but a local documentation build
+without it resolved the *registered* version — documenting a release rather than
+the working tree.
+
 ## v0.4.1 — the barrier floor no longer costs 285 empty iterations
 
 No API change, and no numerical change to any answer: the same compositions, the

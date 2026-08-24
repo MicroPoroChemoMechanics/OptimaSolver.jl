@@ -92,4 +92,35 @@
     h_b = OptimaSolver.hessian_diagonal(prob_b, res_b.n, 1.0e-14, hf_b)
     sens_b = sensitivity(prob_b, res_b.n, res_b.y, h_b, 1.0e-14)
     @test d_ad ≈ sens_b.∂n_∂b[1, 1] rtol = 1.0e-6
+
+    # ── a dual-valued PARAMETER drives the whole Newton loop ──────────────────
+    # The test above seeds `b`, whose element type has always been part of the
+    # problem's promotion. Seeding `p` is the case that was broken: `p` is typed
+    # `Any`, so `OptimaProblem` inferred `T` from the constraint data alone, the
+    # workspace was allocated as `Vector{Float64}`, and the user's `g!` failed
+    # with `MethodError: no method matching Float64(::ForwardDiff.Dual)` — while
+    # every building block above kept passing. `param_eltype` closes that gap.
+    #
+    # The reference is the analytic sensitivity, which never sees a dual, so the
+    # two routes to ∂n*/∂μ⁰ — implicit function theorem and forward AD — are
+    # independent.
+    jac_ad_p = ForwardDiff.jacobian(
+        μ0 -> solve(
+            OptimaProblem(A, b, G, ∇G!; lb = fill(1.0e-16, 3), p = (μ⁰ = μ0,)),
+            OptimaOptions(tol = 1.0e-12),
+        ).n,
+        μ⁰,
+    )
+    @test all(isfinite, jac_ad_p)
+    @test jac_ad_p ≈ sens.∂n_∂μ0 rtol = 1.0e-6
+
+    # `param_eltype` itself: what it descends into, and what it must stay
+    # neutral about.
+    @test OptimaSolver.param_eltype(nothing) === Union{}
+    @test OptimaSolver.param_eltype((μ⁰ = μ⁰,)) === Float64
+    @test OptimaSolver.param_eltype((a = 1.0f0, b = [2.0])) === Float64
+    @test OptimaSolver.param_eltype("not numeric") === Union{}
+    @test OptimaSolver.param_eltype((label = "x", μ⁰ = μ⁰)) === Float64
+    # neutral for promote_type, so a parameterless problem is unaffected
+    @test promote_type(Float64, OptimaSolver.param_eltype(nothing)) === Float64
 end

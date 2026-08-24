@@ -18,7 +18,7 @@ already-factored Schur complement $S = A H^{-1} A^\top$).
 
 ## Computing sensitivity matrices
 
-```julia
+```@example sens
 using OptimaSolver
 
 μ⁰ = [0.0, 1.0, 2.0]
@@ -51,8 +51,9 @@ to the system, how does the equilibrium composition change?"
 **Sanity check** — the extra mole must be distributed among the species, so
 columns sum to 1:
 
-```julia
+```@example sens
 @assert sum(sens.∂n_∂b[:, 1]) ≈ 1.0 atol=1e-8
+println(sum(sens.∂n_∂b[:, 1]))
 ```
 
 For a single-element problem (as here), the entire column is positive and sums
@@ -68,7 +69,7 @@ Expected signs:
 - Off-diagonal: $\partial n_j^*/\partial \mu_k^0 > 0$ for $j \neq k$ (competitors
   pick up the released mass)
 
-```julia
+```@example sens
 @assert sens.∂n_∂μ0[1, 1] < 0   # n₁ decreases when μ₁⁰ increases
 @assert sens.∂n_∂μ0[2, 1] > 0   # n₂ increases (competitor gains)
 ```
@@ -78,7 +79,7 @@ Expected signs:
 A standard way to validate the sensitivity matrices is to perturb $b$ or $\mu^0$
 by a small $\delta$ and compare with the finite-difference approximation:
 
-```julia
+```@example sens
 δ = 1e-5
 
 # --- Validate ∂n*/∂b ---
@@ -123,7 +124,7 @@ step and can reduce the total solve time by an order of magnitude.
 Because Optima uses generic arithmetic throughout, `ForwardDiff` can
 differentiate the entire sensitivity computation with respect to parameters:
 
-```julia
+```@example sens
 using ForwardDiff
 
 # Jacobian of n* w.r.t. μ⁰, computed by AD rather than IFT
