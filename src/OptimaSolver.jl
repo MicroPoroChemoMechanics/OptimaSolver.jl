@@ -62,7 +62,9 @@ export OptimaOptimizer, reset_cache!, solve
 # Internal components (exported for testing and extension)
 export SolutionPhase, DualNewtonProblem, DualNewtonOptions, dual_newton_solve,
     kkt_certificate, degenerate_components, stationarity_capacity,
+    phase_tangent_measure,
     KKTResidual, kkt_residual, hessian_diagonal, gibbs_hessian_diag
+export row_scales
 export NewtonStep, compute_step!, compute_step_nullspace!, clamp_step
 export LineSearchFilter, line_search
 export classify_variables, reduced_step_for_unstable!, stability_measure

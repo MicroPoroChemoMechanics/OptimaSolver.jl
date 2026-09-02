@@ -199,7 +199,8 @@ mutable struct OptimaState{T <: Real}
     iter::Int          # iteration count
     converged::Bool
     error_opt::T       # ‖∇G + Aᵀy - μ/n‖∞  (optimality)
-    error_feas::T      # ‖An - b‖∞           (feasibility)
+    error_feas::T      # feasibility, each row scaled by its own budget
+    error_feas_abs::T  # ‖An - b‖∞, unscaled, in the units of `b`
 end
 
 function OptimaState(ns::Int, m::Int, T::Type = Float64)
@@ -211,12 +212,13 @@ function OptimaState(ns::Int, m::Int, T::Type = Float64)
         false,
         T(Inf),
         T(Inf),
+        T(Inf),
     )
 end
 
 function OptimaState(n0::AbstractVector{T}, y0::AbstractVector{T}, μ0::T) where {T}
     return OptimaState{T}(
-        copy(n0), copy(y0), μ0, 0, false, T(Inf), T(Inf),
+        copy(n0), copy(y0), μ0, 0, false, T(Inf), T(Inf), T(Inf),
     )
 end
 
@@ -233,7 +235,9 @@ Immutable solver output.
 - `iterations`: total Newton iterations
 - `converged`:  convergence flag
 - `error_opt`:  final KKT optimality residual
-- `error_feas`: final feasibility residual
+- `error_feas`: final feasibility residual, each row scaled by its own budget
+  (see `row_scales`) — this is the quantity `tol` is compared against
+- `error_feas_abs`: the same residual unscaled, `‖An − b‖∞`, for reporting
 """
 struct OptimaResult{T <: Real}
     n::Vector{T}
@@ -242,6 +246,7 @@ struct OptimaResult{T <: Real}
     converged::Bool
     error_opt::T
     error_feas::T
+    error_feas_abs::T
 end
 
 function OptimaResult(state::OptimaState{T}) where {T}
@@ -252,5 +257,6 @@ function OptimaResult(state::OptimaState{T}) where {T}
         state.converged,
         state.error_opt,
         state.error_feas,
+        state.error_feas_abs,
     )
 end

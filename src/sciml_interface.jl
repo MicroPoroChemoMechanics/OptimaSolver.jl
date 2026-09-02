@@ -234,6 +234,7 @@ function SciMLBase.solve(
         result_s.converged,
         result_s.error_opt,
         result_s.error_feas,
+        result_s.error_feas_abs,
     )
 
     # Cache for next call — only cache converged solutions; a non-converged

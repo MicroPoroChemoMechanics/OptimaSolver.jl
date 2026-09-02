@@ -31,9 +31,43 @@ struct KKTResidual{T <: Real}
     ex::Vector{T}    # optimality residual  (ns,)
     ew::Vector{T}    # feasibility residual (m,)
     error_opt::T     # complementarity at the CURRENT μ:  max |sᵢ (∇f + Aᵀy)ᵢ − μ|
-    error_feas::T    # ‖An − b‖∞
+    error_feas::T    # feasibility, each row scaled by its own budget
+    error_feas_abs::T # ‖An − b‖∞, unscaled, in the units of `b`
     error::T         # max(error_opt, error_feas) — drives the barrier schedule
-    error_0::T       # the same at μ = 0: max(max |sᵢ (∇f + Aᵀy)ᵢ|, ‖An − b‖∞)
+    error_0::T       # the same at μ = 0: max(max |sᵢ (∇f + Aᵀy)ᵢ|, error_feas)
+end
+
+"""
+    row_scales(A, b, n) -> Vector
+
+Per-row scale for the feasibility residual: the larger of the row's budget and
+the total amount passing through it, `Σⱼ |A_kⱼ| nⱼ`.
+
+Needed because a conservation matrix mixes rows whose budgets differ by orders
+of magnitude, and an unscaled `‖An − b‖∞` then reports only the largest of them.
+Measured on calcite dissolving in water: at `‖An − b‖∞ = 3e-6` the water row
+(111 mol) is satisfied to 1.8e-8 relative while the **charge row** (budget
+1.0e-4) is out by 3 %, and the charge balance of the returned composition is
+wrong in the second digit. One number cannot say both, and the one that was
+reported was the harmless one.
+
+The flux term is what makes a zero budget meaningful: a charge row sums to zero
+by construction, so `|b_k| = 0` and no relative error exists — but the ions
+carrying it are of size 1e-4, and that is the scale a residual on that row must
+be judged against.
+"""
+function row_scales(A::AbstractMatrix, b::AbstractVector, n::AbstractVector)
+    m = length(b)
+    T = promote_type(eltype(A), eltype(b), eltype(n))
+    scales = Vector{T}(undef, m)
+    @inbounds for k in 1:m
+        flux = zero(T)
+        for j in eachindex(n)
+            flux += abs(A[k, j]) * abs(n[j])
+        end
+        scales[k] = max(abs(b[k]), flux)
+    end
+    return scales
 end
 
 """
@@ -87,7 +121,20 @@ function kkt_residual(
         end
     end
 
-    err_feas = isempty(ew) ? zero(Tv) : maximum(abs, ew)
+    # Scaled row by row: see `row_scales`.
+    err_feas = zero(Tv)
+    err_feas_abs = zero(Tv)
+    if !isempty(ew)
+        scales = row_scales(prob.A, prob.b, n)
+        @inbounds for k in eachindex(ew)
+            a = abs(ew[k])
+            a > err_feas_abs && (err_feas_abs = a)
+            # An entirely empty row carries no residual to scale.
+            sc = scales[k]
+            v = sc > 0 ? a / sc : a
+            v > err_feas && (err_feas = v)
+        end
+    end
 
     # The error at μ = 0 — Ipopt's `E_0` (Wächter & Biegler 2006, Algorithm A,
     # step 2) — and it is what convergence must be judged on.
@@ -121,10 +168,15 @@ function kkt_residual(
     # 1e-17. A criterion that can never be met is not a safety net — it makes the
     # retcode uninformative and leaves the iterate wherever the budget ran out.
     #
-    # The feasibility error is NOT scaled: `An − b` is in moles and already
-    # means something absolute.
+    # The feasibility error IS scaled, row by row — see `row_scales`. It used to
+    # be left as `‖An − b‖∞` on the argument that moles are already absolute,
+    # which is true and beside the point: the rows of a conservation matrix do
+    # not share a scale, so the unscaled norm reports the largest budget and
+    # hides every smaller one. `error_feas_abs` keeps the unscaled figure for
+    # reporting.
     return KKTResidual{Tv}(
-        ex, ew, err_opt, err_feas, max(err_opt, err_feas), max(err_opt_0, err_feas),
+        ex, ew, err_opt, err_feas, err_feas_abs,
+        max(err_opt, err_feas), max(err_opt_0, err_feas),
     )
 end
 

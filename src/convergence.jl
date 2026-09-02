@@ -84,6 +84,7 @@ function log_iteration(
             " | err0 = ", _fmt_sci(kkt.error_0),
             " | err_opt = ", _fmt_sci(kkt.error_opt),
             " | err_feas = ", _fmt_sci(kkt.error_feas),
+            " | ‖An−b‖∞ = ", _fmt_sci(kkt.error_feas_abs),
             " | α = ", _fmt_sci(α),
             α_max === nothing ? "" : " | α_max = " * _fmt_sci(α_max),
             dn === nothing ? "" : " | ‖dn‖ = " * _fmt_sci(maximum(abs, dn)),

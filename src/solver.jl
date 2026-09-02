@@ -159,6 +159,7 @@ function solve!(
             kkt = kkt_residual(prob, n, y, grad, μ)
             state.error_opt = kkt.error_opt
             state.error_feas = kkt.error_feas
+            state.error_feas_abs = kkt.error_feas_abs
             _keep_best!(kkt, μ)
 
             # Global convergence check
@@ -296,6 +297,7 @@ function solve!(
                 kkt_f = kkt_residual(prob, n, y, grad, μ)
                 state.error_opt = kkt_f.error_opt
                 state.error_feas = kkt_f.error_feas
+                state.error_feas_abs = kkt_f.error_feas_abs
                 state.converged = is_converged(kkt_f, opts)
                 log_final(state, opts)
                 return state
@@ -330,6 +332,7 @@ function solve!(
     end
     state.error_opt = kkt.error_opt
     state.error_feas = kkt.error_feas
+    state.error_feas_abs = kkt.error_feas_abs
     state.converged = is_converged(kkt, opts)
     state.n .= n
     state.y .= y
@@ -407,7 +410,9 @@ function _make_initial_state(prob::OptimaProblem{T}, opts::OptimaOptions, u0, y0
         y0_vec = zeros(T, m)
     end
 
-    return OptimaState{T}(n0, y0_vec, T(opts.barrier_init), 0, false, T(Inf), T(Inf))
+    return OptimaState{T}(
+        n0, y0_vec, T(opts.barrier_init), 0, false, T(Inf), T(Inf), T(Inf),
+    )
 end
 
 """

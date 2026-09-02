@@ -1,5 +1,124 @@
 # Changelog
 
+## v0.5.0 — a feasibility error that could only see the largest budget
+
+### Breaking changes
+
+- `error_feas` is now scaled row by row, so `tol` means a **relative** accuracy
+  per conservation row. Code comparing it against an absolute mole tolerance must
+  be revisited; the unscaled figure is still available as `error_feas_abs`.
+- `KKTResidual`, `OptimaState` and `OptimaResult` each gain a field
+  (`error_feas_abs`). Positional constructors need the extra argument.
+- `DualNewtonProblem` gains six keywords (`gq`, `hq`, `cq`, `q0`, `qscale`, `Aq`,
+  `always_active`) and two type parameters. Constructed by keyword, as documented,
+  nothing changes.
+- `kkt_certificate` returns three more fields (`worst_violation_bounded`,
+  `worst_violation_phase`, `absent_phases`) and `worst_violation` now includes the
+  mixing-phase test, so a composition that omits a stable solid solution is no
+  longer certified.
+- Downstream packages must widen their bound to `OptimaSolver = "0.5"`.
+
+### A block of unknown parameters, so a prescribed property is not an outer loop
+
+`DualNewtonProblem` takes `q0` unknowns with `cq` residuals, `gq` for a standard
+part that depends on them, `hq` for an activity model that does, and `Aq` so a
+linear row may involve them. The outer Newton system grows by `nq` equations and
+`nq` unknowns, and that is the whole cost.
+
+It is the vehicle for everything a closed system at fixed `(T, P)` cannot express:
+a prescribed enthalpy with the temperature unknown, a prescribed volume with the
+pressure unknown, a prescribed activity with a titrant amount unknown, and the
+reaction extents of an implicit kinetic step. `ChemistryLab` 0.14.0 uses all four.
+
+`hq` is not a convenience. The Debye-Hückel coefficients are functions of
+temperature, so an adiabatic solve whose activity model stayed at the starting
+temperature would minimize a Gibbs energy that does not exist. A test shows the
+same problem without `hq` failing to converge.
+
+`Aq` carries the structural trick of Leal's kinetics: the reactivity constraint
+`Kᵀn − Δξ = ξ₀` is **linear**, so it belongs in the conservation block beside the
+elements and the charge, and the algebraic cost of kinetics is the number of
+reactions rather than of species.
+
+`always_active` marks bounded variables pinned by a linear row. A variable whose
+amount is fixed by a constraint is not deciding anything by a sign test: it is
+determined, and the row's own multiplier makes its stationarity satisfiable at
+whatever amount is demanded. Without it such a variable can never enter, because
+it starts at zero and the drop rule removes anything below `si_tol` — which is
+what happened to a mineral exhausted at equilibrium, leaving its reactivity row
+unenforced.
+
+### The certificate could not see a solid solution that should have formed
+
+A mixing phase held **entirely** absent was examined by neither of the
+certificate's two tests: its members are not interior (they sit at the floor) and
+not bound-constrained (a phase member's condition is an equality, since
+`ln xᵢ → −∞`). So a composition omitting a solid solution passed unexamined — the
+one soundness hole the certificate had, and precisely the case that matters for a
+cement, whose C-S-H is a mixing phase.
+
+`phase_tangent_measure` closes it: Michelsen's tangent-plane measure with the
+trial composition refined against the phase's **own** activity model by successive
+substitution, so the test is not the ideal approximation. It enters
+`worst_violation`.
+
+While there, a misleading comment is corrected. `_phase_tangent` — the *search*
+heuristic, which decides which candidate phase to try next — takes `lnγ` as zero
+and always did, while its comment claimed the activity model was read. A
+first-order test is the right cost for a search, and nothing in the proof depended
+on it: `kkt_certificate` uses the true `∇f = g + h(x)`.
+
+The certificate's feasibility residual now includes `Aq q`. Without it the
+parameter itself is reported as an infeasibility: on a kinetic step the residual
+came out at exactly `Δξ`.
+
+### The rows of a conservation matrix do not share a scale
+
+`error_feas` was `‖An − b‖∞`, on the argument that moles are absolute. True, and
+beside the point: the rows of a chemical conservation matrix carry budgets that
+differ by orders of magnitude, so one norm reports the largest and hides the rest.
+
+Measured on 1 mmol of calcite dissolving in 1 kg of water, at the answer the
+solver returns:
+
+| row | budget | residual | relative |
+|---|---|---|---|
+| H | 111.0 mol | 1e-6 | 9e-9 |
+| O | 55.5 mol | 8e-6 | 1.4e-7 |
+| Ca | 1.0e-3 mol | 1e-6 | 1e-3 |
+| CO₃ | 1.0e-3 mol | 3e-6 | 3e-3 |
+| charge | 1.0e-4 mol | 3e-6 | **3e-2** |
+
+`‖An − b‖∞ = 3e-6` looks like round-off and is reported as such. The charge
+balance of the composition handed back is wrong in the second digit.
+
+Each row is now divided by `max(|bₖ|, Σⱼ |Aₖⱼ| nⱼ)` — see `row_scales`. The flux
+term is what makes a zero budget meaningful: a charge row sums to zero by
+construction, so no relative error exists against `b`, but the ions carrying it
+are of size 1e-4 and that is the scale to judge against.
+
+The change does not repair the iteration, and was not expected to: on the same
+case the solve still ends on `MaxIters`, now for the right reason. What it does is
+stop the error from being invisible. The accuracy itself is a `ChemistryLab`
+question, answered there by solving through both back ends and keeping the answer
+the KKT certificate proves optimal — which certifies ten of ten reference cases
+where the interior point alone certifies seven.
+
+### Why the interior point cannot close that residual
+
+Traced on the same case: from iteration 104 to 127 the error sits at exactly
+3.0e-6, `α` is pinned at its ceiling of 0.15, and `‖dn‖` falls geometrically at
+`1 − α` per step. The Newton direction is not reducing the residual; the
+fraction-to-boundary rule lets through 15 % of a correction the next iteration
+re-poses. Raising `max_iter` to 30 000 changes nothing, because the outer loop
+exits on `μ ≤ barrier_min` rather than on the iteration count, and loosening
+`tol` to 1e-6 changes nothing either.
+
+This is the regime the dual Newton was written for: its interior variables are
+parameterized by `w = ln x`, so no fraction-to-boundary rule applies to them, and
+only the bounded variables carry an active set. It is 3e-12 on the same case.
+
+
 ## v0.4.3 — an abstractly typed parameter is not a working precision
 
 Fixes a regression introduced in v0.4.2. **If you are on v0.4.2, upgrade.**

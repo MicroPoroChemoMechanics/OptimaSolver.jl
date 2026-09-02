@@ -159,6 +159,13 @@ A convex program in the form solved by [`dual_newton_solve`](@ref):
     the composition — a pure phase, of unit activity — so they are either at a
     stationarity of their own or at zero, and an active set decides which.
   - `params`: passed through to `h`.
+  - `always_active`: bounded variables that are never dropped from the active set.
+    A variable whose amount is fixed by a linear row is not deciding anything by a
+    sign test: it is determined, and its extra multiplier makes its stationarity
+    satisfiable at whatever amount the row demands. Without this it can never
+    enter, because it starts at zero and the drop rule removes anything below
+    `si_tol` — which is exactly what happens to the products of a solid-to-solid
+    reaction whose extents pin them.
 
 # The two kinds of variable
 
@@ -169,13 +176,22 @@ never exactly absent while the phase exists. The active set for a mixing phase i
 therefore over the PHASE, and the criterion is a tangent-plane test rather than a
 sign of a saturation index.
 """
-struct DualNewtonProblem{T <: Real, H}
+struct DualNewtonProblem{T <: Real, H, G, C, HQ}
     A::Matrix{T}
     g::Vector{T}
     h::H
     phases::Vector{SolutionPhase}
     idx_bounded::Vector{Int}
     params::Any
+    # ── the q block: prescribed properties, solved for simultaneously ────────
+    nq::Int              # number of unknown parameters (0 for a plain T, P solve)
+    gq::G                # gq(q, params) -> Vector, the standard part at those q
+    cq::C                # cq(x, q, params) -> Vector of length nq, the residuals
+    hq::HQ               # hq(x, q, params) -> Vector, `h` when it depends on q
+    Aq::Matrix{T}        # m × nq, so the linear rows read `A x + Aq q = b`
+    always_active::Vector{Int}   # bounded variables pinned by a linear row
+    q0::Vector{T}        # starting guess
+    qscale::Vector{T}    # difference-step scale, one per entry
 end
 
 function DualNewtonProblem(
@@ -183,6 +199,13 @@ function DualNewtonProblem(
         phases::AbstractVector{SolutionPhase},
         idx_bounded::AbstractVector{Int} = Int[],
         params = nothing,
+        gq = nothing,
+        cq = nothing,
+        hq = nothing,
+        q0::AbstractVector = Float64[],
+        qscale::AbstractVector = Float64[],
+        Aq::AbstractMatrix = zeros(Float64, size(A, 1), length(q0)),
+        always_active::AbstractVector{Int} = Int[],
     )
     isempty(phases) && throw(
         ArgumentError(
@@ -207,11 +230,63 @@ function DualNewtonProblem(
         )
     end
 
+    nq = length(q0)
+    if nq > 0
+        # `gq` is optional. A prescribed temperature moves the standard
+        # potentials, so it needs one; a reaction extent does not — it enters
+        # through `Aq` and `cq` only, `g` staying put. Requiring `gq` refused a
+        # perfectly well-posed kinetic step.
+        cq === nothing && throw(
+            ArgumentError("`q0` has $nq entries but no `cq`: each unknown parameter " *
+                          "needs one residual equation.")
+        )
+        length(qscale) == nq || throw(
+            ArgumentError("`qscale` must have one entry per unknown parameter " *
+                          "($nq), got $(length(qscale)). It sets the difference " *
+                          "step, and a temperature in kelvin and a reaction extent " *
+                          "in moles do not share a scale.")
+        )
+        all(>(0), qscale) || throw(ArgumentError("`qscale` entries must be positive."))
+        size(Aq) == (size(A, 1), nq) || throw(
+            ArgumentError("`Aq` must be $(size(A, 1))×$nq to sit beside `A` in the " *
+                          "linear rows, got $(size(Aq)).")
+        )
+    end
+
     return DualNewtonProblem(
         Matrix{Float64}(A), Vector{Float64}(g), h,
         collect(SolutionPhase, phases), collect(Int, idx_bounded), params,
+        nq, gq, cq, hq, Matrix{Float64}(Aq),
+        collect(Int, always_active),
+        Vector{Float64}(q0), Vector{Float64}(qscale),
     )
 end
+
+"""
+    current_g(prob, q) -> Vector
+
+The standard part of the gradient at the unknown parameters `q`: `prob.g` when
+there are none, `prob.gq(q, prob.params)` otherwise.
+"""
+current_g(prob::DualNewtonProblem, q) =
+    (prob.nq == 0 || prob.gq === nothing) ? prob.g : prob.gq(q, prob.params)
+
+"""
+    current_h(prob, x, q) -> Vector
+
+The state-dependent part of the gradient. `prob.h(x, params)` unless the problem
+declares `hq`, in which case `prob.hq(x, q, params)`.
+
+An activity model can depend on the unknown parameters as well: the Debye-Hückel
+coefficients are functions of temperature, so an adiabatic solve that left `h` at
+the starting temperature would be minimizing the wrong Gibbs energy. Declaring it
+explicitly is what keeps that dependence visible instead of routing it through a
+mutated `params`, where the difference-quotient loop would evaluate it in an order
+nothing guarantees.
+"""
+current_h(prob::DualNewtonProblem, x, q) =
+    (prob.nq == 0 || prob.hq === nothing) ? prob.h(x, prob.params) :
+    prob.hq(x, q, prob.params)
 
 """
     stationarity_capacity(prob) -> Int
@@ -318,7 +393,7 @@ meaningless.
 # `Σ_i exp(u_i − g_i − lnγ_i) = 1`, i.e. when the log-sum-exp vanishes. Both are
 # written with the maximum factored out, which is the only form that survives the
 # range of `u − g` a cement produces.
-function _mole_fraction_exponents(prob, ph, u, hv, x_buf, N, dead)
+function _mole_fraction_exponents(prob, ph, u, hv, x_buf, N, dead, g = prob.g)
     d = Vector{Float64}(undef, length(ph.members))
     for (j, i) in enumerate(ph.members)
         if i in dead
@@ -329,7 +404,7 @@ function _mole_fraction_exponents(prob, ph, u, hv, x_buf, N, dead)
         # `lnγ` is read at the current composition; identically zero for ideal
         # mixing, so the loop below converges in one pass there.
         lnγ = (xi > 0 && N > 0) ? hv[i] - log(xi / N) : 0.0
-        d[j] = u[i] - prob.g[i] - lnγ
+        d[j] = u[i] - g[i] - lnγ
     end
     return d
 end
@@ -354,12 +429,15 @@ function _fill_x!(x_buf, prob, W, refs, act_ph, active, xB)
     return x_buf
 end
 
-function _invert_phases!(prob, W, y, refs, act_ph, active, xB, x_buf; dead = Set{Int}())
+function _invert_phases!(
+        prob, W, y, refs, act_ph, active, xB, x_buf;
+        dead = Set{Int}(), g = prob.g, q = prob.q0,
+    )
     u = -(transpose(prob.A) * y)
 
     for _ in 1:200
         _fill_x!(x_buf, prob, W, refs, act_ph, active, xB)
-        hv = prob.h(x_buf, prob.params)
+        hv = current_h(prob, x_buf, q)
         worst = 0.0
 
         for (a, k) in enumerate(act_ph)
@@ -374,7 +452,7 @@ function _invert_phases!(prob, W, y, refs, act_ph, active, xB, x_buf; dead = Set
                 # fractions are the softmax of `u − g − lnγ`, and the phase's
                 # total is the outer unknown. Nothing here can overflow.
                 N = refs[a]
-                d = _mole_fraction_exponents(prob, ph, u, hv, x_buf, N, dead)
+                d = _mole_fraction_exponents(prob, ph, u, hv, x_buf, N, dead, g)
                 M = maximum(d)
                 isfinite(M) || continue          # every member of the phase is dead
                 lZ = M + log(sum(exp(dj - M) for dj in d))
@@ -390,7 +468,7 @@ function _invert_phases!(prob, W, y, refs, act_ph, active, xB, x_buf; dead = Set
                 # that is where their dependence on the potentials lives.
                 for (j, i) in enumerate(ph.members)
                     (j == ph.j_ref || i in dead) && continue
-                    r = (u[i] - prob.g[i]) - hv[i]
+                    r = (u[i] - g[i]) - hv[i]
                     worst = max(worst, abs(r))
                     W[k][j] = clamp(W[k][j] + clamp(r, -30.0, 30.0), -700.0, 20.0)
                 end
@@ -406,15 +484,24 @@ end
 """
     _outer_residual(prob, v, W, act_ph, active, b, x_buf; dead, degenerate) -> R
 
-The outer residual at `v = [ln x_ref(φ) for each active phase; y; x_B]`:
+The outer residual at `v = [ln x_ref(φ) for each active phase; y; x_B; q]`:
 
   - stationarity of each active phase's reference — one equation per phase, which
     is what fixes that phase's total amount;
   - the equality constraints `A x − b` — `m` equations;
-  - stationarity of the active bound-constrained variables — `|P|` equations.
+  - stationarity of the active bound-constrained variables — `|P|` equations;
+  - `prob.cq(x, q, params)` — one equation per unknown parameter.
 
-`|Φ| + m + |P|` equations in as many unknowns: some fifteen for a cement, against
-forty-seven variables in the interior-point route.
+`|Φ| + m + |P| + nq` equations in as many unknowns: some fifteen for a cement,
+against forty-seven variables in the interior-point route.
+
+The `q` block is how a prescribed property is imposed: an adiabatic solve has `T`
+in `q` and `H(x, T) − H₀` in `cq`; a fixed-volume solve has `P` in `q` and
+`V(x, P) − V₀`; a kinetic step has the reaction extents in `q` and
+`Δξ − Δt·M·r(x)`. They are unknowns of the SAME system as the amounts and the
+multipliers, not an outer loop around it, which is the structure Reaktoro uses
+and the reason a kinetic step costs `nq` extra equations rather than a second
+solve.
 """
 function _outer_residual(
         prob, v, W, act_ph, active, b, x_buf;
@@ -423,14 +510,19 @@ function _outer_residual(
     m = size(prob.A, 1)
     nph = length(act_ph)
     na = length(active)
+    nq = prob.nq
 
     refs = [exp(v[a]) for a in 1:nph]
     y = v[(nph + 1):(nph + m)]
     xB = na == 0 ? Float64[] : v[(nph + m + 1):(nph + m + na)]
+    q = nq == 0 ? Float64[] : v[(nph + m + na + 1):(nph + m + na + nq)]
+    g = current_g(prob, q)
 
-    _invert_phases!(prob, W, y, refs, act_ph, active, xB, x_buf; dead = dead)
+    _invert_phases!(
+        prob, W, y, refs, act_ph, active, xB, x_buf; dead = dead, g = g, q = q,
+    )
 
-    hv = prob.h(x_buf, prob.params)
+    hv = current_h(prob, x_buf, q)
     u = -(transpose(prob.A) * y)
 
     # One equation per active phase, fixing its absolute level.
@@ -444,27 +536,27 @@ function _outer_residual(
     for (a, k) in enumerate(act_ph)
         ph = prob.phases[k]
         if ph.mole_fraction
-            d = _mole_fraction_exponents(prob, ph, u, hv, x_buf, refs[a], dead)
+            d = _mole_fraction_exponents(prob, ph, u, hv, x_buf, refs[a], dead, g)
             push!(R_ref, _logsumexp(d))
         else
             ir = ph.members[ph.j_ref]
-            push!(R_ref, prob.g[ir] + hv[ir] - u[ir])
+            push!(R_ref, g[ir] + hv[ir] - u[ir])
         end
     end
 
-    Rb = prob.A * x_buf .- b
+    # `A x + Aq q − b`: a linear relation may involve the unknown parameters as
+    # well. That is how a reaction extent enters — the reactivity constraint
+    # `Kᵀn − Δξ = ξ₀` is LINEAR, so it belongs in the conservation block beside
+    # the elements and the charge, and the algebraic cost of kinetics is the
+    # number of reactions rather than the number of species.
+    Rb = nq == 0 ? (prob.A * x_buf .- b) : (prob.A * x_buf .+ prob.Aq * q .- b)
 
     # The stationarity of an active bound-constrained variable is `gᵢ + hᵢ = uᵢ`,
     # not `gᵢ = uᵢ`. The two coincide only when `hᵢ = 0`, the case of a pure phase;
     # writing the general form costs nothing there and is the only correct one
     # otherwise.
-    Rs = na == 0 ? Float64[] : prob.g[active] .+ hv[active] .- u[active]
+    Rs = na == 0 ? Float64[] : g[active] .+ hv[active] .- u[active]
 
-    # For a vanished component the balance row carries no information — every
-    # variable containing it is pinned at the floor, so the row reads 0 = 0 and
-    # leaves `y_k` free, making the Jacobian singular. Replace it by the equation
-    # that fixes the multiplier, chosen so the pinning is CONSISTENT with the
-    # stationarity condition rather than merely imposed on it.
     # For a vanished component the balance row carries no information — every
     # variable containing it is pinned at the floor, so the row reads 0 = 0 and
     # leaves `y_k` free, making the Jacobian singular. Replace it by the equation
@@ -473,7 +565,13 @@ function _outer_residual(
         Rb[k] = y[k] - DEGENERATE_POTENTIAL
     end
 
-    return vcat(R_ref, Rb, Rs)
+    Rq = nq == 0 ? Float64[] : prob.cq(x_buf, q, prob.params)
+    length(Rq) == nq || throw(
+        DimensionMismatch("`cq` returned $(length(Rq)) residuals for $nq unknown " *
+                          "parameters; the system would not be square.")
+    )
+
+    return vcat(R_ref, Rb, Rs, Rq)
 end
 
 """
@@ -491,17 +589,78 @@ This is the criterion a **mixing** phase needs, and it is not the sign of a
 saturation index: a solution phase has no single index, and its members are never
 exactly absent while it exists.
 """
-function _phase_tangent(prob, k, u, x_buf)
+function _phase_tangent(prob, k, u, x_buf, g = prob.g)
     ph = prob.phases[k]
-    hv = prob.h(x_buf, prob.params)
     s = 0.0
     for (j, i) in enumerate(ph.members)
-        # `γ` is read at the current state; for an ideal phase it is one, and for
-        # a non-ideal one this is the usual first-order stability test.
-        lnγ = 0.0
-        s += exp(clamp(u[i] - prob.g[i] - lnγ, -700.0, 50.0))
+        # IDEAL test: `lnγ` is taken as zero, not read from the activity model.
+        # This is the SEARCH heuristic — which candidate phase to try next — and a
+        # first-order test is the right cost there. The comment here used to claim
+        # γ was read at the current state, which the code never did.
+        #
+        # Nothing in the proof depends on it: `kkt_certificate` uses the true
+        # `∇f = g + h(x)` for the variables it tests, and
+        # `phase_tangent_measure` for the mixing phases held absent, which
+        # refines the trial composition against the phase's own activity model.
+        s += exp(clamp(u[i] - g[i], -700.0, 50.0))
     end
     return s - 1.0
+end
+
+"""
+    phase_tangent_measure(prob, k, u, x; maxit = 50, tol = 1e-12, total = 1e-6)
+
+Michelsen's tangent-plane measure for mixing phase `k` at the multipliers `u` and
+composition `x`: the log-sum-exp of `uᵢ − gᵢ − lnγᵢ` over the phase's members,
+with the trial composition refined against the phase's OWN activity model by
+successive substitution.
+
+Positive means a trial composition of the phase lies below the tangent plane, so
+the phase can form and a composition without it is not optimal. Zero means the
+phase is exactly at its stability limit.
+
+This is what an absent **mixing** phase requires, and it is not the sign of a
+saturation index: a solution phase has no single index, and its members are never
+exactly zero while it exists — which is why `kkt_certificate` cannot test them
+one by one and needs this instead.
+
+`total` is the trial phase amount. The measure is independent of it for an ideal
+phase, and for a non-ideal one it sets the composition at which `γ` is read; a
+small value is the right choice, since the question is whether an *infinitesimal*
+amount of the phase is stable.
+"""
+function phase_tangent_measure(
+        prob::DualNewtonProblem, k::Int, u::AbstractVector, x::AbstractVector;
+        maxit::Int = 50, tol::Float64 = 1.0e-12, total::Float64 = 1.0e-6,
+        g = prob.g, q = prob.q0,
+    )
+    ph = prob.phases[k]
+    nm = length(ph.members)
+    nm == 0 && return -Inf
+    xt = Vector{Float64}(x)
+    frac = fill(1.0 / nm, nm)
+    lnZ = -Inf
+    d = Vector{Float64}(undef, nm)
+    for _ in 1:maxit
+        for (j, i) in enumerate(ph.members)
+            xt[i] = total * frac[j]
+        end
+        hv = current_h(prob, xt, q)
+        for (j, i) in enumerate(ph.members)
+            # `hᵢ` is `ln aᵢ = ln(xᵢ/N) + lnγᵢ`, so `lnγ` is what remains once the
+            # ideal part is removed.
+            lnγ = xt[i] > 0 ? hv[i] - log(xt[i] / total) : 0.0
+            d[j] = u[i] - g[i] - lnγ
+        end
+        M = maximum(d)
+        isfinite(M) || return -Inf
+        lnZ = M + log(sum(exp(dj - M) for dj in d))
+        newfrac = [exp(dj - lnZ) for dj in d]
+        Δ = maximum(abs, newfrac .- frac)
+        frac = newfrac
+        Δ < tol && break
+    end
+    return lnZ
 end
 
 # ── the solve ─────────────────────────────────────────────────────────────────
@@ -592,7 +751,7 @@ function _element_potential_start(
 end
 
 """
-    dual_newton_solve(prob, b, x0; opts) -> (; x, y, active_phases, active, converged)
+    dual_newton_solve(prob, b, x0; opts) -> (; x, y, q, active_phases, active, converged)
 
 Solve `prob` for the right-hand side `b`, starting from `x0`.
 
@@ -685,8 +844,17 @@ function dual_newton_solve(
     # brings it back in below, by exchange.
     active = Int[]
     xB = Float64[]
+    # Pinned variables go in first and unconditionally: they are determined by a
+    # linear row, not admitted by a test, and the phase-rule check below would
+    # reject a species sitting at zero.
+    for i in prob.always_active
+        i in active && continue
+        push!(active, i)
+        push!(xB, max(n0[i], 1.0e-12))
+    end
     let cand0 = sort(
-            [i for i in prob.idx_bounded if n0[i] > 1.0e-6 && !(i in dead)];
+            [i for i in prob.idx_bounded
+                if n0[i] > 1.0e-6 && !(i in dead) && !(i in prob.always_active)];
             by = i -> -n0[i],
         )
         for i in cand0
@@ -711,7 +879,9 @@ function dual_newton_solve(
     for (j, i) in enumerate(active)
         x_buf[i] = xB[j]
     end
-    h0 = prob.h(x_buf, prob.params)
+    # The starting guess is built at the starting parameters, deliberately: the
+    # Newton loop moves both together from there.
+    h0 = current_h(prob, x_buf, prob.q0)
     # `y` from the stationarity of the phase members at the guess. At the
     # solution that condition holds for EVERY member, so any `m` independent
     # equations fix `y`; as a STARTING POINT the question is which of them the
@@ -790,7 +960,7 @@ function dual_newton_solve(
 end
 
 """
-    _dual_newton_attempt(...) -> (; x, y, active_phases, active, converged)
+    _dual_newton_attempt(...) -> (; x, y, q, active_phases, active, converged)
 
 One run of the two-level Newton from a given set of multipliers. Called once per
 starting point by [`dual_newton_solve`](@ref).
@@ -804,6 +974,8 @@ function _dual_newton_attempt(
     refs = copy(refs0)
     active = copy(active0)
     xB = copy(xB0)
+    nq = prob.nq
+    q = copy(prob.q0)
 
     converged = false
     seen = Set{Tuple{Vector{Int}, Vector{Int}}}()
@@ -835,7 +1007,7 @@ function _dual_newton_attempt(
     for _ in 1:(opts.max_active_updates)
         nph = length(act_ph)
         na = length(active)
-        v = vcat([log(r) for r in refs], y, xB)
+        v = vcat([log(r) for r in refs], y, xB, q)
         inner_ok = false
 
         for _ in 1:(opts.maxit)
@@ -884,6 +1056,13 @@ function _dual_newton_attempt(
                 hk = if kk > nph && kk <= nph + m
                     krow = kk - nph
                     1.0e-8 / max(1.0, maximum(abs, @view prob.A[krow, :]))
+                elseif nq > 0 && kk > nph + m + na
+                    # A temperature in kelvin and a reaction extent in moles do
+                    # not share a scale, and the caller is the only one who knows
+                    # theirs — hence `qscale`. The relative rule below would give
+                    # 3e-3 K on a 298 K unknown, which moves every `exp(uᵢ − gᵢ)`
+                    # by a visible amount and secants across it.
+                    1.0e-6 * prob.qscale[kk - (nph + m + na)]
                 else
                     1.0e-5 * max(abs(v[kk]), 1.0)
                 end
@@ -926,17 +1105,22 @@ function _dual_newton_attempt(
             accepted || break
 
             xB = na == 0 ? Float64[] : v[(nph + m + 1):(nph + m + na)]
-            na > 0 && minimum(xB) < opts.si_tol && break
+            # A pinned variable may legitimately pass through small values, so the
+            # early break looks only at the ones an active set actually decides.
+            let free = [j for j in 1:na if !(active[j] in prob.always_active)]
+                !isempty(free) && minimum(@view xB[free]) < opts.si_tol && break
+            end
             nph > 0 && minimum(@view v[1:nph]) < log(opts.si_tol) && break
         end
 
         refs = [exp(v[a]) for a in 1:nph]
         y = v[(nph + 1):(nph + m)]
         xB = na == 0 ? Float64[] : v[(nph + m + 1):(nph + m + na)]
+        q = nq == 0 ? Float64[] : v[(nph + m + na + 1):(nph + m + na + nq)]
 
         u = -(transpose(prob.A) * y)
-        hv = prob.h(x_buf, prob.params)
-        si = u .- (prob.g .+ hv)
+        hv = current_h(prob, x_buf, q)
+        si = u .- (current_g(prob, q) .+ hv)
 
         # Record this set if it is the best seen, measured by the KKT error of the
         # WHOLE problem — not by the residual of the subproblem this set defines.
@@ -991,8 +1175,9 @@ function _dual_newton_attempt(
         # stationarity.
         drop = [
             j for j in eachindex(xB)
-                if xB[j] < opts.si_tol ||
-                (inner_ok && si[active[j]] < -max(opts.si_tol, opts.tol))
+                if !(active[j] in prob.always_active) &&
+                (xB[j] < opts.si_tol ||
+                 (inner_ok && si[active[j]] < -max(opts.si_tol, opts.tol)))
         ]
 
         # An admission that does not converge used to be undone by rejecting the
@@ -1029,8 +1214,11 @@ function _dual_newton_attempt(
         # is the most violated candidate, the leaving rule the most violated
         # incumbent — and `seen` still bounds the search.
         if !inner_ok && isempty(drop) && last_added == 0 && !isempty(active)
-            worst = argmax([abs(si[active[j]]) for j in eachindex(active)])
-            if abs(si[active[worst]]) > opts.tol
+            releasable = [j for j in eachindex(active)
+                              if !(active[j] in prob.always_active)]
+            worst = isempty(releasable) ? 0 :
+                releasable[argmax([abs(si[active[j]]) for j in releasable])]
+            if worst != 0 && abs(si[active[worst]]) > opts.tol
                 push!(rejected, active[worst])
                 active = active[setdiff(eachindex(active), [worst])]
                 xB = xB[setdiff(eachindex(xB), [worst])]
@@ -1073,7 +1261,7 @@ function _dual_newton_attempt(
         cand_ph = [
             k for k in eachindex(prob.phases)
                 if !(k in act_ph) && !all(i in dead for i in prob.phases[k].members) &&
-                _phase_tangent(prob, k, u, x_buf) > opts.si_tol
+                _phase_tangent(prob, k, u, x_buf, current_g(prob, q)) > opts.si_tol
         ]
 
         if isempty(drop) && isempty(cand) && isempty(drop_ph) && isempty(cand_ph)
@@ -1172,20 +1360,24 @@ function _dual_newton_attempt(
         refs = [exp(v[a]) for a in 1:nph]
         y = v[(nph + 1):(nph + m)]
         xB = na == 0 ? Float64[] : v[(nph + m + 1):(nph + m + na)]
+        q = nq == 0 ? Float64[] : v[(nph + m + na + 1):(nph + m + na + nq)]
         converged = maximum(
             abs, _outer_residual(prob, v, W, act_ph, active, bv, x_buf; dead, degenerate),
         ) <= opts.tol
     end
 
-    _invert_phases!(prob, W, y, refs, act_ph, active, xB, x_buf; dead = dead)
+    _invert_phases!(
+        prob, W, y, refs, act_ph, active, xB, x_buf;
+        dead = dead, g = current_g(prob, q), q = q,
+    )
     x = copy(x_buf)
     for (j, i) in enumerate(active)
         x[i] = max(xB[j], 0.0)
     end
 
     return (;
-        x = x, y = y, active_phases = act_ph, active = active, converged = converged,
-        kkt_error = best_res,
+        x = x, y = y, q = q, active_phases = act_ph, active = active,
+        converged = converged, kkt_error = best_res,
     )
 end
 
@@ -1215,10 +1407,12 @@ component nobody supplies is determined by nothing.
 function kkt_certificate(
         prob::DualNewtonProblem, x::AbstractVector, b::AbstractVector;
         floor::Float64 = 1.0e-25, tol::Float64 = 1.0e-10, si_tol::Float64 = 1.0e-8,
+        q = prob.q0,
     )
     xv = Vector{Float64}(x)
     bv = Vector{Float64}(b)
-    ∇f = prob.g .+ prob.h(xv, prob.params)
+    gq = current_g(prob, q)
+    ∇f = gq .+ current_h(prob, xv, q)
 
     degenerate = degenerate_components(prob.A, bv)
     dead = isempty(degenerate) ? Set{Int}() :
@@ -1259,15 +1453,41 @@ function kkt_certificate(
     y = qr(transpose(Ai), ColumnNorm()) \ (-∇f[interior])
 
     stationarity = isempty(interior) ? 0.0 : maximum(abs, ∇f[interior] .+ transpose(Ai) * y)
-    feasibility = maximum(abs, prob.A * xv .- bv)
+    # The linear rows are `A x + Aq q − b`, and forgetting `Aq q` reports the
+    # parameter itself as an infeasibility: on a kinetic step the residual came
+    # out at exactly `Δξ`.
+    resid = prob.nq == 0 ? (prob.A * xv .- bv) :
+        (prob.A * xv .+ prob.Aq * collect(q) .- bv)
+    feasibility = maximum(abs, resid)
 
     u = -(transpose(prob.A) * y)
     worst = isempty(at_bound) ? -Inf : maximum(u[i] - ∇f[i] for i in at_bound)
 
+    # A mixing phase held ENTIRELY absent is tested by neither of the two above:
+    # its members are excluded from `interior` (they are at the floor) and from
+    # `at_bound` (they are phase members, whose condition is an equality). So a
+    # composition that omits a solid solution which should have formed passed the
+    # certificate unexamined — the one soundness hole the certificate had, and
+    # exactly the case that matters for a cement, where the C-S-H is a mixing
+    # phase. Michelsen's measure is the test such a phase requires.
+    worst_phase = -Inf
+    absent_phases = Int[]
+    for (k, ph) in pairs(prob.phases)
+        all(xv[i] <= floor || i in dead for i in ph.members) || continue
+        all(i in dead for i in ph.members) && continue   # cannot exist at all
+        push!(absent_phases, k)
+        worst_phase = max(
+            worst_phase, phase_tangent_measure(prob, k, u, xv; g = gq, q = q),
+        )
+    end
+    worst_all = max(worst, worst_phase)
+
     return (;
         stationarity = stationarity, feasibility = feasibility,
-        worst_violation = worst, n_interior = length(interior),
+        worst_violation = worst_all, worst_violation_bounded = worst,
+        worst_violation_phase = worst_phase, absent_phases = absent_phases,
+        n_interior = length(interior),
         n_forced_zero = length(dead),
-        optimal = stationarity <= tol && feasibility <= tol && worst <= si_tol,
+        optimal = stationarity <= tol && feasibility <= tol && worst_all <= si_tol,
     )
 end
