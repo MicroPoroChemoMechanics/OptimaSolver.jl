@@ -269,19 +269,25 @@ function DualNewtonProblem(
         # through `Aq` and `cq` only, `g` staying put. Requiring `gq` refused a
         # perfectly well-posed kinetic step.
         cq === nothing && throw(
-            ArgumentError("`q0` has $nq entries but no `cq`: each unknown parameter " *
-                          "needs one residual equation.")
+            ArgumentError(
+                "`q0` has $nq entries but no `cq`: each unknown parameter " *
+                    "needs one residual equation."
+            )
         )
         length(qscale) == nq || throw(
-            ArgumentError("`qscale` must have one entry per unknown parameter " *
-                          "($nq), got $(length(qscale)). It sets the difference " *
-                          "step, and a temperature in kelvin and a reaction extent " *
-                          "in moles do not share a scale.")
+            ArgumentError(
+                "`qscale` must have one entry per unknown parameter " *
+                    "($nq), got $(length(qscale)). It sets the difference " *
+                    "step, and a temperature in kelvin and a reaction extent " *
+                    "in moles do not share a scale."
+            )
         )
         all(>(0), qscale) || throw(ArgumentError("`qscale` entries must be positive."))
         size(Aq) == (size(A, 1), nq) || throw(
-            ArgumentError("`Aq` must be $(size(A, 1))×$nq to sit beside `A` in the " *
-                          "linear rows, got $(size(Aq)).")
+            ArgumentError(
+                "`Aq` must be $(size(A, 1))×$nq to sit beside `A` in the " *
+                    "linear rows, got $(size(Aq))."
+            )
         )
     end
 
@@ -599,8 +605,10 @@ function _outer_residual(
 
     Rq = nq == 0 ? Float64[] : prob.cq(x_buf, q, prob.params)
     length(Rq) == nq || throw(
-        DimensionMismatch("`cq` returned $(length(Rq)) residuals for $nq unknown " *
-                          "parameters; the system would not be square.")
+        DimensionMismatch(
+            "`cq` returned $(length(Rq)) residuals for $nq unknown " *
+                "parameters; the system would not be square."
+        )
     )
 
     return vcat(R_ref, Rb, Rs, Rq)
@@ -853,7 +861,7 @@ function dual_newton_solve(
     # logarithm the outer system carries.
     refs = Float64[
         let ph = prob.phases[k]
-                ph.mole_fraction ? max(sum(n0[i] for i in ph.members), 1.0e-6) :
+            ph.mole_fraction ? max(sum(n0[i] for i in ph.members), 1.0e-6) :
                 max(n0[ph.members[ph.j_ref]], 1.0e-6)
         end for k in act_ph
     ]
@@ -885,8 +893,10 @@ function dual_newton_solve(
         push!(xB, max(n0[i], 1.0e-12))
     end
     let cand0 = sort(
-            [i for i in prob.idx_bounded
-                if n0[i] > 1.0e-6 && !(i in dead) && !(i in prob.always_active)];
+            [
+                i for i in prob.idx_bounded
+                    if n0[i] > 1.0e-6 && !(i in dead) && !(i in prob.always_active)
+            ];
             by = i -> -n0[i],
         )
         for i in cand0
@@ -1208,8 +1218,10 @@ function _dual_newton_attempt(
         drop = [
             j for j in eachindex(xB)
                 if !(active[j] in prob.always_active) &&
-                (xB[j] < opts.si_tol ||
-                 (inner_ok && si[active[j]] < -max(opts.si_tol, opts.tol)))
+                (
+                    xB[j] < opts.si_tol ||
+                    (inner_ok && si[active[j]] < -max(opts.si_tol, opts.tol))
+                )
         ]
 
         # An admission that does not converge used to be undone by rejecting the
@@ -1246,8 +1258,10 @@ function _dual_newton_attempt(
         # is the most violated candidate, the leaving rule the most violated
         # incumbent — and `seen` still bounds the search.
         if !inner_ok && isempty(drop) && last_added == 0 && !isempty(active)
-            releasable = [j for j in eachindex(active)
-                              if !(active[j] in prob.always_active)]
+            releasable = [
+                j for j in eachindex(active)
+                    if !(active[j] in prob.always_active)
+            ]
             worst = isempty(releasable) ? 0 :
                 releasable[argmax([abs(si[active[j]]) for j in releasable])]
             if worst != 0 && abs(si[active[worst]]) > opts.tol

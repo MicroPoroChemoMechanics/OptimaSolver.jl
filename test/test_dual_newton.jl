@@ -258,9 +258,11 @@ end
     g = [0.0, 0.0, 0.0]
     h(x, _) = begin
         N = max(x[2] + x[3], 1.0e-300)
-        [log(max(x[1], 1.0e-300)),
-         log(max(x[2], 1.0e-300) / N),
-         log(max(x[3], 1.0e-300) / N)]
+        [
+            log(max(x[1], 1.0e-300)),
+            log(max(x[2], 1.0e-300) / N),
+            log(max(x[3], 1.0e-300) / N),
+        ]
     end
     prob = DualNewtonProblem(
         A, g, h;
@@ -298,8 +300,10 @@ end
     cert = kkt_certificate(prob, x_absent, [1.0, 0.0])
     @test 2 in cert.absent_phases
     @test isfinite(cert.worst_violation_phase) || cert.worst_violation_phase == -Inf
-    @test cert.worst_violation == max(cert.worst_violation_bounded,
-                                      cert.worst_violation_phase)
+    @test cert.worst_violation == max(
+        cert.worst_violation_bounded,
+        cert.worst_violation_phase
+    )
 
     # For an ideal phase the measure does not depend on the trial amount.
     m1 = phase_tangent_measure(prob, 2, u, x_absent; total = 1.0e-6)
@@ -382,8 +386,10 @@ end
     A = Float64[1 1]
     b = [1.0]
     h_fixed(x, _) = log.(max.(x, 1.0e-300))            # never used: hq wins
-    hq(x, q, _) = [log(max(x[1], 1.0e-300)) + q[1] * x[1],
-                   log(max(x[2], 1.0e-300))]
+    hq(x, q, _) = [
+        log(max(x[1], 1.0e-300)) + q[1] * x[1],
+        log(max(x[2], 1.0e-300)),
+    ]
 
     prob = DualNewtonProblem(
         A, [0.0, 0.0], h_fixed;
