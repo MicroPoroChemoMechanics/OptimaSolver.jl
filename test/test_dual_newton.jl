@@ -480,3 +480,81 @@ end
     )
 
 end
+
+@testset "the degeneracy criterion belongs to conservation rows only" begin
+
+    # `degenerate_components` answers a question about element conservation: a row
+    # whose non-zero entries share a sign and whose budget is zero forces every
+    # variable in it to vanish. Asked of a row that means something else, it gets
+    # the wrong answer.
+    #
+    # The row that provoked this is a reactivity constraint,
+    # `nᵢ − Σⱼ νᵢⱼ Δξⱼ = nᵢ(0)`: a single positive entry on `x` and, for a product
+    # that starts absent, a zero right-hand side — exactly the shape the criterion
+    # reads as "this component is absent from the system". It then pinned that
+    # row's multiplier and declared the species dead, so a solid product could
+    # never form. Measured downstream, the stationarity residual sat at 458 and
+    # the reaction extents came out 4.3 times short.
+    #
+    # Two variables, one element row, one "pinning" row on variable 2 whose budget
+    # is zero because that variable starts absent.
+    A = Float64[1 1; 0 1]
+    b = [1.0, 0.0]
+
+    # Read as conservation, the second row is degenerate and kills variable 2.
+    @test degenerate_components(A, b) == [2]
+
+    h(x, _) = log.(max.(x, 1.0e-300))
+    prob_all = DualNewtonProblem(
+        A, [0.0, 0.0], h;
+        phases = [SolutionPhase([1, 2], 1; always_present = true)],
+    )
+    @test OptimaSolver._degenerate_conservation_rows(prob_all, b) == [2]
+
+    # Told that only the first row conserves anything, nothing is degenerate.
+    prob_one = DualNewtonProblem(
+        A, [0.0, 0.0], h;
+        phases = [SolutionPhase([1, 2], 1; always_present = true)],
+        conservation_rows = [1],
+    )
+    @test isempty(OptimaSolver._degenerate_conservation_rows(prob_one, b))
+
+    # The default is every row, so a system that declares nothing behaves exactly
+    # as before.
+    @test prob_all.conservation_rows == collect(1:2)
+
+end
+
+@testset "the certificate's stationarity is scaled" begin
+
+    # The entries of `∇f` are chemical potentials referred to the elements, of
+    # order 10²-10³ in RT units. An absolute threshold of 1e-10 on their residual
+    # asks for thirteen digits of cancellation, which Float64 does not have: on a
+    # kinetic step pinning a mineral by a linear row — whose multiplier must reach
+    # that mineral's own potential — the answer was right to nine digits while the
+    # certificate reported 2.9e-8 and refused it.
+    g = [0.0, 1.0]
+    h(x, _) = log.(max.(x, 1.0e-300))
+    A = Float64[1 1]
+    b = [1.0]
+    prob = DualNewtonProblem(
+        A, g, h; phases = [SolutionPhase([1, 2], 2; always_present = true)],
+    )
+    res = dual_newton_solve(prob, b, [0.5, 0.5])
+    c = kkt_certificate(prob, res.x, b)
+
+    @test c.optimal
+    # Both figures are reported, and the scale is at least one so a well-scaled
+    # problem is judged exactly as before.
+    @test c.stationarity_scale >= 1
+    @test c.stationarity ≈ c.stationarity_abs / c.stationarity_scale rtol = 1.0e-12
+    @test c.stationarity <= c.stationarity_abs
+
+    # Feasibility stays ABSOLUTE, deliberately: it states how much matter the
+    # composition fails to account for, and that is a number of moles. Scaling it
+    # row by row was tried and is wrong — the charge row of a dilute solution has
+    # a budget of zero and a flux of order 1e-6, so dividing by it turned 7.6e-7
+    # mol of machine noise into 0.76 and refused every answer.
+    @test c.feasibility == c.feasibility_abs
+
+end

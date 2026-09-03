@@ -49,6 +49,23 @@ that component will do; the solution does not depend on it.
 const DEGENERATE_POTENTIAL = 500.0
 
 """
+    _degenerate_conservation_rows(prob, b) -> Vector{Int}
+
+The degenerate rows of `prob`, restricted to those the criterion applies to.
+
+`degenerate_components` answers a question about element conservation; asking it
+of a reactivity row gets the wrong answer, so `prob.conservation_rows` says which
+rows it may be asked about.
+"""
+function _degenerate_conservation_rows(prob, b::AbstractVector)
+    rows = prob.conservation_rows
+    length(rows) == size(prob.A, 1) && return degenerate_components(prob.A, b)
+    isempty(rows) && return Int[]
+    sub = degenerate_components(prob.A[rows, :], b[rows])
+    return [rows[k] for k in sub]
+end
+
+"""
     degenerate_components(A, b) -> Vector{Int}
 
 Rows `k` of `A x = b` whose right-hand side forces every variable carrying
@@ -159,6 +176,19 @@ A convex program in the form solved by [`dual_newton_solve`](@ref):
     the composition — a pure phase, of unit activity — so they are either at a
     stationarity of their own or at zero, and an active set decides which.
   - `params`: passed through to `h`.
+  - `conservation_rows`: which rows of `A x + Aq q = b` the degeneracy criterion
+    of [`degenerate_components`](@ref) may be applied to. Defaults to all of them,
+    which is right when every row conserves an element or the charge.
+
+    It must NOT be all of them once a row means something else. A **reactivity**
+    row `nᵢ − Σⱼ νᵢⱼ Δξⱼ = nᵢ(0)` has a single positive entry on `x` and, for a
+    product that starts absent, a zero right-hand side — exactly the shape the
+    criterion reads as "no matter of this component exists". It then pins that
+    row's multiplier to `DEGENERATE_POTENTIAL` and declares the species dead, so a
+    solid product can never form: measured, the stationarity residual sat at 458
+    and the reaction extents came out 4.3 times short. "This species starts at
+    zero" and "this component is absent from the system" are different statements,
+    and only the second licenses the criterion.
   - `always_active`: bounded variables that are never dropped from the active set.
     A variable whose amount is fixed by a linear row is not deciding anything by a
     sign test: it is determined, and its extra multiplier makes its stationarity
@@ -190,6 +220,7 @@ struct DualNewtonProblem{T <: Real, H, G, C, HQ}
     hq::HQ               # hq(x, q, params) -> Vector, `h` when it depends on q
     Aq::Matrix{T}        # m × nq, so the linear rows read `A x + Aq q = b`
     always_active::Vector{Int}   # bounded variables pinned by a linear row
+    conservation_rows::Vector{Int}   # rows the degeneracy criterion applies to
     q0::Vector{T}        # starting guess
     qscale::Vector{T}    # difference-step scale, one per entry
 end
@@ -206,6 +237,7 @@ function DualNewtonProblem(
         qscale::AbstractVector = Float64[],
         Aq::AbstractMatrix = zeros(Float64, size(A, 1), length(q0)),
         always_active::AbstractVector{Int} = Int[],
+        conservation_rows::AbstractVector{Int} = 1:size(A, 1),
     )
     isempty(phases) && throw(
         ArgumentError(
@@ -257,7 +289,7 @@ function DualNewtonProblem(
         Matrix{Float64}(A), Vector{Float64}(g), h,
         collect(SolutionPhase, phases), collect(Int, idx_bounded), params,
         nq, gq, cq, hq, Matrix{Float64}(Aq),
-        collect(Int, always_active),
+        collect(Int, always_active), collect(Int, conservation_rows),
         Vector{Float64}(q0), Vector{Float64}(qscale),
     )
 end
@@ -785,7 +817,7 @@ function dual_newton_solve(
     m = size(prob.A, 1)
     x_buf = zeros(Float64, length(prob.g))
 
-    degenerate = degenerate_components(prob.A, bv)
+    degenerate = _degenerate_conservation_rows(prob, bv)
     dead = isempty(degenerate) ? Set{Int}() :
         Set(j for j in eachindex(prob.g) if any(abs(prob.A[k, j]) > 0 for k in degenerate))
 
@@ -1414,7 +1446,7 @@ function kkt_certificate(
     gq = current_g(prob, q)
     ∇f = gq .+ current_h(prob, xv, q)
 
-    degenerate = degenerate_components(prob.A, bv)
+    degenerate = _degenerate_conservation_rows(prob, bv)
     dead = isempty(degenerate) ? Set{Int}() :
         Set(j for j in eachindex(xv) if any(abs(prob.A[k, j]) > 0 for k in degenerate))
 
@@ -1452,13 +1484,52 @@ function kkt_certificate(
     # set — and rank deficiency is ordinary here.
     y = qr(transpose(Ai), ColumnNorm()) \ (-∇f[interior])
 
-    stationarity = isempty(interior) ? 0.0 : maximum(abs, ∇f[interior] .+ transpose(Ai) * y)
+    # SCALED, as Wächter & Biegler (2006) Eq. (5) scales Ipopt's `E_0`. The
+    # entries of `∇f` are chemical potentials referred to the elements, of order
+    # 10²-10³ in RT units, so an absolute threshold of 1e-10 on their residual
+    # demands thirteen digits of cancellation. On a system whose multipliers are
+    # that large — a kinetic step pinning a mineral by a linear row, whose
+    # multiplier must reach the mineral's own potential — the answer came out
+    # right to nine digits while the certificate reported 2.9e-8 and refused it.
+    #
+    # The divisor is the size of the quantities the residual is built from, never
+    # below one, so a well-scaled problem is judged exactly as before.
+    stat_raw = isempty(interior) ? 0.0 :
+        maximum(abs, ∇f[interior] .+ transpose(Ai) * y)
+    stat_scale = max(
+        1.0,
+        isempty(interior) ? 0.0 : maximum(abs, @view ∇f[interior]),
+        isempty(y) ? 0.0 : maximum(abs, y),
+    )
+    stationarity = stat_raw / stat_scale
     # The linear rows are `A x + Aq q − b`, and forgetting `Aq q` reports the
     # parameter itself as an infeasibility: on a kinetic step the residual came
     # out at exactly `Δξ`.
     resid = prob.nq == 0 ? (prob.A * xv .- bv) :
         (prob.A * xv .+ prob.Aq * collect(q) .- bv)
+    # ABSOLUTE, deliberately, and not the row-scaled measure the solver's
+    # convergence schedule uses. The two answer different questions. A schedule
+    # needs to know whether a row is satisfied *relative to its own budget*, so
+    # that a small element is not hidden behind a large one. A certificate states
+    # how much matter the composition fails to account for, and that is a number
+    # of moles.
+    #
+    # Scaling it was tried and is wrong: the charge row of a dilute solution has
+    # `b = 0` and a flux of order 1e-6, so dividing by it turns a residual of
+    # 7.6e-7 mol — machine noise on a 55 mol system — into 0.76 and refuses every
+    # answer, the correct ones included.
     feasibility = maximum(abs, resid)
+    feas_abs = feasibility
+
+    # The NONLINEAR residual of the parameter block. Leaving it out was a hole,
+    # not an omission of detail: a kinetic step whose mineral is dropped from the
+    # active set satisfies its reactivity row trivially — `Δξ` simply takes the
+    # whole amount — and satisfies stationarity and the element balance too, so it
+    # certified while violating the one equation that makes it a KINETIC step,
+    # `Δξ − Δt·M·r(n) = 0`. Measured, a march that should have stopped at
+    # saturation dissolved everything and was proved optimal.
+    param_residual = prob.nq == 0 ? 0.0 :
+        maximum(abs, prob.cq(xv, collect(q), prob.params))
 
     u = -(transpose(prob.A) * y)
     worst = isempty(at_bound) ? -Inf : maximum(u[i] - ∇f[i] for i in at_bound)
@@ -1483,11 +1554,15 @@ function kkt_certificate(
     worst_all = max(worst, worst_phase)
 
     return (;
-        stationarity = stationarity, feasibility = feasibility,
+        stationarity = stationarity, stationarity_abs = stat_raw,
+        stationarity_scale = stat_scale, feasibility = feasibility,
+        feasibility_abs = feas_abs,
         worst_violation = worst_all, worst_violation_bounded = worst,
         worst_violation_phase = worst_phase, absent_phases = absent_phases,
         n_interior = length(interior),
         n_forced_zero = length(dead),
-        optimal = stationarity <= tol && feasibility <= tol && worst_all <= si_tol,
+        param_residual = param_residual,
+        optimal = stationarity <= tol && feasibility <= tol &&
+            worst_all <= si_tol && param_residual <= max(tol, si_tol),
     )
 end

@@ -48,6 +48,45 @@ it starts at zero and the drop rule removes anything below `si_tol` — which is
 what happened to a mineral exhausted at equilibrium, leaving its reactivity row
 unenforced.
 
+### The degeneracy criterion was asked about rows it does not describe
+
+`degenerate_components` answers a question about **element conservation**: a row
+whose non-zero entries share a sign and whose budget is zero forces every variable
+in it to vanish. It was applied to every row of `A`, and once `A` carries rows
+that mean something else the answer is wrong.
+
+The row that provoked this is a reactivity constraint,
+`nᵢ − Σⱼ νᵢⱼ Δξⱼ = nᵢ(0)`: one positive entry on `x` and, for a product that
+starts absent, a zero right-hand side — exactly the shape the criterion reads as
+"this component is absent from the system". It then pinned that row's multiplier
+to `DEGENERATE_POTENTIAL` and declared the species dead, so a solid product could
+never form. Measured downstream, the stationarity residual sat at 458 and the
+reaction extents came out 4.3 times short.
+
+`conservation_rows` says which rows may be asked, and defaults to all of them, so
+a problem that declares nothing behaves exactly as before.
+
+### The certificate's stationarity is scaled; its feasibility deliberately is not
+
+The entries of `∇f` are chemical potentials referred to the elements, of order
+10²–10³ in `RT` units, so an absolute threshold of 1e-10 on their residual asks
+for thirteen digits of cancellation. On a system whose multipliers are that
+large — a kinetic step pinning a mineral by a linear row, whose multiplier must
+reach that mineral's own potential — the answer was right to nine digits while the
+certificate reported 2.9e-8 and refused it. The residual is now divided by the
+size of the quantities it is built from, never below one, so a well-scaled problem
+is judged exactly as before. `stationarity_abs` and `stationarity_scale` report
+both halves.
+
+The feasibility stays absolute, and that is a decision rather than an oversight.
+The two measures answer different questions: the solver's schedule needs to know
+whether a row is satisfied relative to its own budget, so that a small element is
+not hidden behind a large one; the certificate states how much matter the
+composition fails to account for, which is a number of moles. Scaling it was tried
+and is wrong — the charge row of a dilute solution has a zero budget and a flux of
+order 1e-6, so dividing by it turns 7.6e-7 mol of machine noise into 0.76 and
+refuses every answer, the correct ones included.
+
 ### The certificate could not see a solid solution that should have formed
 
 A mixing phase held **entirely** absent was examined by neither of the
