@@ -9,14 +9,21 @@ LinearAlgebra = "37e2e46d-f89d-539d-b4ee-838fcccc9c8e"
 SciMLBase = "0bca4576-84f4-4d90-8ffe-ffa030f20462"
 
 [compat]
+Aqua = "0.8"
 DynamicQuantities = "1"
 ForwardDiff = "1"
+# Standard libraries are versioned with Julia and shipped with it, so these
+# bounds constrain nothing that `julia` above does not already. Aqua asks for
+# them all the same, and an explicit bound is one less thing to wonder about.
+LinearAlgebra = "1"
 SciMLBase = "2, 3"
+Test = "1"
 julia = "1.12"
 
 [extras]
+Aqua = "4c88cf16-eb10-579e-8560-4a9242c79595"
 DynamicQuantities = "06fc5a27-2a28-4c7c-a15d-362465fb6821"
 Test = "8dfed614-e22c-5e08-85e1-65c5234f0b40"
 
 [targets]
-test = ["Test", "DynamicQuantities"]
+test = ["Aqua", "Test", "DynamicQuantities"]
