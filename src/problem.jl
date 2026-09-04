@@ -97,6 +97,18 @@ function OptimaProblem(
     ns = size(A, 2)
     m = size(A, 1)
     @assert length(b) == m "b length $(length(b)) must match A rows $m"
+    # The algorithm is built on the basic/non-basic split of `A`: `Canonicalizer`
+    # pivots a QR of it, and every Newton step goes through the Schur complement
+    # `A H⁻¹ Aᵀ`. With no row there is nothing to pivot — LAPACK returns a
+    # degenerate permutation and the failure surfaces much later as a
+    # `BoundsError` inside the factorization. Say it here instead.
+    m > 0 || throw(
+        ArgumentError(
+            "OptimaProblem needs at least one equality constraint; got a " *
+                "$(m)×$(ns) matrix. An unconstrained barrier problem is not " *
+                "what this primal-dual solver implements."
+        )
+    )
     @assert length(lb) == ns && length(ub) == ns "bounds must have length $ns"
     return OptimaProblem{T, F, G}(
         convert(Matrix{T}, A),

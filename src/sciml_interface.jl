@@ -337,9 +337,19 @@ function _extract_constraints(opt_prob, u0::AbstractVector{T}, p) where {T}
         return convert(Matrix{T}, p.A), convert(Vector{T}, p.b)
     end
 
-    # Path 2: no constraints → treat as unconstrained (A = 0×ns, b = Float64[])
+    # Path 2: nothing to extract. Returning an empty `A` here used to look like
+    # support for unconstrained problems; it is not — the solver needs at least
+    # one constraint (see `OptimaProblem`). Say so while the caller can still
+    # act on it, rather than a `BoundsError` three calls down.
     if opt_prob.f.cons === nothing
-        return zeros(T, 0, length(u0)), T[]
+        throw(
+            ArgumentError(
+                "the OptimizationProblem carries no constraints and `p` holds " *
+                    "no `A`/`b`: there is nothing for this solver to work with. " *
+                    "Supply `cons` (with `lcons == ucons`), or pass `A` and `b` " *
+                    "in `p`."
+            )
+        )
     end
 
     # Path 3: finite-difference the constraint function
@@ -352,14 +362,39 @@ function _extract_constraints(opt_prob, u0::AbstractVector{T}, p) where {T}
     m = length(res0)  # re-confirm
 
     A = zeros(T, m, ns)
-    ε_fd = T(1.0e-7)
     res1 = similar(res0)
     u_pert = copy(u0)
+
+    # Step size, chosen per column and then checked.
+    #
+    # `cons` is documented as `A u - b`. For an affine residual the difference
+    # quotient is exact whatever the step, so the only error left is
+    # cancellation in `res1 - res0` — and a LARGE step is therefore right. The
+    # reflex 1e-7 is the worst choice here: against residuals of order one it
+    # leaves `A` wrong by ~1e-9 relative, which is a floor the solver cannot get
+    # below, so a `tol = 1e-12` run stalls at 3e-12 and reports `MaxIters` on a
+    # problem it has in fact solved.
+    #
+    # Callers do pass nonlinear residuals all the same — a log-parameterized
+    # equilibrium sends `A exp(x) - b` — and there a large step is not a
+    # derivative at all: on `exp` around x = -2 it comes out 72 % wrong. So
+    # affinity is verified rather than assumed. Each column is differenced at
+    # two scales; the large answer is kept only when the two agree, otherwise
+    # the small one stands, which is the local Jacobian and what this always did.
+    a_big = similar(res0)
+    a_small = similar(res0)
+    rtol = sqrt(eps(T))
     for k in 1:ns
-        u_pert[k] += ε_fd
-        opt_prob.f.cons(res1, u_pert, p)
-        @. A[:, k] = (res1 - res0) / ε_fd
+        ε_big = max(one(T), abs(u0[k]))
+        for (ε, dest) in ((ε_big, a_big), (ε_big * T(1.0e-7), a_small))
+            u_pert[k] = u0[k] + ε
+            opt_prob.f.cons(res1, u_pert, p)
+            @. dest = (res1 - res0) / ε
+        end
         u_pert[k] = u0[k]
+        scale = max(maximum(abs, a_big), one(T))
+        affine = maximum(abs, a_big .- a_small) <= rtol * scale
+        A[:, k] .= affine ? a_big : a_small
     end
 
     # b = A*u0 - res0 (since cons encodes A*u - b = 0 → b = A*u0 - res0)

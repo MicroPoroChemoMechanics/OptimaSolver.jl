@@ -679,6 +679,15 @@ function _project_alternating!(
 
     prev = T(Inf)
     for _ in 1:maxit
+        # The box projection comes FIRST. Measuring the affine residual before
+        # clamping let the loop return on its very first test a point that
+        # satisfies `A n = b` and still has entries below `lb` — the one thing
+        # this routine exists to rule out. That point then reaches the barrier,
+        # where `log(n)` of a non-positive amount is `NaN`, and the solve is
+        # lost with nothing in the trace pointing back here.
+        @inbounds for i in eachindex(n)
+            n[i] = max(n[i], prob.lb[i] + eps(T))
+        end
         ew = prob.A * n .- prob.b
         res = maximum(abs, ew)
         res <= tol && break

@@ -1,5 +1,53 @@
 # Changelog
 
+## v0.5.1 — three defects the SciML entry point was hiding
+
+The documented way into this package is the SciML one: hand an
+`OptimizationProblem` to `OptimaOptimizer()` and never see `OptimaProblem`.
+Nothing in the test suite went that way — every test called the internal
+`solve` — so `sciml_interface.jl` sat at **0 % coverage** while being the file
+every downstream caller actually runs. Covering it turned up three real
+defects, all fixed here. No exported name or signature changes.
+
+### Bug fixes
+
+- **The constraint matrix was recovered with a step size that made it wrong in
+  the ninth digit.** `_extract_constraints` rebuilds `A` by differencing the
+  residual. For the affine residual the interface documents, the quotient is
+  exact whatever the step, so the only error left is cancellation — and the
+  reflex `ε = 1e-7` maximizes it: against residuals of order one, `A` came back
+  with a relative error near `1e-9`. That is a floor the solver cannot get
+  below, so a `tol = 1e-12` run stalled at `3e-12` and reported `MaxIters` on a
+  problem it had solved. The step is now the scale of the variable, which
+  brings `A` back to within an ulp.
+
+  Callers do pass nonlinear residuals all the same — a log-parameterized
+  equilibrium sends `A exp(x) - b`, where a step of one is 72 % off the
+  derivative — so affinity is now **verified per column** rather than assumed:
+  each column is differenced at two scales and the large answer is kept only
+  when the two agree. A nonlinear residual keeps the local Jacobian it always
+  got.
+
+- **`_project_alternating!` could return a point with negative amounts.** It
+  measured the affine residual *before* projecting onto the bounds, so a point
+  already satisfying `A n = b` with entries below `lb` was returned untouched —
+  and then reached the barrier, where `log` of a non-positive amount is `NaN`,
+  with nothing in the trace pointing back. The box projection now comes first.
+
+- **A problem with no equality constraint died on a `BoundsError`.**
+  `Canonicalizer` pivots a QR of `A`; for a zero-row matrix LAPACK returns a
+  degenerate permutation and the failure surfaced several calls later.
+  `OptimaProblem` now rejects it with a message saying what the solver needs,
+  and the SciML path says the same when neither `cons` nor `A`/`b` is supplied.
+
+### Testing
+
+Coverage goes from 74 % to 89 %. Beyond the SciML path, the `solve` overload
+taking a pre-built `Canonicalizer`, the barrier-exhaustion exit, the
+Lawson-Hanson NNLS active-set release, the variable-stability classification
+and the line-search filter are all now exercised — none of them were.
+
+
 ## v0.5.0 — a feasibility error that could only see the largest budget
 
 ### Breaking changes

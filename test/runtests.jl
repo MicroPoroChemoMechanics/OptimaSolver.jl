@@ -4,6 +4,7 @@ using OptimaSolver
 import OptimaSolver: solve!          # solve! is not exported; import explicitly for tests
 using LinearAlgebra
 using ForwardDiff
+import SciMLBase
 
 """
     aqua_persistent_tasks(m::Module) -> Bool
@@ -46,4 +47,7 @@ end
     include("test_dual_newton.jl")
     include("test_sensitivity.jl")
     include("test_ad.jl")
+    include("test_sciml_interface.jl")
+    include("test_solver_paths.jl")
+    include("test_stability_linesearch.jl")
 end
