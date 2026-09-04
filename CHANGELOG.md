@@ -42,10 +42,16 @@ defects, all fixed here. No exported name or signature changes.
 
 ### Testing
 
-Coverage goes from 74 % to 89 %. Beyond the SciML path, the `solve` overload
-taking a pre-built `Canonicalizer`, the barrier-exhaustion exit, the
-Lawson-Hanson NNLS active-set release, the variable-stability classification
-and the line-search filter are all now exercised — none of them were.
+Coverage goes from 74 % to 93 %, with `newton_step.jl`, `canonicalizer.jl`,
+`convergence.jl`, `sciml_interface.jl`, `stability.jl`, `residual.jl` and
+`sensitivity.jl` fully covered. Beyond the SciML path, what is now exercised
+and was not: the `solve` overload taking a pre-built `Canonicalizer`, the
+barrier-exhaustion exit, the Lawson-Hanson NNLS active-set release, the
+variable-stability classification, the line-search filter, `refactorize`,
+`binding_variable`, the rank-deficient conservation matrix, an infeasible
+budget, the verbose logging, and the inertia correction — including the
+Bunch-Kaufman fallback taken when no ridge below the ceiling restores
+definiteness.
 
 
 ## v0.5.0 — a feasibility error that could only see the largest budget
