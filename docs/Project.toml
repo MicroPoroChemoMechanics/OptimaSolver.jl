@@ -12,6 +12,14 @@ SciMLBase = "0bca4576-84f4-4d90-8ffe-ffa030f20462"
 # environment is empty. Keep these bounds in step with the root Project.toml.
 Documenter = "1"
 ForwardDiff = "1"
+# The package itself is built from `..`, so this bound is never used to pick a
+# version — it exists only so CompatHelper stops opening a pull request asking
+# for one.  It is deliberately open across the whole 0.x series: pinning the
+# current minor (`"0.5"`) would make this environment fail to resolve the day
+# the package is bumped to 0.6, with "empty intersection between
+# OptimaSolver@0.6.0 and project compatibility 0.5".  Widen to `"0, 1"` when 1.0
+# is released.
+OptimaSolver = "0"
 SciMLBase = "2, 3"
 julia = "1"
 
