@@ -48,6 +48,12 @@ that component will do; the solution does not depend on it.
 """
 const DEGENERATE_POTENTIAL = 500.0
 
+# Bounds on a log-molality. The floor is where `exp` underflows; the ceiling is
+# far above any physical molality and exists only to keep a diverging iterate
+# finite. Both are ACTIVE BOUNDS, not tolerances: see `_invert_phases!`.
+const W_FLOOR = -700.0
+const W_CEIL = 20.0
+
 """
     _degenerate_conservation_rows(prob, b) -> Vector{Int}
 
@@ -520,8 +526,32 @@ function _invert_phases!(
                 for (j, i) in enumerate(ph.members)
                     (j == ph.j_ref || i in dead) && continue
                     r = (u[i] - g[i]) - hv[i]
-                    worst = max(worst, abs(r))
-                    W[k][j] = clamp(W[k][j] + clamp(r, -30.0, 30.0), -700.0, 20.0)
+                    w = clamp(W[k][j] + clamp(r, -30.0, 30.0), W_FLOOR, W_CEIL)
+                    # THE MEASURE IS THE STEP, NOT THE RESIDUAL, and that is what
+                    # `inner_tol` actually asks for: "re-running this loop from
+                    # its own output changes nothing". That is a statement about
+                    # how far the STATE moves, and the residual is not it.
+                    #
+                    # The two differ exactly where it matters. `W` is a
+                    # log-molality clamped to `[W_FLOOR, W_CEIL]`, and a species
+                    # whose stationarity asks for less than the floor can never
+                    # reach it: the update is clamped, the state does not move,
+                    # and the residual stays where it is FOR EVER. Measured on a
+                    # CEM I at its own converged answer, the worst residual was
+                    # 1.0054e+02 at sweep 1 and 1.0054e+02 at sweep 200 -- it
+                    # belonged to dissolved oxygen at 9.9e-305 mol, which a
+                    # reducing pore solution puts well below the floor. Every one
+                    # of the 309 calls in a warm solve burned all 200 sweeps on
+                    # it, and that was 98 % of the solve.
+                    #
+                    # Measuring the step needs no special case for those species:
+                    # a clamped update moves nothing, so it contributes exactly
+                    # zero. Nor does it need them EXCLUDED, which would be wrong
+                    # -- a species sits at the floor only while the others hold
+                    # it there, and excluding it lets the loop stop one sweep
+                    # before it comes off.
+                    worst = max(worst, abs(w - W[k][j]))
+                    W[k][j] = w
                 end
             end
         end

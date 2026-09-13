@@ -706,3 +706,73 @@ end
     @test isempty(cert.split_phases)
     @test cert.optimal
 end
+
+@testset "a solute pinned at a bound is not an unconverged solute" begin
+    # `W` is a log-molality clamped to `[-700, 20]`. A species whose stationarity
+    # asks for less than the floor can never reach it: the update is clamped, the
+    # state does not move, and its residual stays exactly where it is. Counted as
+    # a convergence failure, it made the inner inversion run to its sweep cap on
+    # every call -- measured on a CEM I at its own converged answer, the worst
+    # measure was 1.0054e+02 at sweep 1 and 1.0054e+02 at sweep 200, and it
+    # belonged to dissolved oxygen sitting at the floor with 9.9e-305 mol.
+    #
+    # The condition at an active bound is complementarity, not stationarity.
+    Amat = Float64[1 1 1]
+    gvec = [0.0, 0.0, 900.0]          # the third species cannot reach its bound
+    h(x, _) = [
+        log(max(x[1], 1.0e-300)),
+        log(max(x[2], 1.0e-300)),
+        log(max(x[3], 1.0e-300)),
+    ]
+    prob = DualNewtonProblem(
+        Amat, gvec, h;
+        phases = [SolutionPhase([1, 2, 3], 1; always_present = true)],
+        idx_bounded = Int[],
+    )
+    x = [1.0, 0.1, 1.0e-300]
+    b = Amat * x
+    res = dual_newton_solve(prob, b, copy(x))
+    cert = kkt_certificate(prob, res.x, b)
+
+    @test res.x[3] < 1.0e-200         # still at the floor, as it must be
+    @test cert.feasibility <= 1.0e-8  # and the solve converged anyway
+end
+
+@testset "the inner stopping test measures an error, not a step" begin
+    # `_invert_phases!` reports what its sweeps ended on, and the line search
+    # uses that to prefer steps whose inner solve converged. The measure it
+    # reports is a step size for a mole-fraction phase, and the iteration is
+    # linearly convergent, so a small step is not a small error when the
+    # contraction rate is close to one.
+    #
+    # Checked here on the property that matters rather than on an internal:
+    # re-running the inversion from its own output must change nothing. That is
+    # exactly what `inner_tol` exists to guarantee, and a step-based test does
+    # not deliver it.
+    Amat = Float64[1 1 0; 0 0 1]
+    gvec = [0.0, 0.0, 0.0]
+    Aex = 1.0
+    h(x, _) = begin
+        N = max(x[2] + x[3], 1.0e-300)
+        x2 = max(x[2], 1.0e-300) / N
+        x3 = max(x[3], 1.0e-300) / N
+        [log(max(x[1], 1.0e-300)), log(x2) + Aex * x3^2, log(x3) + Aex * x2^2]
+    end
+    prob = DualNewtonProblem(
+        Amat, gvec, h;
+        phases = [
+            SolutionPhase([1], 1; always_present = true),
+            SolutionPhase([2, 3], 1; mole_fraction = true),
+        ],
+        idx_bounded = Int[],
+    )
+    x = [1.0, 0.05, 0.05]
+    b = Amat * x
+    res = dual_newton_solve(prob, b, copy(x))
+    cert = kkt_certificate(prob, res.x, b)
+    @test cert.optimal
+
+    # Idempotence: solving again from the answer returns the answer.
+    res2 = dual_newton_solve(prob, b, copy(res.x))
+    @test maximum(abs, res2.x .- res.x) <= 1.0e-8
+end

@@ -1,5 +1,57 @@
 # Changelog
 
+## v0.5.5 — the inner iteration ran 200 sweeps to move nothing
+
+A performance release with a correctness-shaped cause, and the measurement is the
+whole story. On a 90-species cement equilibrium, in a warm process so that no
+compilation is counted:
+
+| | 0.5.4 | 0.5.5 |
+|:--|--:|--:|
+| warm restart, bare dual solve | 583 ms | **18.5 ms** |
+| fresh state, certified route | 689 ms | **49.2 ms** |
+| against Reaktoro, same paste and database, same protocol | 21 × | **1.8 ×** |
+| a coupled hydration trajectory | 594 s | 284 s (with the caller's own fixes) |
+
+No answer changes. What changes is how long the solver spends not moving.
+
+### Fixed — the inner convergence test measured the wrong thing
+
+`_invert_phases!` recovers the phase compositions by successive substitution and
+stops when its worst measure falls below a tolerance. That measure was a
+**stationarity residual** for the aqueous phase. It should be, and now is, the
+**displacement of the state** — which is exactly what the surrounding contract
+asks for: `inner_tol` exists so that re-running the loop from its own output
+changes nothing, and that is a statement about how far the state moves, not about
+a residual.
+
+The two differ precisely where it matters. `W` is a log-molality clamped to
+`[-700, 20]`, and a species whose stationarity asks for less than the floor can
+never reach it: the update is clamped, the state does not move, and the residual
+stays where it is for ever. Profiling a warm solve put **98.4 %** of it in this
+loop; counting showed 309 calls, 200 sweeps each, **100 % of them hitting the
+cap**, with the worst measure at 1.0054e+02 on sweep 1 and 1.0054e+02 on sweep
+200. It belonged to dissolved oxygen at 9.9e-305 mol — a reducing cement pore
+solution puts O₂ far below the floor.
+
+Measuring the displacement needs no special case for such a species: a clamped
+update moves nothing, so it contributes exactly zero. It is also why the fix is
+this rather than *excluding* those species from the measure, which was tried and
+is wrong — a species sits at the floor only while the others hold it there, and
+excluding it lets the loop stop one sweep before it comes off. That variant broke
+a 25 % fly-ash paste whose element balance went from 5.8e-15 to 2.1e-01.
+
+### What this re-enables, and why it deserves its own release
+
+`DualNewtonOptions.inner_tol` gates the line search: a step is preferred when its
+inner solve converged, so that the outer residual is a function of `v` alone
+rather than of the warm start. Because the measure was pinned at 1.0054e+02, that
+condition was **never true**, and the strict pass had never once fired on a
+cement problem. It does now. That is a real change in how the solver chooses its
+steps, and it is why this is a release rather than a line in another one.
+
+Test suite: 285/285.
+
 ## v0.5.4 — a sentinel potential was being read as a chemical potential
 
 Two things, and the first is a **correctness regression in 0.5.3** that anyone
