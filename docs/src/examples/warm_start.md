@@ -4,16 +4,49 @@ CurrentModule = OptimaSolver
 
 # Warm Start
 
-When solving a sequence of related problems (varying temperature, pH, element amounts,
-etc.), passing the solution of one solve as the initial guess of the next reduces the
-iteration count and avoids the cold-start lifting heuristic.
+When solving a sequence of related problems (varying temperature, pH, element
+amounts, etc.), passing the solution of one solve as the initial guess of the
+next reuses the composition and the multipliers, and avoids the cold-start
+lifting heuristic.
 
-How much it saves depends on how far apart the two problems are, and on how hard
-the cold start was to begin with. The deliberately easy three-species problem
-below converges from scratch without difficulty, so the gain it shows is
-modest — the counts printed by the block are the real ones. The saving is
-largest where it matters: a system with pure solids or gases, where a cold start
-pays for the lifting heuristic and several barrier reductions before it moves.
+!!! warning "It does not always pay, and on the example below it does not"
+    A warm start reuses ``n`` and ``y``. It does **not** reuse the barrier
+    parameter: `μ` is reset to `barrier_init` on every solve. So the iteration
+    restarts from a point that sits near the solution of the *previous* problem
+    at ``\mu \to 0`` — which is far from the central path of ``\mu`` = 1e-4,
+    and the iteration has to travel back out before it can come in again.
+
+    Measured on the three-species problem below, at `tol = 1e-12`:
+
+    | | iterations |
+    |:--|--:|
+    | first problem, cold | 55 |
+    | second problem, **cold** | **39** |
+    | second problem, **warm-started** | **52** |
+
+    Thirteen iterations *worse* than starting from scratch. And the barrier
+    reset is demonstrably the cause — lowering `barrier_init` for the warm solve
+    alone recovers the saving and more:
+
+    | `barrier_init` | warm | cold |
+    |--:|--:|--:|
+    | 1e-4 (default) | 52 | 39 |
+    | 1e-6 | 41 | 43 |
+    | 1e-8 | **17** | 31 |
+    | 1e-10 | 34, **not converged** | 43 |
+
+    So on a problem that is easy to start cold, warm-starting at the default
+    barrier costs rather than saves. What a warm start does buy unconditionally
+    is the *starting composition*: through the SciML interface it skips the
+    cold-start lifting heuristic described at the bottom of this page, which is
+    the part that matters when species are absent and a cold start has to invent
+    an interior point for them. That is a different saving from the iteration
+    count, and it is not measured here.
+
+    Tuning `barrier_init` down for a warm solve is a caller's lever and not a
+    recommendation: the last row shows it stops converging if pushed. Carrying
+    the barrier level across solves is the fix, and it is not implemented —
+    `OptimaResult` does not carry `μ`.
 
 ## Direct API warm-start
 
@@ -38,12 +71,23 @@ println("Cold start: ", r1.iterations, " iterations")
 μ⁰2 = [0.0, 0.9, 2.1]
 prob2 = OptimaProblem(A, b, G, ∇G!; lb=fill(1e-16,3), p=(μ⁰=μ⁰2,))
 r2 = solve(prob2, opts; u0=r1)
-println("Warm start: ", r2.iterations, " iterations")   # typically much fewer
+println("Warm start: ", r2.iterations, " iterations")
+
+# The same problem from scratch, for comparison — this is the number that
+# decides whether the warm start was worth anything.
+r2_cold = solve(prob2, opts)
+println("Cold, same problem: ", r2_cold.iterations, " iterations")
 ```
 
-The solver reads `r1.n` and `r1.y` as the initial $(n, y)$. The barrier
-parameter is reset to `barrier_init` but the starting point is already
-near the new solution, so the outer loop converges in 1–3 steps.
+The solver reads `r1.n` and `r1.y` as the initial ``(n, y)``, and **resets** the
+barrier parameter to `barrier_init`. `iterations` counts Newton steps in total,
+not barrier levels — the outer loop runs far fewer than that, but the two numbers
+are not interchangeable and the one printed above is the total.
+
+On this problem the warm start loses, for the reason given in the warning at the
+top of the page. It is shown here because it is what the code does, and because
+a warm start that is assumed rather than measured is how a sequence of solves
+gets slower without anyone noticing.
 
 ## Temperature scan with `Canonicalizer` reuse
 
