@@ -1,5 +1,104 @@
 # Changelog
 
+## v0.6.0 — the stability test now says WHERE, and a rigorous answer to "is this budget possible at all?"
+
+0.5.4 gave the certificate a verdict on the phases that are **present**: does a
+mixing phase want to come apart into two compositions? A verdict alone turned out
+not to be actionable. A caller that means to act on it — by giving the phase a
+second instance and starting it in the other lobe — needs the composition the
+phase wants to move to, and that composition cannot be recovered afterwards: it
+is a stationary point of the tangent-plane distance **in the full system**, fixed
+jointly with the solution the phase sits in, and not a property of the mixing
+model alone. It was computed and thrown away.
+
+This release hands it back, adds a way to search for it where the default search
+cannot reach, and exposes the linear program that decides whether an element
+budget is feasible at all.
+
+### Added — the incipient composition, alongside the verdict
+
+`kkt_certificate` gains `split_trials`: per flagged phase, the member indices and
+the mole fractions it wants to split into. `phase_tangent_trial` and
+`phase_split_trial` are the underlying functions and are now exported; each
+returns `(measure, trial)`, and `phase_tangent_measure` / `phase_split_measure`
+are defined as `first` of them, so the two cannot drift apart.
+
+### Added — `split_starts`, for a lobe the corners cannot reach
+
+`SolutionPhase` gains a `split_starts` field (keyword, empty by default): extra
+trial compositions for the split search.
+
+The search starts from the corners of the composition simplex and refines by
+successive substitution, which converges to the stationary point **nearest its
+start**. A corner is usually on the right side of the barrier and sometimes is
+not, and where it is not the iteration walks back to the phase's own composition
+and reports nothing. Measured, on the published AFm sulfate/hydroxide binary of
+CEMDATA18 (Redlich-Kister, A₀ = 0.188, A₁ = 2.49 in RT units; spinodal
+[0.631, 0.914], binodal [0.4999, 0.9700]):
+
+| phase sits at | corners | with the binodal as an extra start |
+|:--|--:|--:|
+| x = 0.5268 | +3.99e-02, trial x = 0.974 | same verdict |
+| x = 0.95 | +2.4e-16, trial x = 0.950 — **missed** | +1.23e-01, trial x = 0.444 |
+| x = 0.98 (outside the binodal) | stable | stable |
+
+Both flagged compositions are metastable — inside the binodal, outside the
+spinodal — so *being* metastable is not what defeats the corners; sitting in the
+lobe they lead back into is. That is not something the solver can know in
+advance, which is why this is an escape hatch a caller fills rather than a rule
+the solver applies. Extra starts can only raise the maximum returned, so they
+never take a verdict away, and the last row above is the test that they do not
+invent one either.
+
+The division of labor is deliberate: this package knows the system and not the
+mixing model; the caller knows the model and can compute its binodal in
+microseconds.
+
+### Added — `simplex_start`, and an honest account of what it is worth
+
+The initial approximation of GEM-Selektor, after Karpov: minimize the linear part
+of the Gibbs energy over `A x = b, x ≥ 0`, whose optimum is a vertex with at most
+`m` nonzero species. Two-phase simplex on a dense tableau with **Bland's rule**,
+which cannot cycle — the polytope of a chemical system is massively degenerate,
+and a cycling start routine would be worse than none.
+
+It was transplanted because it is what a mature code does, and then measured. On
+a 91-species Portland cement with 12 components:
+
+| | |
+|:--|--:|
+| the LP itself | 0.27 s, `‖A x − b‖∞ = 6e-17`, 6 nonzeros of 91 |
+| cold start, the caller's own cascade | 16.1 s, certified |
+| the same cascade started from this vertex | 14.4 s, certified |
+| this vertex with the cascade declined | 10.5 s, **not** certified |
+
+Eleven percent, not the factor of eighty that separates a cold start from a warm
+one — and the reason is structural rather than accidental. A vertex puts every
+other species at the floor, which is the configuration a log-domain method
+handles worst: the barrier gradients span the full range between a mole and the
+floor, and a mixing phase's `ln x → −∞` on the very face where it vanishes.
+GEM-Selektor starts there because its IPM is built around it; this solver's dual
+Newton is not, and continuation on the loading is what works for it instead.
+
+What the routine is genuinely worth here is the other half of its answer.
+`nothing` is a **proof that the element balance has no nonnegative solution at
+all** — a statement about `b`, which no iterative failure can establish. That
+separates "this budget is impossible" from "the solver did not converge", and
+those are different problems with different fixes.
+
+### Breaking changes
+
+- **`SolutionPhase` has a new field.** `split_starts` is appended, so code that
+  constructs the struct by listing all its fields positionally must be updated.
+  The documented keyword constructor is unchanged and gains an optional
+  `split_starts`.
+- **Below 1.0 the registry treats a minor bump as breaking**, whatever the API
+  did. A downstream package pinned to `OptimaSolver = "0.5"` will not resolve
+  `0.6` and must widen its bound to `"0.5, 0.6"` or `"0.6"`.
+
+Nothing else changes: no answer moves, every existing signature still resolves,
+and `kkt_certificate` only gains a field.
+
 ## v0.5.5 — the inner iteration ran 200 sweeps to move nothing
 
 A performance release with a correctness-shaped cause, and the measurement is the

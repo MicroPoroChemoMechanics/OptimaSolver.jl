@@ -130,13 +130,25 @@ struct SolutionPhase
     j_ref::Int
     always_present::Bool
     mole_fraction::Bool
+    split_starts::Vector{Vector{Float64}}
 end
 
 """
     SolutionPhase(members, j_ref; always_present=false, mole_fraction=false)
 
 One mixing phase: the variable indices it holds, which of them is the reference,
-whether it may leave, and whether EVERY member's activity is a mole fraction.
+whether it may leave, whether EVERY member's activity is a mole fraction, and
+where to look when asking whether it wants to unmix.
+
+`split_starts` is that last one: extra trial compositions for
+[`phase_split_trial`](@ref), as mole fractions over `members`. It is empty by
+default and the search then probes the corners of the simplex alone, which finds
+a phase that is **unstable** but misses one that is merely **metastable** —
+outside its spinodal, inside its binodal — where every corner start walks back to
+the phase's own composition. A caller that knows the mixing model can compute its
+binodal directly and hand it over here; the search then refines it with the
+chemical potentials the full system has. This solver knows the system and not the
+model, so the model's half has to come from outside.
 
 That last flag decides how the members are recovered, and the two cases are
 genuinely different rather than a matter of taste.
@@ -155,7 +167,11 @@ reference's own equation — where it belongs.
 """
 SolutionPhase(
     members, j_ref; always_present::Bool = false, mole_fraction::Bool = false,
-) = SolutionPhase(collect(Int, members), j_ref, always_present, mole_fraction)
+    split_starts = Vector{Vector{Float64}}(),
+) = SolutionPhase(
+    collect(Int, members), j_ref, always_present, mole_fraction,
+    Vector{Vector{Float64}}(collect(collect(float.(s)) for s in split_starts)),
+)
 
 """
     DualNewtonProblem(A, g, h; phases, idx_bounded, params)
@@ -721,14 +737,14 @@ phase, and for a non-ideal one it sets the composition at which `γ` is read; a
 small value is the right choice, since the question is whether an *infinitesimal*
 amount of the phase is stable.
 """
-function phase_tangent_measure(
+function phase_tangent_trial(
         prob::DualNewtonProblem, k::Int, u::AbstractVector, x::AbstractVector;
         maxit::Int = 50, tol::Float64 = 1.0e-12, total::Float64 = 1.0e-6,
         g = prob.g, q = prob.q0, start = nothing, dead = Set{Int}(),
     )
     ph = prob.phases[k]
     nm = length(ph.members)
-    nm == 0 && return -Inf
+    nm == 0 && return (-Inf, Float64[])
     # A DEAD member is one whose conservation row is degenerate -- no matter of
     # that component exists in the system, so the row's multiplier is pinned at
     # the sentinel `DEGENERATE_POTENTIAL` rather than solved for. `uᵢ` for such a
@@ -744,7 +760,7 @@ function phase_tangent_measure(
     # rather than of chemistry. `_mole_fraction_exponents` had this guard from
     # the start; this function was written without it.
     live = [j for j in 1:nm if !(ph.members[j] in dead)]
-    length(live) < 1 && return -Inf
+    length(live) < 1 && return (-Inf, Float64[])
     xt = Vector{Float64}(x)
     # The successive substitution below converges to the stationary point of the
     # tangent-plane distance NEAREST its start, so which start is used decides
@@ -785,22 +801,37 @@ function phase_tangent_measure(
             d[j] = u[i] - g[i] - lnγ
         end
         M = maximum(d)
-        isfinite(M) || return -Inf
+        isfinite(M) || return (-Inf, Float64[])
         lnZ = M + log(sum(exp(dj - M) for dj in d))
         newfrac = [exp(dj - lnZ) for dj in d]
         Δ = maximum(abs, newfrac .- frac)
         frac = newfrac
         Δ < tol && break
     end
-    return lnZ
+    return (lnZ, frac)
 end
 
 """
-    phase_split_measure(prob, k, u, x; kwargs...) -> Float64
+    phase_tangent_measure(prob, k, u, x; kwargs...) -> Float64
+
+The tangent-plane distance alone, for a caller that does not need the trial
+composition. Identical to the first element of [`phase_tangent_trial`](@ref).
+"""
+phase_tangent_measure(args...; kwargs...) = first(phase_tangent_trial(args...; kwargs...))
+
+"""
+    phase_split_trial(prob, k, u, x; kwargs...) -> (Float64, Vector{Float64})
 
 How far a **present** mixing phase is from wanting to split into two coexisting
-compositions: the largest tangent-plane distance found from any start other than
-the phase's own composition.
+compositions — and **the composition it wants to split into**.
+
+The first element is the largest tangent-plane distance found from any start
+other than the phase's own composition. The second is the trial composition that
+achieved it, as mole fractions over the phase's members: Michelsen's stability
+analysis does not only answer *whether* a phase splits, it hands the flash that
+follows its starting estimate, and discarding it wastes the expensive half of the
+calculation. A caller that means to act on the verdict — by seeding a second
+instance of the phase — needs exactly this vector.
 
 A positive value means a composition exists that lies **below** the tangent plane
 at the current one, so the Gibbs minimum for that phase is not one composition
@@ -820,23 +851,60 @@ iteration. Started uniformly, the search converges to it and reports zero. The
 starts used here are the **end-member corners**, which lie in the other lobe
 when there is one.
 
-Returns `-Inf` for a phase of fewer than two members, which cannot split.
+Returns `(-Inf, Float64[])` for a phase of fewer than two members, which cannot
+split.
 """
-function phase_split_measure(
+function phase_split_trial(
         prob::DualNewtonProblem, k::Int, u::AbstractVector, x::AbstractVector;
         maxit::Int = 50, tol::Float64 = 1.0e-12, total::Float64 = 1.0e-6,
         g = prob.g, q = prob.q0, corner::Float64 = 0.98, dead = Set{Int}(),
+        starts = (),
     )
     ph = prob.phases[k]
     nm = length(ph.members)
-    nm < 2 && return -Inf
+    nm < 2 && return (-Inf, Float64[])
     # Only the members the element balance can actually supply. A corner on a
     # dead member is not a composition the phase can take, so it is not evidence
     # that the phase wants to split -- and its `uᵢ` is a sentinel besides. With
     # fewer than two live members there is no interior to unmix into.
     live = [j for j in 1:nm if !(ph.members[j] in dead)]
-    length(live) < 2 && return -Inf
+    length(live) < 2 && return (-Inf, Float64[])
     worst = -Inf
+    best = Float64[]
+
+    # The corners of the simplex, and whatever the caller supplies.
+    #
+    # THE CORNERS ARE NOT ALWAYS ENOUGH. The successive substitution converges to
+    # the stationary point of the tangent-plane distance NEAREST its start, so
+    # the start decides which one is found, and a corner is not always on the
+    # right side of the barrier. Where it is not, the iteration walks back to the
+    # phase's own composition and the function reports nothing, though a split
+    # would lower the energy.
+    #
+    # Measured, on the AFm sulfate/hydroxide binary with the published
+    # Redlich-Kister parameters (A₀ = 0.188, A₁ = 2.49 in RT units; spinodal
+    # [0.631, 0.914], binodal [0.4999, 0.9700]):
+    #
+    #     phase at x = 0.5268   corners +3.99e-02 (trial x = 0.974)   FOUND
+    #     phase at x = 0.95     corners +2.43e-16 (trial x = 0.950)   MISSED,
+    #                           binodal start +1.23e-01 (trial x = 0.444)
+    #
+    # Both compositions are metastable — inside the binodal, outside the
+    # spinodal — so being metastable is not by itself what defeats the corners;
+    # sitting in the lobe the corners lead back into is. That is not something
+    # this function can know in advance, which is why the escape hatch exists
+    # rather than a rule for when to use it.
+    #
+    # `starts` is how a caller that knows the mixing model hands over a better
+    # one. For a binary the binodal of the ISOLATED model — a common-tangent
+    # construction, microseconds — lands in the other lobe by construction, and
+    # the search here then refines it with the chemical potentials the full
+    # system actually has. The division of labor is deliberate: this function
+    # knows the system and not the model, the caller knows the model and not the
+    # system. Extra starts can only raise the maximum this function returns, so
+    # supplying them is never a change of verdict on a phase the corners already
+    # flagged — only a chance at one they did not.
+    trials = Vector{Vector{Float64}}()
     for j in live
         # Nearly pure in member `j`, the rest shared among the live ones. Not
         # exactly pure: a corner of the simplex is itself a fixed point of the
@@ -846,18 +914,221 @@ function phase_split_measure(
             frac[l] = (1 - corner) / (length(live) - 1)
         end
         frac[j] = corner
-        worst = max(
-            worst,
-            phase_tangent_measure(
-                prob, k, u, x; maxit = maxit, tol = tol, total = total,
-                g = g, q = q, start = frac, dead = dead,
-            ),
-        )
+        push!(trials, frac)
     end
-    return worst
+    for st in Iterators.flatten((ph.split_starts, starts))
+        length(st) == nm || continue
+        push!(trials, collect(float.(st)))
+    end
+
+    for frac in trials
+        m, f = phase_tangent_trial(
+            prob, k, u, x; maxit = maxit, tol = tol, total = total,
+            g = g, q = q, start = frac, dead = dead,
+        )
+        if m > worst
+            worst = m
+            best = f
+        end
+    end
+    return (worst, best)
 end
 
+"""
+    phase_split_measure(prob, k, u, x; kwargs...) -> Float64
+
+The split measure alone, for a caller that does not need the incipient
+composition. Identical to the first element of [`phase_split_trial`](@ref).
+"""
+phase_split_measure(args...; kwargs...) = first(phase_split_trial(args...; kwargs...))
+
 # ── the solve ─────────────────────────────────────────────────────────────────
+
+"""
+    simplex_start(A, g, b; floor = 1e-10, maxit = 0) -> Union{Nothing, Vector{Float64}}
+
+A feasible composition to start from, taken from the **vertex** of the mass
+balance that a linear program lands on.
+
+# What it is, and whose idea it is
+
+Minimize the *linear* part of the Gibbs energy over the feasible set,
+
+```
+minimize   gᵀx        subject to   A x = b,   x ≥ 0 ,
+```
+
+which is a linear program, so its optimum sits at a vertex: a **basic feasible
+solution** with at most `m` nonzero species, `m` being the number of conservation
+rows. That composition ignores mixing entropy entirely, so it is a poor answer —
+and an excellent starting point, because it satisfies `A x = b` exactly, is
+nonnegative, and costs a simplex on a tableau of `m × n` where `m` is a dozen.
+
+This is the initial approximation of GEM-Selektor, after Karpov: its
+`AutoInitialApproximation` solves exactly this program before the interior-point
+iterations begin [Kulik et al. 2013, *Computational Geosciences* **17**(1),
+1–24]. The method is theirs; what it is used for here is the same thing.
+
+# What it is good for here, which is NOT what it is good for in GEM-Selektor
+
+Measured, because the transplant was tried before it was believed. On a
+91-species Portland cement with 12 components:
+
+| | |
+|:--|--:|
+| the LP itself | 0.27 s, `‖A x − b‖∞ = 6e-17`, 6 nonzeros of 91 |
+| cold start, the solver's own cascade | 16.1 s, certified |
+| the same cascade started from this vertex | 14.4 s, certified |
+| this vertex with the cascade declined | 10.5 s, **not** certified |
+
+So the vertex is exact and cheap and **does not help this solver**: eleven
+percent, not the factor of eighty that separates a cold start from a warm one.
+
+The reason is worth keeping, because it is the reason the transplant fails
+rather than an accident. A vertex has at most `m` nonzero species — here 6 of 91
+— so every other species sits at the floor. That is exactly the configuration a
+log-domain method handles worst: the barrier gradients then span the full range
+between a mole and the floor, and a mixing phase's `ln x → −∞` on the very face
+where it vanishes. GEM-Selektor starts from this vertex because **its** IPM is
+built around it, with two-side constraints and its own thresholds; this solver's
+dual Newton is not, and continuation on the loading is what works for it instead.
+
+What the routine is genuinely worth here is the other half of its answer:
+`nothing` is a **rigorous statement that the element balance has no nonnegative
+solution at all**, which no iterative failure can establish. That distinguishes
+"this budget is impossible" from "the solver did not converge", and those are
+different problems with different fixes.
+
+# The implementation
+
+Two-phase simplex on a dense tableau, with **Bland's rule** for the pivot. Bland
+is slower than steepest-edge and cannot cycle, which is the property that matters
+here: the polytope of a chemical system is massively degenerate — most species
+are absent at the vertex — and a cycling start routine would be worse than none.
+
+Rows of `b` that are negative are negated first, so phase I begins from a
+feasible artificial basis.
+
+`floor` defaults to **zero**, and the vertex is returned exactly: `A x = b` holds
+to rounding, which is the property that makes the start worth having. A
+log-domain iteration cannot begin at an exact zero, so a caller that needs one
+lifts the absent species itself — and lifting perturbs the balance by
+`floor · Σ|A|`, which is the caller's trade to make and not this function's.
+
+Returns `nothing` when the program is infeasible, which means the element balance
+itself has no nonnegative solution — a statement about `b`, not about the solver.
+"""
+function simplex_start(
+        A::AbstractMatrix, g::AbstractVector, b::AbstractVector;
+        floor::Float64 = 0.0, maxit::Int = 0,
+    )
+    m, n = size(A)
+    length(b) == m || throw(DimensionMismatch("`b` has $(length(b)) rows, `A` has $m."))
+    length(g) == n || throw(DimensionMismatch("`g` has $(length(g)) entries, `A` has $n columns."))
+    itmax = maxit > 0 ? maxit : 50 * (m + n)
+
+    # Phase I tableau: [A I | b] with the artificials as the starting basis, and
+    # every row made nonnegative first.
+    T = zeros(Float64, m + 1, n + m + 1)
+    @inbounds for i in 1:m
+        sgn = b[i] < 0 ? -1.0 : 1.0
+        for j in 1:n
+            T[i, j] = sgn * A[i, j]
+        end
+        T[i, n + i] = 1.0
+        T[i, end] = sgn * b[i]
+    end
+    basis = collect((n + 1):(n + m))
+    # Objective of phase I: minimize the sum of artificials. It starts as a cost
+    # of one on each artificial and zero elsewhere, and every row is then
+    # subtracted so that the BASIC columns carry a zero reduced cost -- which is
+    # what makes the artificials' own columns come out at 1 - 1 = 0. Starting
+    # from a zero row instead leaves them at -1, and Bland then pivots on a
+    # column that is already basic: the tableau still terminates, but on a
+    # meaningless vertex, and an infeasible balance is reported as feasible.
+    @inbounds for i in 1:m
+        T[end, n + i] = 1.0
+    end
+    @inbounds for i in 1:m, j in 1:(n + m + 1)
+        T[end, j] -= T[i, j]
+    end
+
+    function pivot!(T, basis, r, c)
+        p = T[r, c]
+        T[r, :] ./= p
+        @inbounds for i in axes(T, 1)
+            i == r && continue
+            f = T[i, c]
+            f == 0 && continue
+            T[i, :] .-= f .* T[r, :]
+        end
+        basis[r] = c
+        return nothing
+    end
+
+    function run!(T, basis, ncols)
+        for _ in 1:itmax
+            # Bland: the LOWEST-index column with a negative reduced cost.
+            c = 0
+            @inbounds for j in 1:ncols
+                if T[end, j] < -1.0e-12
+                    c = j
+                    break
+                end
+            end
+            c == 0 && return true                      # optimal
+            r, best = 0, Inf
+            @inbounds for i in 1:(size(T, 1) - 1)
+                T[i, c] > 1.0e-12 || continue
+                ratio = T[i, end] / T[i, c]
+                # Bland again on ties: lowest basis index leaves.
+                if ratio < best - 1.0e-12 || (abs(ratio - best) <= 1.0e-12 && r != 0 && basis[i] < basis[r])
+                    r, best = i, ratio
+                end
+            end
+            r == 0 && return false                     # unbounded
+            pivot!(T, basis, r, c)
+        end
+        return false
+    end
+
+    run!(T, basis, n + m) || return nothing
+    abs(T[end, end]) < 1.0e-8 || return nothing        # phase I residual: infeasible
+
+    # Drive any artificial still in the basis out of it, on a nonzero pivot.
+    @inbounds for i in 1:m
+        basis[i] > n || continue
+        c = 0
+        for j in 1:n
+            if abs(T[i, j]) > 1.0e-10
+                c = j
+                break
+            end
+        end
+        c == 0 && continue                             # redundant row, leave it
+        pivot!(T, basis, i, c)
+    end
+
+    # Phase II: the real objective, on the columns that are not artificial.
+    T2 = T[:, vcat(1:n, n + m + 1)]
+    T2[end, :] .= 0.0
+    @inbounds for j in 1:n
+        T2[end, j] = g[j]
+    end
+    @inbounds for (i, bi) in pairs(basis)
+        bi <= n || continue
+        f = T2[end, bi]
+        f == 0 && continue
+        T2[end, :] .-= f .* T2[i, :]
+    end
+    run!(T2, basis, n)                                 # unbounded is acceptable here
+
+    x = fill(floor, n)
+    @inbounds for (i, bi) in pairs(basis)
+        bi <= n && (x[bi] = max(T2[i, end], floor))
+    end
+    return x
+end
 
 """
     _element_potential_start(A, g, b, y0; dead, maxit, tol) -> y
@@ -1779,6 +2050,13 @@ function kkt_certificate(
     # by construction there, so it cannot move `worst_all`.
     worst_split = -Inf
     split_phases = Int[]
+    # The composition each flagged phase wants to split INTO, as mole fractions
+    # over that phase's members. Michelsen's stability analysis produces it as a
+    # by-product of the test, and a caller that means to act on the verdict --
+    # by giving the phase a second instance and starting it there -- cannot get
+    # it any other way: the pair is a property of the FULL system, fixed jointly
+    # with the solution the phase sits in, and not of the mixing model alone.
+    split_trials = Dict{Int, NamedTuple{(:members, :x), Tuple{Vector{Int}, Vector{Float64}}}}()
     for (k, ph) in pairs(prob.phases)
         length(ph.members) < 2 && continue
         # Mole-fraction phases only. The aqueous solution is a phase here too,
@@ -1789,14 +2067,20 @@ function kkt_certificate(
         ph.mole_fraction || continue
         ph.always_present && continue
         any(xv[i] > floor && !(i in dead) for i in ph.members) || continue
-        m = phase_split_measure(prob, k, u, xv; g = gq, q = q, dead = dead)
+        m, trial = phase_split_trial(prob, k, u, xv; g = gq, q = q, dead = dead)
         if m > worst_split
             worst_split = m
         end
         # Flagged on the SAME tolerance the verdict uses. At a converged
         # equilibrium the measure is zero up to rounding, and `m > 0` alone
         # would name a phase on 1e-12 of numerical noise.
-        m > si_tol && push!(split_phases, k)
+        if m > si_tol
+            push!(split_phases, k)
+            # Keyed by SPECIES INDEX, so that a caller needs no table mapping
+            # the solver's phase list back to its own.
+            isempty(trial) ||
+                (split_trials[k] = (members = collect(ph.members), x = trial))
+        end
     end
 
     worst_all = max(worst, worst_phase, worst_split)
@@ -1808,6 +2092,7 @@ function kkt_certificate(
         worst_violation = worst_all, worst_violation_bounded = worst,
         worst_violation_phase = worst_phase, absent_phases = absent_phases,
         worst_violation_split = worst_split, split_phases = split_phases,
+        split_trials = split_trials,
         n_interior = length(interior),
         n_forced_zero = length(dead),
         param_residual = param_residual,

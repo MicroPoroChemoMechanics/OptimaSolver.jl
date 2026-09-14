@@ -63,7 +63,10 @@ export OptimaOptimizer, reset_cache!, solve
 export SolutionPhase, DualNewtonProblem, DualNewtonOptions, dual_newton_solve,
     kkt_certificate, degenerate_components, stationarity_capacity,
     phase_tangent_measure,
+    phase_tangent_trial,
     phase_split_measure,
+    phase_split_trial,
+    simplex_start,
     KKTResidual, kkt_residual, hessian_diagonal, gibbs_hessian_diag
 export row_scales
 export NewtonStep, compute_step!, compute_step_nullspace!, clamp_step

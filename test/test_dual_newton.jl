@@ -776,3 +776,192 @@ end
     res2 = dual_newton_solve(prob, b, copy(res.x))
     @test maximum(abs, res2.x .- res.x) <= 1.0e-8
 end
+
+@testset "the trial composition comes back with the verdict" begin
+    # `phase_tangent_measure` and `phase_split_measure` answer WHETHER, and a
+    # caller that means to act on the answer needs WHICH: the composition the
+    # phase wants to move to. It is produced by the same successive substitution
+    # that decides the verdict and cannot be recovered afterwards, the trial
+    # being a stationary point of the tangent-plane distance in the FULL system.
+    #
+    # The contract tested here is that the two are the same computation. The
+    # `*_measure` functions are defined as `first` of the `*_trial` ones, so this
+    # cannot drift, and the test is what says so out loud.
+    Amat = Float64[1 1 0; 0 0 1]
+    gvec = [0.0, 0.0, 0.0]
+    Aex = 3.0
+    h(x, _) = begin
+        N = max(x[2] + x[3], 1.0e-300)
+        x2 = max(x[2], 1.0e-300) / N
+        x3 = max(x[3], 1.0e-300) / N
+        [
+            log(max(x[1], 1.0e-300)),
+            log(x2) + Aex * x3^2,
+            log(x3) + Aex * x2^2,
+        ]
+    end
+    prob = DualNewtonProblem(
+        Amat, gvec, h;
+        phases = [
+            SolutionPhase([1], 1; always_present = true),
+            SolutionPhase([2, 3], 1; mole_fraction = true),
+        ],
+        idx_bounded = Int[],
+    )
+    x_present = [1.0, 0.08, 0.02]          # x = 0.2, inside the binodal
+    u = gvec .+ h(x_present, prob.q0)
+
+    m, trial = phase_split_trial(prob, 2, u, x_present)
+    @test m == phase_split_measure(prob, 2, u, x_present)
+    @test m > 1.0e-6                        # it does want to split
+    @test length(trial) == 2
+    @test all(trial .>= 0)
+    @test sum(trial) ≈ 1.0 rtol = 1.0e-8
+    # A symmetric regular solution splits symmetrically, so a phase sitting at
+    # x = 0.2 is answered by a trial in the OTHER lobe. Nothing here is fitted:
+    # the binodal of `x ln x + (1-x) ln(1-x) + A x(1-x)` is the pair (x, 1-x)
+    # solving `ln(x/(1-x)) = A(2x-1)`, which for A = 3 is x = 0.0711 / 0.9289.
+    @test trial[2] > 0.5
+
+    # Same contract for the absent-phase test, whose trial seeds the same kind
+    # of caller.
+    mt, tt = phase_tangent_trial(prob, 2, u, x_present)
+    @test mt == phase_tangent_measure(prob, 2, u, x_present)
+    @test length(tt) == 2
+    @test sum(tt) ≈ 1.0 rtol = 1.0e-8
+end
+
+@testset "a lobe the corners cannot reach, and the start that reaches it" begin
+    # WHY `split_starts` EXISTS, measured rather than asserted.
+    #
+    # The successive substitution converges to the stationary point of the
+    # tangent-plane distance nearest its start. A corner of the composition
+    # simplex is a natural start and usually a good one — but it is not always on
+    # the right side of the barrier, and where it is not, the iteration walks
+    # back to the phase's own composition and reports nothing.
+    #
+    # The model here is the published AFm sulfate/hydroxide binary of CEMDATA18:
+    # Redlich-Kister with a₀ = 0.188 RT and a₁ = 2.49 RT, i.e.
+    #
+    #     g(x)/RT = x ln x + (1-x) ln(1-x) + x(1-x)[A₀ + A₁(2x-1)] ,
+    #
+    # whose spinodal is [0.631, 0.914] and whose binodal is [0.4999, 0.9700].
+    # Both compositions below are metastable — inside the binodal, outside the
+    # spinodal — and the corners find one and miss the other. So being metastable
+    # is not what defeats them; sitting in the lobe they lead back into is.
+    A0, A1 = 0.188, 2.49
+    Gex(n) = begin
+        N = n[1] + n[2]
+        x = n[2] / N
+        N * x * (1 - x) * (A0 + A1 * (2x - 1))
+    end
+    Amat = Float64[1 1 0; 0 0 1]
+    gvec = [0.0, 0.0, 0.0]
+    h(x, _) = begin
+        n = [max(x[2], 1.0e-300), max(x[3], 1.0e-300)]
+        N = n[1] + n[2]
+        lg = ForwardDiff.gradient(Gex, n)
+        [log(max(x[1], 1.0e-300)), log(n[1] / N) + lg[1], log(n[2] / N) + lg[2]]
+    end
+    binodal = (0.499905, 0.970026)          # `common_tangent` of that model
+    make(starts) = DualNewtonProblem(
+        Amat, gvec, h;
+        phases = [
+            SolutionPhase([1], 1; always_present = true),
+            SolutionPhase([2, 3], 1; mole_fraction = true, split_starts = starts),
+        ],
+        idx_bounded = Int[],
+    )
+    bare = make(())
+    seeded = make([[1 - binodal[1], binodal[1]], [1 - binodal[2], binodal[2]]])
+
+    function verdicts(xp)
+        xpres = [1.0, 0.05 * (1 - xp), 0.05 * xp]
+        u = gvec .+ bare.h(xpres, bare.q0)
+        return (
+            phase_split_trial(bare, 2, u, xpres),
+            phase_split_trial(seeded, 2, u, xpres),
+        )
+    end
+
+    # The composition a CEM I actually settles at: the corners find it.
+    (m0, t0), (m1, t1) = verdicts(0.5268)
+    @test m0 > 1.0e-3
+    @test t0[2] > 0.9                       # the trial is in the sulfate-rich lobe
+    @test m1 ≈ m0 rtol = 1.0e-6             # a start cannot take a verdict away
+
+    # High on the hydroxide side, still inside the binodal: the corners return
+    # to the phase's own composition and report nothing.
+    (m0, t0), (m1, t1) = verdicts(0.95)
+    @test abs(m0) < 1.0e-10                 # no verdict from the corners
+    @test t0[2] ≈ 0.95 rtol = 1.0e-3        # they walked straight back
+    @test m1 > 1.0e-3                       # the binodal start finds the split
+    @test t1[2] < 0.5                       # and it lies in the other lobe
+
+    # Outside the binodal the phase is genuinely stable, and no start may invent
+    # a split: the extra starts are a search, not a bias.
+    (m0, _), (m1, _) = verdicts(0.98)
+    @test m0 <= 1.0e-10
+    @test m1 <= 1.0e-10
+end
+
+@testset "simplex_start lands on a vertex of the mass balance" begin
+    # GEM-Selektor's initial approximation, after Karpov: minimize the LINEAR
+    # part of the Gibbs energy over `A x = b, x ≥ 0`. The optimum of a linear
+    # program sits at a vertex, so the answer is a basic feasible solution with
+    # at most `m` nonzero species — a poor composition and an exact starting
+    # point.
+    #
+    # 1. A two-species balance with an obvious answer. `x₁ + x₂ = 1` and `x₂`
+    #    three times as expensive: everything goes to `x₁`, exactly.
+    A = [1.0 1.0]
+    x = simplex_start(A, [1.0, 3.0], [1.0])
+    @test x !== nothing
+    @test A * x ≈ [1.0] rtol = 1.0e-10
+    @test x[1] ≈ 1.0 rtol = 1.0e-8
+    @test x[2] == 0.0                       # a vertex, not a near-vertex
+
+    # 2. A row whose right-hand side is negative. Phase I needs its artificial
+    #    on the correct side, so the row has to be negated first; a solver that
+    #    skips that reports infeasible on a system that is not.
+    x2 = simplex_start(-A, [1.0, 3.0], [-1.0])
+    @test x2 !== nothing
+    @test (-A) * x2 ≈ [-1.0] rtol = 1.0e-10
+
+    # 3. Genuinely infeasible: `x₁ + x₂ = -1` with `x ≥ 0`. Phase I cannot drive
+    #    the artificial out, and the answer must be `nothing` rather than a
+    #    vector that violates the balance it was asked to satisfy.
+    @test simplex_start([1.0 1.0], [1.0, 1.0], [-1.0]) === nothing
+
+    # 4. Feasible systems built backwards from a known composition, so
+    #    feasibility is not in question and the vertex property is what is
+    #    tested. A deterministic generator rather than `Random`: the failure is
+    #    then reproducible from the test alone.
+    seed = UInt64(0x2026_0914_0000_0001)
+    nextrand() = begin
+        seed ⊻= seed << 13
+        seed ⊻= seed >> 7
+        seed ⊻= seed << 17
+        return (seed >> 11) / Float64(1 << 53)
+    end
+    for _ in 1:40
+        m = 3 + Int(floor(6 * nextrand()))
+        n = 10 + Int(floor(30 * nextrand()))
+        Ar = [nextrand() for _ in 1:m, _ in 1:n]
+        x0 = zeros(n)
+        for _ in 1:m
+            x0[1 + Int(floor(n * nextrand()))] = nextrand()
+        end
+        br = Ar * x0
+        gr = [2 * nextrand() - 1 for _ in 1:n]
+        xs = simplex_start(Ar, gr, br)
+        @test xs !== nothing
+        @test norm(Ar * xs - br, Inf) < 1.0e-8       # the balance is EXACT
+        @test all(xs .>= 0)
+        @test count(>(1.0e-8), xs) <= m              # and the point is a vertex
+        # It is also an optimum, so no worse than the composition it was built
+        # from — the one property that says the simplex ran rather than returned
+        # the first feasible thing it found.
+        @test dot(gr, xs) <= dot(gr, x0) + 1.0e-8
+    end
+end
