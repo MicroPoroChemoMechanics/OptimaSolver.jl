@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="./docs/src/assets/logo.svg" alt="OptimaSolver.jl" width="100"/>
+</p>
+
 # OptimaSolver.jl
 
 [![Docs - Stable](https://img.shields.io/badge/docs-stable-blue.svg)](https://MicroPoroChemoMechanics.github.io/OptimaSolver.jl/stable/)
