@@ -122,6 +122,12 @@ that library and from the following reference:
 The Julia port was authored by Jean-François Barthélémy (CEREMA, France) with
 assistance from [Claude Code](https://claude.ai/code) (Anthropic).
 
+OptimaSolver.jl is an **independent** port: it is not affiliated with, endorsed by,
+or supported by the authors of the upstream Optima library or by the Reaktoro
+project. Please report problems with this package here rather than to them. The
+package logo is an original work made for this port and reproduces no mark of the
+upstream project.
+
 ## License
 
 OptimaSolver.jl is licensed under the **GNU Lesser General Public License,

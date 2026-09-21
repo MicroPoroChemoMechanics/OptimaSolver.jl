@@ -56,12 +56,18 @@ that library and from the following reference:
 
 > Leal, A.M.M., Blunt, M.J., LaForce, T.C. (2014).
 > Efficient chemical equilibrium calculations for geochemical speciation and reactive
-> transport modeling.
+> transport modelling.
 > *Geochimica et Cosmochimica Acta*, **131**, 301–322.
 > <https://doi.org/10.1016/j.gca.2014.01.038>
 
 The Julia port was authored by Jean-François Barthélémy (CEREMA, France) with
 assistance from [Claude Code](https://claude.ai/code) (Anthropic).
+
+OptimaSolver.jl is an **independent** port: it is not affiliated with, endorsed by,
+or supported by the authors of the upstream Optima library or by the Reaktoro
+project. Please report problems with this package here rather than to them. The
+package logo is an original work made for this port and reproduces no mark of the
+upstream project.
 
 ## Documentation structure
 
