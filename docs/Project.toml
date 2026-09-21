@@ -1,5 +1,6 @@
 [deps]
 Documenter = "e30172f5-a6a5-5a46-863b-614d45cd2de4"
+DocumenterVitepress = "4710194d-e776-4893-9690-8d956a29c365"
 ForwardDiff = "f6369f11-7733-5829-9624-2563aa707210"
 OptimaSolver = "24efeca9-a785-406e-adb3-83609348bee7"
 SciMLBase = "0bca4576-84f4-4d90-8ffe-ffa030f20462"
@@ -11,6 +12,10 @@ SciMLBase = "0bca4576-84f4-4d90-8ffe-ffa030f20462"
 # global environment — which passes locally and fails on a runner, where that
 # environment is empty. Keep these bounds in step with the root Project.toml.
 Documenter = "1"
+# Bounded on the major only, deliberately: this documentation carries no
+# citations, so the DocumenterCitations ceiling that constrains the other
+# packages' docs environments does not apply here.
+DocumenterVitepress = "0.3"
 ForwardDiff = "1"
 # The package itself is built from `..`, so this bound is never used to pick a
 # version — it exists only so CompatHelper stops opening a pull request asking
