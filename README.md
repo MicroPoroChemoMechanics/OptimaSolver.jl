@@ -14,6 +14,7 @@
 [![code style: runic](https://img.shields.io/badge/code_style-%E1%9A%B1%E1%9A%A2%E1%9A%BE%E1%9B%81%E1%9A%B2-pink)](https://github.com/fredrikekre/Runic.jl)
 
 [![License: LGPL v2.1+](https://img.shields.io/badge/License-LGPL_v2.1+-blue.svg)](https://github.com/MicroPoroChemoMechanics/OptimaSolver.jl/blob/main/LICENSE)
+[![DOI](https://img.shields.io/badge/DOI-10.5281%2Fzenodo.19534031-blue)](https://doi.org/10.5281/zenodo.19534031)
 
 A Julia-native primal-dual interior-point solver for Gibbs-energy minimization in
 equilibrium chemistry.
@@ -148,13 +149,16 @@ of OptimaSolver.jl itself, which must remain LGPL.
 
 ## Citation
 
+[![DOI](https://img.shields.io/badge/DOI-10.5281%2Fzenodo.19534031-blue)](https://doi.org/10.5281/zenodo.19534031)
+
 See [CITATION.cff](CITATION.cff) for citation details.
 
 ```bibtex
 @software{optimasolver_jl,
   author    = {Barth{\'e}lemy, Jean-Fran{\c{c}}ois},
-  title     = {{OptimaSolver.jl}: Julia-native primal-dual interior-point solver for Gibbs-energy minimisation},
-  url       = {https://github.com/MicroPoroChemoMechanics/OptimaSolver.jl},
+  title     = {{OptimaSolver.jl}: Julia-native primal-dual interior-point solver for Gibbs-energy minimization},
+  doi       = {10.5281/zenodo.19534031},
+  url       = {https://doi.org/10.5281/zenodo.19534031},
   year      = {2026}
 }
 ```
