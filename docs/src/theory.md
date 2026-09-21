@@ -953,9 +953,9 @@ The scaling is transparent: the returned solution is always in the original unit
 
 - Leal, A.M.M., Blunt, M.J., LaForce, T.C. (2014).
   Efficient chemical equilibrium calculations for geochemical speciation and
-  reactive transport modeling.
+  reactive transport modelling.
   *Geochimica et Cosmochimica Acta*, **131**, 301–322.
-  <https://doi.org/10.1016/j.gca.2014.01.006>
+  <https://doi.org/10.1016/j.gca.2014.01.038>
 
 - Wächter, A., Biegler, L.T. (2006).
   On the implementation of an interior-point filter line-search algorithm for

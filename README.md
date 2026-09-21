@@ -117,7 +117,7 @@ that library and from the following reference:
 > Efficient chemical equilibrium calculations for geochemical speciation and reactive
 > transport modelling.
 > *Geochimica et Cosmochimica Acta*, **131**, 301–322.
-> <https://doi.org/10.1016/j.gca.2014.01.006>
+> <https://doi.org/10.1016/j.gca.2014.01.038>
 
 The Julia port was authored by Jean-François Barthélémy (CEREMA, France) with
 assistance from [Claude Code](https://claude.ai/code) (Anthropic).
