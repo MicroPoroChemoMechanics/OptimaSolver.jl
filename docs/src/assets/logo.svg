@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="UTF-8" standalone="no"?>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 600 600" width="600" height="600">
+  <title>OptimaSolver.jl</title>
+  <!-- axes -->
+  <g stroke="#CCCCCC" stroke-width="16" stroke-linecap="round" fill="none">
+    <line x1="112" y1="96" x2="112" y2="508"/>
+    <line x1="112" y1="508" x2="524" y2="508"/>
+  </g>
+  <!-- energie de Gibbs : parabole exacte (Bezier quadratique), minimum en (325,430) -->
+  <path d="M 150 140 Q 325 704 500 171" fill="none" stroke="#4063D8"
+        stroke-width="30" stroke-linecap="round"/>
+  <!-- chemin central : iteres successifs descendant vers l'optimum -->
+  <circle cx="195" cy="270" r="30" fill="#CB3C33"/>
+  <circle cx="255" cy="384" r="24" fill="#9558B2"/>
+  <!-- optimum atteint -->
+  <circle cx="325" cy="430" r="38" fill="#389826"/>
+  <circle cx="325" cy="430" r="15" fill="#FFFFFF"/>
+</svg>
