@@ -13,3 +13,6 @@ docs/Manifest.toml
 
 CLAUDE.md
 .claude
+
+# Benchmark environment: resolved locally against sibling checkouts
+benchmark/Manifest.toml
