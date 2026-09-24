@@ -777,6 +777,51 @@ end
     @test maximum(abs, res2.x .- res.x) <= 1.0e-8
 end
 
+@testset "an inner iteration that has stopped converging stops sweeping" begin
+    # `_invert_phases!` updates a solute as `w ← w + clamp(u − g − h, ±30)`, so an
+    # activity model with `h₂ = β ln x₂` gives the map `w ← (1 − β) w` — a real
+    # dependence on the composition, not a scripted sequence. Three regimes,
+    # and the stall rule must tell them apart.
+    function sweeps(β; w0 = 1.0)
+        calls = Ref(0)
+        h(x, _) = (calls[] += 1; [0.0, β * log(x[2])])
+        prob = DualNewtonProblem(
+            Float64[1 1], [0.0, 0.0], h;
+            phases = [SolutionPhase([1, 2], 1)], idx_bounded = Int[],
+        )
+        W = [[0.0, w0]]
+        resid = Ref(NaN)
+        OptimaSolver._invert_phases!(
+            prob, W, [0.0], [1.0], [1], Int[], Float64[], zeros(2);
+            resid = resid, maxsweeps = 200,
+        )
+        return (calls = calls[], w = W[1][2], step = resid[])
+    end
+
+    # β = 3: `w ← −2w`, an expanding oscillation that the clamp bounds into a
+    # cycle between 16 and −14. It never sets a new smallest step after the
+    # first sweep, so it stops `INNER_STALL_SWEEPS` sweeps later. Without the
+    # rule it ran the full 200, which is what a cement's bad trial points did
+    # on 89 % of their calls.
+    cyc = sweeps(3.0)
+    @test cyc.calls == OptimaSolver.INNER_STALL_SWEEPS + 1
+    @test cyc.step == 30.0          # reported as unconverged, as it must be
+
+    # β = 1.5: `w ← −w/2`, a contraction that needs 49 sweeps to reach the
+    # threshold — more than `INNER_STALL_SWEEPS`. Its step falls at every sweep,
+    # so the rule never fires and it converges exactly as it did before.
+    con = sweeps(1.5)
+    @test con.calls == 49
+    @test abs(con.w) < 1.0e-14
+
+    # β = 0.1: `w ← 0.9w`, converging but too slowly to finish in 200 sweeps.
+    # It still sets a new minimum every time, so it runs to the cap as before
+    # and is not mistaken for a cycle.
+    slow = sweeps(0.1)
+    @test slow.calls == 200
+    @test 0 < slow.step < 1.0e-9
+end
+
 @testset "the trial composition comes back with the verdict" begin
     # `phase_tangent_measure` and `phase_split_measure` answer WHETHER, and a
     # caller that means to act on the answer needs WHICH: the composition the

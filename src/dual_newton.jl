@@ -54,6 +54,33 @@ const DEGENERATE_POTENTIAL = 500.0
 const W_FLOOR = -700.0
 const W_CEIL = 20.0
 
+# Sweeps without a new smallest step after which `_invert_phases!` stops.
+#
+# The inner fixed point converges linearly when it converges, so its step sets a
+# new minimum at every sweep; it only stops doing so when it has stopped
+# converging. Measured on a 107-species cement solved cold, 89 % of the 69 463
+# calls ran to the 200-sweep cap, and they were not creeping towards the
+# threshold: their final step had a median of 30, the bound on a single update,
+# and their traces read 30, 28, 30, 28 ... with the step at sweep 200 equal to
+# the step at sweep 100. A cycle bounded by the clamp, at trial points whose
+# potentials no composition within the bounds satisfies. Each of those calls
+# paid 200 sweeps to return a state the line search then refused.
+#
+# Stopping them costs nothing an accepted step depended on, since they end above
+# `inner_tol` either way. With the value below, the same solve spends about 21
+# sweeps on each such call instead of 200: 1.40 million sweeps in all against
+# 12.8 million, and 16.8 s against 142.6 s, certified and returning the same
+# composition to 4e-13.
+#
+# What this does to the outer path is not fixed by the rule. The state returned
+# at a stalled call differs from the one the two-hundredth sweep would have
+# returned, and the outer Newton follows it: at a window of 10 the same solve
+# needed 492 calls and certified on its first route in 0.2 s, at 25 it needed
+# 28 150 and took 20.5 s, at 20 it needs 63 661. The composition was the same to
+# 3e-10 in every case. The value is set by the argument above, well past the
+# period of the cycles observed, and not by the fastest of those runs.
+const INNER_STALL_SWEEPS = 20
+
 """
     _degenerate_conservation_rows(prob, b) -> Vector{Int}
 
@@ -507,6 +534,8 @@ function _invert_phases!(
     )
     u = -(transpose(prob.A) * y)
     worst = Inf
+    smallest = Inf
+    stalled = 0
 
     for _ in 1:maxsweeps
         _fill_x!(x_buf, prob, W, refs, act_ph, active, xB)
@@ -573,6 +602,14 @@ function _invert_phases!(
         end
 
         worst <= 1.0e-14 && break
+        # Not converging: see `INNER_STALL_SWEEPS`.
+        if worst < smallest
+            smallest = worst
+            stalled = 0
+        else
+            stalled += 1
+            stalled >= INNER_STALL_SWEEPS && break
+        end
     end
 
     # What the sweeps ended on, so the caller can tell a converged inversion from
