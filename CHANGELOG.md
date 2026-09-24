@@ -1,5 +1,71 @@
 # Changelog
 
+## v0.6.1 — an inner iteration that has stopped converging no longer runs to its cap
+
+The inner fixed point of the dual Newton, `_invert_phases!`, which recovers the
+phase compositions from the multipliers, stopped only when its largest step fell
+below `1e-14` or after 200 sweeps. On a 107-species cement solved cold from its
+clinker composition, 89 % of the 69 463 calls ran to that cap, and they were not
+approaching the threshold: their final step had a median of 30, which is the
+bound on a single update, and the step at sweep 200 was the step at sweep 100.
+These calls come from trial points of the line search and from the early
+iterates of a cold start, where the multipliers ask for compositions that no
+state within the bounds satisfies. The update then oscillates against its
+clamp, and every such call paid 200 sweeps to return a state that the line
+search went on to refuse.
+
+The iteration now also stops once its step has gone `INNER_STALL_SWEEPS = 20`
+sweeps without reaching a new minimum. A converging iteration reaches a new
+minimum at every sweep, however many sweeps it needs, and is left untouched;
+only an iteration that has ceased to contract is interrupted, and since such an
+iteration ends above `inner_tol` in either case, no accepted step depended on
+the sweeps that are removed. A test pins the three regimes on a real map
+`w ← (1 − β) w`: a cycle stops after 21 sweeps, a contraction needing 49 sweeps
+is not cut, and a monotone convergence too slow for 200 sweeps still runs to the
+cap.
+
+Measured with the new `benchmark/run.jl`, on one machine:
+
+| solve | 0.6.0 | 0.6.1 |
+|:--|--:|--:|
+| cement, cold | 142.6 s | 16.8 s |
+| cement, cold, first call | 165.0 s | 37.6 s |
+| cement, warm from its answer | 1.00 s | 0.17 s |
+| cement, neighboring budget, warm | 1.01 s | 0.17 s |
+
+Every answer remains certified, and the largest relative change of an amount
+above `1e-10` mol is `4.1e-13`. The sweeps fall from 12.8 million to 1.40
+million; the calls barely change, from 69 463 to 63 661, because the saving is
+in the cost of each non-converging call and not in their number.
+
+The number of calls is where the choice of window shows, and it should not be
+read as a property of the rule. The state returned by a stalled call is not the
+one the two-hundredth sweep would have produced, and the outer Newton follows
+it: with a window of 10 the same solve needed 492 calls and certified on its
+first route in 0.21 s, with 25 it needed 28 150 and took 20.5 s. The
+composition agreed to `3e-10` in all three cases. The value 20 rests on the
+argument above and was not selected as the fastest of these runs.
+
+### Added — a benchmark that judges time and answer together
+
+`benchmark/` times the certified route on a frozen cement and compares each
+answer with a recorded baseline, so that a faster solver returning a different
+composition shows up as the regression it is. `benchmark/sweeps.jl` counts the
+sweeps of the inner iteration without instrumenting the library: it reads the
+method from the source, grafts a counter onto its loop and replaces it for that
+session only.
+
+### Downstream — ChemistryLab
+
+One ChemistryLab test, in `test/diffuse_layer.jl`, pins the size of a failure
+that this release reduces. Above `ELECTROSTATIC_STIFFNESS_LIMIT`, the route that
+eliminates the surface potential used to diverge with a stationarity above
+`1e-3`; with this release it stops between `1e-8` and `3e-7` on the two affected
+points, still refused by the certificate, and the stiffness bracket that the
+test exists to establish still holds. The test has to classify its points by
+the certificate before ChemistryLab resolves this version, which its compat
+bound `"0.5.5, 0.6"` will do automatically.
+
 ## v0.6.0 — the stability test now says WHERE, and a rigorous answer to "is this budget possible at all?"
 
 0.5.4 gave the certificate a verdict on the phases that are **present**: does a
