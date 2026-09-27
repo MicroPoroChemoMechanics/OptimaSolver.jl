@@ -1,6 +1,73 @@
 # Changelog
 
-## Unreleased
+## v0.7.0 — a linear program that proves a budget impossible, and phases the substitution cannot invert
+
+### Breaking changes
+
+- Below 1.0 a minor release is a breaking one for Julia's resolver: a package
+  bounding `OptimaSolver = "0.6"` does not accept 0.7.0 and must widen its bound.
+- `SolutionPhase` has two more fields, `newton` and `bounded_members`. Code that
+  builds it with the keyword constructor, as every documented call does, is
+  unaffected; a call to the positional constructor with five arguments no longer
+  exists.
+- `simplex_start` returns `nothing` only when the program is **proved**
+  infeasible, and throws when the tableau's answer cannot be verified either way.
+  It used to report such a case as infeasible or feasible without checking.
+
+### The linear program over pure phases: `lp_start`
+
+`lp_start(A, g, b)` and `lp_start(prob::DualNewtonProblem, b)` solve
+`minimize gᵀx subject to A x = b, x ≥ 0`, the equilibrium with every species a
+pure phase, and return an `LPStart`: the vertex, the multipliers `y` of
+`A x = b`, the basis, the reduced costs (minus the saturation indices of the
+species taken as pure phases), the redundant rows and, for an infeasible
+program, a Farkas vector `z` with `Aᵀz ≥ 0` and `bᵀz < 0`. Every status is
+verified on the original data before it is returned; what cannot be verified is
+`:undecided`. The arithmetic is generic, so a `Dual` budget gives the vertex with
+its derivatives for the basis found.
+
+Why it matters: "this budget is impossible" becomes a statement about the budget,
+with its proof, instead of the failure of an iteration. A caller's search no
+longer has to exhaust its restarts to find out.
+
+`simplex_start` is now a wrapper around it, and a defect of its own is fixed: a
+trace budget of `−1e-9` mol on a row that no species can make negative, next to
+a row of 55 mol, passed its absolute phase-I threshold of `1e-8` and came back
+as a vertex that violated the second row. The thresholds are now relative to
+the scale of each row, and the answer is verified.
+
+What the vertex is worth as a start was measured before anything was built on
+it, and the docstring of `lp_start` records the table. On two cold cement
+pastes, `dual_newton_solve` started from the vertex, from its multipliers or
+from its basis as the initial active set converged in none of the six cases. The
+vertex with every absent species raised to the amount the multipliers give it
+(`exp(uⱼ − gⱼ)`) is a start a caller's interior-point back ends take the rest of
+the way: 0.37 s and 0.26 s against 4.7 s and 4.2 s, to the same composition.
+So the package returns the program's answer and does not seed the dual Newton
+with it; no new keyword of `dual_newton_solve` was kept.
+
+### A phase whose composition the substitution cannot recover
+
+The members of a mole-fraction phase are recovered by successive substitution,
+`x = N · softmax(u − g − lnγ(x))`. In `ln x` its Jacobian is `I − ∂h/∂(ln x)`
+on the simplex, which contracts for ideal mixing and weak excess terms and
+diverges once `∂h/∂(ln x)` has an eigenvalue above two. Ideal mixing on
+sublattices has such eigenvalues: their bound is the sum of the site
+multiplicities, nine for the C-(N-)A-S-H gel of Myers et al. (2014). On that gel,
+at the potentials of a Portland cement paste, the substitution diverged within
+six sweeps, and damped it needed 370, beyond the inner cap of 200.
+
+`SolutionPhase(...; newton = true)` recovers the composition by Newton's method
+on the bordered system `[H 1; fᵀ 0]`, `H` from `ForwardDiff` through `h`, with a
+backtracking step; the tangent-plane test of the phase uses the same iteration.
+The bordered matrix is regular whenever the mixing energy is strictly convex,
+which `theory.md` proves. `bounded_members` declares the members that may be
+exactly absent from a present phase (one that owns no species of its own on any
+site keeps a finite activity as it vanishes): the certificate tests them below
+the floor by the inequality a pure phase obeys, where it excluded every phase
+member below the floor from both tests, so a gel that omitted such a member when
+it should hold it would have passed. The defaults leave every existing phase
+exactly as it was.
 
 ### Erratum to v0.6.2
 
