@@ -1,5 +1,34 @@
 # Changelog
 
+## Unreleased
+
+### Erratum to v0.6.2
+
+Four statements of the v0.6.2 entry went beyond what was measured, or were
+wrong. The code and the tests of that release are unaffected, and nothing here
+changes a result.
+
+- "On a cement paste the search's KKT error was `3·exp(50)` at every round,
+  three dead members." It was `3·exp(50)` at some rounds of that solve and other
+  values at the others, zero among them. And they were not dead members: that
+  paste has no component absent from its budget. They were members whose
+  `uᵢ − gᵢ` passed the clamp of 50 of the ideal test under the multipliers of
+  the round; which members, the log does not say. The dead-member case the
+  release also fixes is real, and is the one `test/test_dual_newton.jl` pins; it
+  was not that paste's.
+- "The solve ended with an AFt phase at exactly e·1e-9 mol and the same element
+  balance whatever the paste." Several pastes stopped at one element balance,
+  and in those examined it was carried by an AFt phase of e·1e-9 mol; one paste
+  stopped elsewhere.
+- "Each assertion failing on 0.6.1." Each of the three new cases fails on 0.6.1
+  through at least one of its assertions, and some of their assertions hold on
+  0.6.1 too: there, for one, the solid solution is in the active set, at
+  e·1e-9 mol.
+- The entry, and a comment of `test/test_dual_newton.jl`, gave "the species
+  written with `-H+`" as having a negative coefficient on the row of an absent
+  component. The row of `H+` is never absent from a budget, so they are no
+  example of it; the comment now states the condition alone.
+
 ## v0.6.2 — a mixing phase absent from the start can enter the active set
 
 Three defects of the active-set search of the dual Newton, found on cement
