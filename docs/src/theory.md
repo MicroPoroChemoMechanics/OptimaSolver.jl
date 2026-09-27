@@ -448,6 +448,66 @@ aqueous phase: there the solutes' activities are molalities, unbounded above,
 and their dependence on `u` is exactly what determines the multipliers — remove
 it and `y` is barely determined at all.
 
+### When the substitution does not contract
+
+The composition is found by successive substitution. Written in ``w = \ln x``,
+one sweep is ``w \leftarrow w + (u - g - h(w))`` followed by the renormalization
+to the phase total, so near the fixed point the error is multiplied by
+``I - H`` restricted to the simplex, with ``H = \partial h/\partial w``. For ideal
+mixing ``h_i = \ln(x_i/N)`` and ``H = I - \mathbf{1} f^\mathsf{T}`` (``f`` the
+mole fractions), the projector that removes the total: on the simplex
+``I - H`` vanishes and one sweep is exact. A weak excess term perturbs it and the
+map still contracts. It diverges as soon as ``H`` has an eigenvalue above two on
+the simplex.
+
+Ideal mixing on sublattices can have such eigenvalues. With ``m_s`` the
+multiplicity of site ``s`` and ``y_{s,i}`` its site fractions,
+``h_k = \sum_s m_s \ln y_{s,\sigma_s(k)}`` and ``H`` is a sum of ``m_s`` times
+projectors of the same kind, its spectrum bounded by ``\sum_s m_s`` instead of
+one: nine for the C-(N-)A-S-H gel of Myers et al. (2014). Measured on that gel,
+at the potentials of a Portland cement paste, the substitution diverged within
+six sweeps; damped by ``1/\sum_s m_s`` it converged, in 370.
+
+`SolutionPhase(…; newton = true)` solves the same equations by Newton's method.
+The unknowns are ``z = \ln f`` over the live members and the constant ``L``, and
+the equations
+
+```math
+h_j(f) - (u_j - g_j) + L = 0 \quad\text{for every live } j, \qquad \sum_j f_j = 1 ,
+```
+
+are those of the fixed point, with ``L = \log\sum_j e^{u_j - g_j - \ln\gamma_j}``,
+the phase equation above. The Newton matrix is bordered,
+
+```math
+\begin{pmatrix} H & \mathbf{1} \\ f^\mathsf{T} & 0 \end{pmatrix}
+\begin{pmatrix} \delta z \\ \delta L \end{pmatrix}
+= \begin{pmatrix} -r \\ 1 - \textstyle\sum_j f_j \end{pmatrix},
+```
+
+with ``H`` computed by `ForwardDiff` through `h`. It is regular whenever the
+mixing energy is strictly convex. For a model whose activities are the gradient of
+a mixing energy, ``H = S D`` with ``S`` its Hessian in the amounts, symmetric and
+positive semidefinite, and ``D = \operatorname{diag}(x)``. If
+``(\delta z, \delta L)`` is in the kernel, then ``f^\mathsf{T}\delta z = 0``, and
+multiplying the first block by ``(D\,\delta z)^\mathsf{T}`` gives
+``\delta z^\mathsf{T} D S D\,\delta z = -\delta L\, x^\mathsf{T}\delta z = 0``.
+Hence ``S D\,\delta z = 0``, then ``\delta L = 0``. Strict convexity leaves
+``S`` only the null direction ``x`` (the energy is homogeneous of degree one), so
+``D\,\delta z \propto x``, ``\delta z \propto \mathbf{1}``, and
+``f^\mathsf{T}\delta z = 0`` makes it zero. A step is accepted on a decrease of
+``\|r\|^2``, halved otherwise. The tangent-plane test of the phase solves the same
+equations, so it uses the same iteration.
+
+A member can be **absent from a present phase**. When it owns no species on any
+site (a member whose every site species is shared with other members), its
+activity stays finite as its fraction vanishes, and nothing then holds it inside
+the simplex: its condition is the inequality ``g_k + h_k \ge u_k``, the one a pure
+phase obeys. The iteration holds such a member at the floor when its residual asks
+for less. `bounded_members` declares the members for which that is chemistry
+rather than truncation, and the certificate then tests them by the inequality,
+where it otherwise excludes every phase member below the floor.
+
 ### Degenerate components
 
 A row `k` with ``b_k = 0`` need not be degenerate. With ``x \ge 0``,
@@ -588,6 +648,45 @@ at `1e-16` whose stationarity value is `e^{-300}` misstates `h_i` by 263 units,
 and the check then reports a residual of 74 for a point solved to `5e-12`. And a
 variable carrying a **degenerate component** is excluded from both tests, for the
 reason above.
+
+## The linear program over pure phases
+
+Dropping every mixing term leaves the linear program
+
+```math
+\min_x\; g^\mathsf{T} x \quad\text{subject to}\quad A x = b,\; x \ge 0 ,
+```
+
+the equilibrium of a system in which every species is a pure phase. `lp_start`
+solves it by a two-phase dense simplex with Bland's rule, on rows equilibrated to
+unit largest entry, and verifies the status it returns on the original data.
+
+**The basis is an assemblage.** At an optimal vertex the basic columns ``B``
+satisfy ``A_B^\mathsf{T} y = -g_B``, and complementary slackness makes the reduced
+costs ``d = g + A^\mathsf{T} y`` zero on the basis and nonnegative elsewhere. With
+``u = -A^\mathsf{T} y``, the sign convention of the dual Newton, ``d_j = g_j - u_j``
+is minus the saturation index of species ``j`` taken as a pure phase: the basic
+species are saturated and the others undersaturated. The multipliers are unique
+when the basis is; on a redundant row the minimum-norm ``y`` is returned.
+
+**An infeasible budget has a proof.** By Farkas's lemma, exactly one of the two
+holds: ``A x = b`` has a solution ``x \ge 0``, or some ``z`` has
+``A^\mathsf{T} z \ge 0`` and ``b^\mathsf{T} z < 0``. The second is a combination of
+the balances that every species raises and the budget lowers, so no amounts can
+meet ``b``. Phase I ends on such a ``z`` when the program is infeasible, and it is
+returned only once both inequalities are checked. "This budget is impossible" is
+then a statement about ``b``, not the failure of an iteration.
+
+**What the vertex is worth as a start.** A vertex holds at most ``m`` species, and
+a method in ``\ln x`` cannot start from the others at zero. Raised to
+``x_j = e^{u_j - g_j}``, the amount the multipliers give a species absent from the
+vertex (the ideal dilute amount at those potentials), the vertex becomes a start.
+Measured on two cold cement pastes, 107 and 109 species, a certified cascade that
+took 4.7 s and 4.2 s from the recipe took 0.37 s and 0.26 s from it, to the same
+composition. Handed to `dual_newton_solve` alone, as a point, as multipliers or as
+an initial active set, it converged in none of the six cases, which is why the
+package returns it as a start for a caller's own route rather than seeding the
+dual Newton with it.
 
 ## Newton step via Schur complement
 
@@ -956,6 +1055,18 @@ The scaling is transparent: the returned solution is always in the original unit
   reactive transport modelling.
   *Geochimica et Cosmochimica Acta*, **131**, 301–322.
   <https://doi.org/10.1016/j.gca.2014.01.038>
+
+- Kulik, D.A., Wagner, T., Dmytrieva, S.V., Kosakowski, G., Hingerl, F.F.,
+  Chudnenko, K.V., Berner, U.R. (2013).
+  GEM-Selektor geochemical modeling package: revised algorithm and GEMS3K
+  numerical kernel for coupled simulation codes.
+  *Computational Geosciences*, **17**, 1–24.
+  <https://doi.org/10.1007/s10596-012-9310-6>
+
+- Myers, R.J., Bernal, S.A., Provis, J.L. (2014).
+  A thermodynamic model for C-(N-)A-S-H gel: CNASH_ss. Derivation and validation.
+  *Cement and Concrete Research*, **66**, 27–47.
+  <https://doi.org/10.1016/j.cemconres.2014.07.005>
 
 - Wächter, A., Biegler, L.T. (2006).
   On the implementation of an interior-point filter line-search algorithm for

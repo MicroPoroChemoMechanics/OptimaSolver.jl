@@ -45,6 +45,8 @@ end
     include("test_newton.jl")
     include("test_solver.jl")
     include("test_dual_newton.jl")
+    include("test_lp.jl")
+    include("test_phase_newton.jl")
     include("test_sensitivity.jl")
     include("test_ad.jl")
     include("test_sciml_interface.jl")

@@ -46,6 +46,17 @@ stationarity_capacity
 OptimaSolver.DEGENERATE_POTENTIAL
 ```
 
+## The linear program over pure phases
+
+A start, or a proof that the budget cannot be met. Derived in
+[The linear program over pure phases](@ref).
+
+```@docs
+lp_start
+LPStart
+simplex_start
+```
+
 ## Sensitivity
 
 ```@docs

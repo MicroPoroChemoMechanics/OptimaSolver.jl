@@ -33,6 +33,7 @@ import SciMLBase: solve
 include("problem.jl")           # OptimaProblem, OptimaState, OptimaResult, OptimaOptions
 include("canonicalizer.jl")     # Canonicalizer — A → [B N], LU cache, Schur complement
 include("dual_newton.jl")
+include("lp.jl")                # lp_start, LPStart: the linear program over pure phases
 include("residual.jl")          # KKTResidual, kkt_residual, hessian_diagonal
 include("newton_step.jl")       # NewtonStep, compute_step!, clamp_step
 include("stability.jl")         # classify_variables, reduced_step_for_unstable!
@@ -67,6 +68,7 @@ export SolutionPhase, DualNewtonProblem, DualNewtonOptions, dual_newton_solve,
     phase_split_measure,
     phase_split_trial,
     simplex_start,
+    lp_start, LPStart,
     KKTResidual, kkt_residual, hessian_diagonal, gibbs_hessian_diag
 export row_scales
 export NewtonStep, compute_step!, compute_step_nullspace!, clamp_step

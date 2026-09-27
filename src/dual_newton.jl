@@ -172,6 +172,9 @@ struct SolutionPhase
     always_present::Bool
     mole_fraction::Bool
     split_starts::Vector{Vector{Float64}}
+    newton::Bool
+    bounded_members::Vector{Int}
+    local_h::Union{Nothing, Function}
 end
 
 """
@@ -205,14 +208,65 @@ every `hᵢ` is bounded above by zero. Asking any of them to meet a positive
 member without bound. Such a phase is recovered from the RATIOS between its
 members, which are always attainable, with the absolute level left to the
 reference's own equation — where it belongs.
+
+# Recovering the composition: substitution or Newton
+
+By default the ratios are found by successive substitution,
+`x = N · softmax(u − g − lnγ(x))`. Written in `w = ln x`, one sweep is
+`w ← w + (u − g − h(w))` followed by a renormalization, so its Jacobian is
+`I − ∂h/∂w` on the simplex. For an ideal phase `∂h/∂w` is the projector that
+removes the total, the map is exact in one sweep, and a weak excess term keeps
+it a contraction. A model whose `∂h/∂w` has eigenvalues above two does not: the
+map then diverges. Ideal mixing on sublattices can be such a model: there the
+eigenvalues are bounded by the sum of the site multiplicities, which is nine for
+the CNASH gel of Myers et al., instead of one. Measured on that gel, at the
+potentials of a CEM I paste, the substitution diverged within six sweeps.
+
+`newton = true` recovers the composition instead by Newton's method on the
+bordered system `[H 1; xᵀ 0]`, `H = ∂h/∂w` over the members, obtained by
+`ForwardDiff`: `h` must then accept dual numbers. The same iteration serves the
+tangent-plane test of the phase, whose stationary points solve the same
+equations. The defaults leave every existing phase exactly as it was.
+
+`local_h`, a function of the members' amounts alone (a vector over `members`)
+returning their `h`, may be given when those depend on nothing else, as a solid
+solution's do. The Newton iteration then differentiates it rather than the whole
+`h`, which for a cement means eight variables instead of a hundred, and must
+return what `h` would return for them.
+
+`bounded_members` lists the members (positions within `members`) that may be
+**exactly absent from the phase while it is present**. A member's activity
+normally vanishes with its fraction, so its stationarity is an equality however
+small it is. A member that carries no species of its own on any site of a
+sublattice model keeps a finite activity as it disappears: it can be absent,
+and its condition is then an inequality, as a pure phase's is. The certificate
+tests a bounded member below its floor by that inequality instead of excluding
+it.
 """
-SolutionPhase(
-    members, j_ref; always_present::Bool = false, mole_fraction::Bool = false,
-    split_starts = Vector{Vector{Float64}}(),
-) = SolutionPhase(
-    collect(Int, members), j_ref, always_present, mole_fraction,
-    Vector{Vector{Float64}}(collect(collect(float.(s)) for s in split_starts)),
-)
+function SolutionPhase(
+        members, j_ref; always_present::Bool = false, mole_fraction::Bool = false,
+        split_starts = Vector{Vector{Float64}}(), newton::Bool = false,
+        bounded_members = Int[], local_h::Union{Nothing, Function} = nothing,
+    )
+    newton && !mole_fraction && throw(
+        ArgumentError(
+            "SolutionPhase: `newton = true` inverts a phase whose members are all " *
+                "mole fractions; a phase with a solvent recovers its solutes one by one."
+        )
+    )
+    bm = collect(Int, bounded_members)
+    all(in(eachindex(members)), bm) || throw(
+        ArgumentError(
+            "SolutionPhase: `bounded_members` are positions within `members` " *
+                "(1:$(length(members))); got $bm."
+        )
+    )
+    return SolutionPhase(
+        collect(Int, members), j_ref, always_present, mole_fraction,
+        Vector{Vector{Float64}}(collect(collect(float.(s)) for s in split_starts)),
+        newton, bm, local_h,
+    )
+end
 
 """
     DualNewtonProblem(A, g, h; phases, idx_bounded, params)
@@ -527,6 +581,113 @@ function _logsumexp(d)
     return M + log(sum(exp(dj - M) for dj in d))
 end
 
+"""
+    _newton_phase_composition(prob, ph, c, xt, f0, total, q, dead; maxit, tol)
+        -> (f, L, converged)
+
+The composition of one mole-fraction phase at the potentials `c = u − g` of its
+members, by Newton's method: the mole fractions `f` and the constant `L` with
+
+    h_j(f) − c_j + L = 0   for every live member j,     Σ_j f_j = 1,
+
+`h` evaluated with the phase's members at `total · f` and every other variable
+as in `xt`. These are the fixed-point equations of the substitution
+`f = softmax(c − lnγ(f))`, and `L = logsumexp(c − lnγ)` is the tangent-plane
+measure of the phase, so one routine serves the inversion and the stability
+test. The unknowns are `z = ln f` and `L`; the Newton matrix is the bordered
+`[H 1; fᵀ 0]` with `H = ∂h/∂z` from `ForwardDiff`, and each step is accepted on
+a decrease of the squared residual, halving it otherwise.
+
+A member at the floor whose residual is positive asks for less than the floor
+allows. It is held there and left out of the system, which is what the
+substitution does too: its fraction is `exp(W_FLOOR)`, zero to the precision
+of everything it enters.
+
+`f0` is the start, over `ph.members`; dead members get a zero fraction.
+"""
+function _newton_phase_composition(
+        prob, ph, c, xt, f0, total, q, dead; maxit::Int = 50, tol::Float64 = 1.0e-13,
+    )
+    nm = length(ph.members)
+    live = [j for j in 1:nm if !(ph.members[j] in dead)]
+    f = zeros(nm)
+    K = length(live)
+    K == 0 && return (f, -Inf, true)
+    mem = ph.members[live]
+    cl = [c[j] for j in live]
+    xw = Vector{Float64}(xt)
+    for (j, i) in enumerate(ph.members)
+        j in live || (xw[i] = 0.0)
+    end
+    lh = ph.local_h
+    function hfun(zz)
+        if lh === nothing
+            xd = Vector{eltype(zz)}(xw)
+            for (a, i) in enumerate(mem)
+                xd[i] = total * exp(zz[a])
+            end
+            return current_h(prob, xd, q)[mem]
+        end
+        xm = zeros(eltype(zz), nm)
+        for (a, j) in enumerate(live)
+            xm[j] = total * exp(zz[a])
+        end
+        return lh(xm)[live]
+    end
+    z = [log(max(f0[j], exp(W_FLOOR))) for j in live]
+    z .-= _logsumexp(z)
+    held(zz, r) = [zz[a] <= W_FLOOR + 1 && r[a] > 0 for a in 1:K]
+    function state(zz)
+        hz = hfun(zz)
+        L = _logsumexp(cl .- hz .+ zz)
+        r = hz .- cl .+ L
+        out = held(zz, r)
+        φ = sum(abs2(r[a]) for a in 1:K if !out[a]; init = 0.0)
+        return (; hz, L, r, out, φ)
+    end
+    st = state(z)
+    converged = false
+    for _ in 1:maxit
+        free = [a for a in 1:K if !st.out[a]]
+        if isempty(free) || maximum(a -> abs(st.r[a]), free) <= tol
+            converged = true
+            break
+        end
+        H = ForwardDiff.jacobian(hfun, z)
+        nf = length(free)
+        B = zeros(nf + 1, nf + 1)
+        B[1:nf, 1:nf] .= @view H[free, free]
+        B[1:nf, nf + 1] .= 1.0
+        for (p, a) in enumerate(free)
+            B[nf + 1, p] = exp(z[a])
+        end
+        rhs = vcat(-st.r[free], 1.0 - sum(exp, z))
+        sol = qr(B, ColumnNorm()) \ rhs
+        all(isfinite, sol) || break
+        δ = sol[1:nf]
+        α = min(1.0, 30.0 / max(maximum(abs, δ), eps()))
+        accepted = false
+        for _ in 1:30
+            zt = copy(z)
+            for (p, a) in enumerate(free)
+                zt[a] = clamp(z[a] + α * δ[p], W_FLOOR, 0.0)
+            end
+            zt .-= _logsumexp(zt)
+            stt = state(zt)
+            if isfinite(stt.φ) && stt.φ <= (1 - 1.0e-4 * α) * st.φ
+                z, st, accepted = zt, stt, true
+                break
+            end
+            α /= 2
+        end
+        accepted || break
+    end
+    for (a, j) in enumerate(live)
+        f[j] = exp(z[a])
+    end
+    return (f, st.L, converged)
+end
+
 function _fill_x!(x_buf, prob, W, refs, act_ph, active, xB)
     fill!(x_buf, 0.0)
     for (a, k) in enumerate(act_ph)
@@ -559,7 +720,21 @@ function _invert_phases!(
         for (a, k) in enumerate(act_ph)
             ph = prob.phases[k]
 
-            if ph.mole_fraction
+            if ph.mole_fraction && ph.newton
+                # The same composition as the substitution below, found by
+                # Newton's method: see `SolutionPhase`. Solved to convergence
+                # at each sweep, from the previous one, so a second sweep finds
+                # it already there.
+                N = refs[a]
+                c = [u[i] - g[i] for i in ph.members]
+                f0 = [exp(W[k][j]) / N for j in eachindex(ph.members)]
+                f, _, _ = _newton_phase_composition(prob, ph, c, x_buf, f0, N, q, dead)
+                for j in eachindex(ph.members)
+                    w = f[j] > 0 ? clamp(log(N) + log(f[j]), -700.0, 700.0) : -700.0
+                    worst = max(worst, abs(w - W[k][j]))
+                    W[k][j] = w
+                end
+            elseif ph.mole_fraction
                 # No member of a solid solution can be inverted from its own
                 # stationarity: `hᵢ` is the logarithm of a mole fraction, bounded
                 # above by zero, so a positive `uᵢ − gᵢ` is unreachable and the
@@ -817,6 +992,11 @@ function phase_tangent_trial(
         sf = sum(f)
         sf > 0 ? f ./ sf : f
     end
+    if ph.newton
+        c = [u[i] - g[i] for i in ph.members]
+        f, L, _ = _newton_phase_composition(prob, ph, c, xt, frac, total, q, dead; maxit = maxit)
+        return (L, f)
+    end
     lnZ = -Inf
     d = Vector{Float64}(undef, nm)
     for _ in 1:maxit
@@ -979,34 +1159,20 @@ phase_split_measure(args...; kwargs...) = first(phase_split_trial(args...; kwarg
 # ── the solve ─────────────────────────────────────────────────────────────────
 
 """
-    simplex_start(A, g, b; floor = 1e-10, maxit = 0) -> Union{Nothing, Vector{Float64}}
+    simplex_start(A, g, b; floor = 0.0, maxit = 0) -> Union{Nothing, Vector{Float64}}
 
-A feasible composition to start from, taken from the **vertex** of the mass
-balance that a linear program lands on.
+A feasible composition to start from: the vertex of the mass balance that the
+linear program `minimize gᵀx subject to A x = b, x ≥ 0` lands on, as
+[`lp_start`](@ref) computes and verifies it. Returns that vertex, raised to
+`floor`, when the program is solved; `nothing` when it is **proved** infeasible,
+which is a statement about `b` rather than about the solver; and throws when the
+tableau's answer could not be verified either way, which the earlier
+implementation reported as one or the other without checking.
 
-# What it is, and whose idea it is
-
-Minimize the *linear* part of the Gibbs energy over the feasible set,
-
-```
-minimize   gᵀx        subject to   A x = b,   x ≥ 0 ,
-```
-
-which is a linear program, so its optimum sits at a vertex: a **basic feasible
-solution** with at most `m` nonzero species, `m` being the number of conservation
-rows. That composition ignores mixing entropy entirely, so it is a poor answer —
-and an excellent starting point, because it satisfies `A x = b` exactly, is
-nonnegative, and costs a simplex on a tableau of `m × n` where `m` is a dozen.
-
-This is the initial approximation of GEM-Selektor, after Karpov: its
-`AutoInitialApproximation` solves exactly this program before the interior-point
-iterations begin [Kulik et al. 2013, *Computational Geosciences* **17**(1),
-1–24]. The method is theirs; what it is used for here is the same thing.
-
-# What it is good for here, which is NOT what it is good for in GEM-Selektor
+# What the vertex is worth as a start for the dual Newton
 
 Measured, because the transplant was tried before it was believed. On a
-91-species Portland cement with 12 components:
+91-species Portland cement with 12 components (OptimaSolver 0.6.0):
 
 | | |
 |:--|--:|
@@ -1015,153 +1181,24 @@ Measured, because the transplant was tried before it was believed. On a
 | the same cascade started from this vertex | 14.4 s, certified |
 | this vertex with the cascade declined | 10.5 s, **not** certified |
 
-So the vertex is exact and cheap and **does not help this solver**: eleven
-percent, not the factor of eighty that separates a cold start from a warm one.
-
-The reason is worth keeping, because it is the reason the transplant fails
-rather than an accident. A vertex has at most `m` nonzero species — here 6 of 91
-— so every other species sits at the floor. That is exactly the configuration a
-log-domain method handles worst: the barrier gradients then span the full range
-between a mole and the floor, and a mixing phase's `ln x → −∞` on the very face
-where it vanishes. GEM-Selektor starts from this vertex because **its** IPM is
-built around it, with two-side constraints and its own thresholds; this solver's
-dual Newton is not, and continuation on the loading is what works for it instead.
-
-What the routine is genuinely worth here is the other half of its answer:
-`nothing` is a **rigorous statement that the element balance has no nonnegative
-solution at all**, which no iterative failure can establish. That distinguishes
-"this budget is impossible" from "the solver did not converge", and those are
-different problems with different fixes.
-
-# The implementation
-
-Two-phase simplex on a dense tableau, with **Bland's rule** for the pivot. Bland
-is slower than steepest-edge and cannot cycle, which is the property that matters
-here: the polytope of a chemical system is massively degenerate — most species
-are absent at the vertex — and a cycling start routine would be worse than none.
-
-Rows of `b` that are negative are negated first, so phase I begins from a
-feasible artificial basis.
-
-`floor` defaults to **zero**, and the vertex is returned exactly: `A x = b` holds
-to rounding, which is the property that makes the start worth having. A
-log-domain iteration cannot begin at an exact zero, so a caller that needs one
-lifts the absent species itself — and lifting perturbs the balance by
-`floor · Σ|A|`, which is the caller's trade to make and not this function's.
-
-Returns `nothing` when the program is infeasible, which means the element balance
-itself has no nonnegative solution — a statement about `b`, not about the solver.
+A vertex has at most `m` nonzero species, so every other one sits at the floor,
+the configuration a log-domain method handles worst. The multipliers and the
+basis of the same program are a different start; [`lp_start`](@ref) returns
+them.
 """
 function simplex_start(
         A::AbstractMatrix, g::AbstractVector, b::AbstractVector;
         floor::Float64 = 0.0, maxit::Int = 0,
     )
-    m, n = size(A)
-    length(b) == m || throw(DimensionMismatch("`b` has $(length(b)) rows, `A` has $m."))
-    length(g) == n || throw(DimensionMismatch("`g` has $(length(g)) entries, `A` has $n columns."))
-    itmax = maxit > 0 ? maxit : 50 * (m + n)
-
-    # Phase I tableau: [A I | b] with the artificials as the starting basis, and
-    # every row made nonnegative first.
-    T = zeros(Float64, m + 1, n + m + 1)
-    @inbounds for i in 1:m
-        sgn = b[i] < 0 ? -1.0 : 1.0
-        for j in 1:n
-            T[i, j] = sgn * A[i, j]
-        end
-        T[i, n + i] = 1.0
-        T[i, end] = sgn * b[i]
-    end
-    basis = collect((n + 1):(n + m))
-    # Objective of phase I: minimize the sum of artificials. It starts as a cost
-    # of one on each artificial and zero elsewhere, and every row is then
-    # subtracted so that the BASIC columns carry a zero reduced cost -- which is
-    # what makes the artificials' own columns come out at 1 - 1 = 0. Starting
-    # from a zero row instead leaves them at -1, and Bland then pivots on a
-    # column that is already basic: the tableau still terminates, but on a
-    # meaningless vertex, and an infeasible balance is reported as feasible.
-    @inbounds for i in 1:m
-        T[end, n + i] = 1.0
-    end
-    @inbounds for i in 1:m, j in 1:(n + m + 1)
-        T[end, j] -= T[i, j]
-    end
-
-    function pivot!(T, basis, r, c)
-        p = T[r, c]
-        T[r, :] ./= p
-        @inbounds for i in axes(T, 1)
-            i == r && continue
-            f = T[i, c]
-            f == 0 && continue
-            T[i, :] .-= f .* T[r, :]
-        end
-        basis[r] = c
-        return nothing
-    end
-
-    function run!(T, basis, ncols)
-        for _ in 1:itmax
-            # Bland: the LOWEST-index column with a negative reduced cost.
-            c = 0
-            @inbounds for j in 1:ncols
-                if T[end, j] < -1.0e-12
-                    c = j
-                    break
-                end
-            end
-            c == 0 && return true                      # optimal
-            r, best = 0, Inf
-            @inbounds for i in 1:(size(T, 1) - 1)
-                T[i, c] > 1.0e-12 || continue
-                ratio = T[i, end] / T[i, c]
-                # Bland again on ties: lowest basis index leaves.
-                if ratio < best - 1.0e-12 || (abs(ratio - best) <= 1.0e-12 && r != 0 && basis[i] < basis[r])
-                    r, best = i, ratio
-                end
-            end
-            r == 0 && return false                     # unbounded
-            pivot!(T, basis, r, c)
-        end
-        return false
-    end
-
-    run!(T, basis, n + m) || return nothing
-    abs(T[end, end]) < 1.0e-8 || return nothing        # phase I residual: infeasible
-
-    # Drive any artificial still in the basis out of it, on a nonzero pivot.
-    @inbounds for i in 1:m
-        basis[i] > n || continue
-        c = 0
-        for j in 1:n
-            if abs(T[i, j]) > 1.0e-10
-                c = j
-                break
-            end
-        end
-        c == 0 && continue                             # redundant row, leave it
-        pivot!(T, basis, i, c)
-    end
-
-    # Phase II: the real objective, on the columns that are not artificial.
-    T2 = T[:, vcat(1:n, n + m + 1)]
-    T2[end, :] .= 0.0
-    @inbounds for j in 1:n
-        T2[end, j] = g[j]
-    end
-    @inbounds for (i, bi) in pairs(basis)
-        bi <= n || continue
-        f = T2[end, bi]
-        f == 0 && continue
-        T2[end, :] .-= f .* T2[i, :]
-    end
-    run!(T2, basis, n)                                 # unbounded is acceptable here
-
-    x = fill(floor, n)
-    @inbounds for (i, bi) in pairs(basis)
-        bi <= n && (x[bi] = max(T2[i, end], floor))
-    end
-    return x
+    lp = lp_start(A, g, b; maxit = maxit)
+    lp.status === :optimal && return max.(lp.x, floor)
+    lp.status === :infeasible && return nothing
+    throw(
+        ErrorException(
+            "simplex_start: the linear program could not be decided ($(lp.status)); " *
+                "its tableau reached an answer that does not verify on the data.",
+        ),
+    )
 end
 
 """
@@ -2003,10 +2040,22 @@ function kkt_certificate(
         push!(in_phase, i)
     end
 
+    # The exception is a member declared bounded (`SolutionPhase`): its activity
+    # stays finite as it vanishes, so it CAN be exactly absent from a present
+    # phase, and below the floor it is tested by the inequality a pure phase
+    # obeys. Left excluded, a gel missing a member it should hold would pass.
+    bounded = Set{Int}()
+    for ph in prob.phases
+        any(xv[i] > floor for i in ph.members) || continue
+        for j in ph.bounded_members
+            push!(bounded, ph.members[j])
+        end
+    end
+
     interior = [i for i in eachindex(xv) if xv[i] > floor && !(i in dead)]
     at_bound = [
         i for i in eachindex(xv)
-            if xv[i] <= floor && !(i in dead) && !(i in in_phase)
+            if xv[i] <= floor && !(i in dead) && (!(i in in_phase) || i in bounded)
     ]
 
     Ai = Matrix(@view prob.A[:, interior])

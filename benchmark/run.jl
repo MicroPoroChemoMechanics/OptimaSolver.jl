@@ -79,6 +79,17 @@ function run_cases()
         equilibrate_certified(eq2; model = c.model, b = b4)
     )
 
+    # The linear program over pure phases alone, on the dual problem the
+    # certified route builds: `lp_start` is what that route now begins with.
+    des = DualEquilibriumSolver(c.cs, c.model)
+    prob = ChemistryLab._dual_problem(des, ChemistryLab._build_params(c.st), mol(c.st))
+    lp_start(prob, c.b)
+    t5, lp = timed("linear program over pure phases", () -> lp_start(prob, c.b))
+    out["lp_start"] = Dict(
+        "time" => t5, "status" => String(lp.status), "iterations" => lp.iterations,
+        "balance" => lp.balance,
+    )
+
     out["cement_cold_first"] = merge(digest(eq1, c1, c.model), Dict("time" => t1))
     out["cement_cold"] = merge(digest(eq2, c2, c.model), Dict("time" => t2))
     out["cement_warm"] = merge(digest(eq3, c3, c.model), Dict("time" => t3))
