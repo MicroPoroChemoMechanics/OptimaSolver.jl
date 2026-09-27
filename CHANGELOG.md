@@ -63,8 +63,9 @@ backtracking step; the tangent-plane test of the phase uses the same iteration.
 The bordered matrix is regular whenever the mixing energy is strictly convex,
 which `theory.md` proves. `local_h`, a function of the members' amounts alone,
 lets that iteration differentiate the phase's own activities instead of the
-whole `h`: eight variables instead of about a hundred on a cement paste. `bounded_members` declares the members that may be
-exactly absent from a present phase (one that owns no species of its own on any
+whole `h`: eight variables instead of about a hundred on a cement paste.
+`bounded_members` declares the members that may be exactly absent from a present
+phase (one that owns no species of its own on any
 site keeps a finite activity as it vanishes): the certificate tests them below
 the floor by the inequality a pure phase obeys, where it excluded every phase
 member below the floor from both tests, so a gel that omitted such a member when
