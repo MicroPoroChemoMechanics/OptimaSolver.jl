@@ -1,5 +1,94 @@
 # Changelog
 
+## v0.6.2 — a mixing phase absent from the start can enter the active set
+
+Three defects of the active-set search of the dual Newton, found on cement
+pastes whose certified search stopped short of the solution. They share a
+signature: the search ended on an amount, or a verdict, set by the solver rather
+than by the chemistry.
+
+### A mixing phase admitted at 1e-9 mol could not stay
+
+The search added a mixing phase with a total of `1e-9` mol. One outer Newton
+step moves the logarithm of a phase total by one at most, so after it the phase
+held at most e·1e-9 = 2.7e-9 mol, below `si_tol = 1e-8`: the iteration stopped on
+it, the round dropped it as vanished, and the next round admitted it again, until
+the set repeated. A solid solution could therefore be present only if the
+starting point already held it. On cement pastes with a non-ideal AFt, the solve
+ended with an AFt phase at exactly e·1e-9 mol and the same element balance
+whatever the paste, which is how a constant of the solver shows itself. A phase is
+now admitted at `PHASE_ADMISSION_SEED = 1e-6` mol, the value the seeding of the
+initial active set already used.
+
+### The search admitted phases on a test the certificate does not apply
+
+The search chose which absent mixing phase to admit by the ideal sum
+`Σᵢ exp(uᵢ − gᵢ) − 1`: activity coefficients at one, every member counted. The
+certificate applies Michelsen's measure, with the phase's own activity model and
+without its dead members, and the two disagreed in two ways. On a non-ideal
+phase, such as a Redlich–Kister binary, they could reach opposite verdicts. And a
+dead member, one whose component is absent from the budget, has its potential
+pinned at `DEGENERATE_POTENTIAL`; with a negative coefficient on that row, as the
+species written with `-H+` have, the sentinel reached the sum as `exp(50)`, and
+the phase looked supersaturated by 5e21 whatever the chemistry. On a cement
+paste the search's KKT error was `3·exp(50)` at every round, three dead members,
+so ranking the states it visited by that error ranked nothing.
+
+The search, the KKT error it ranks states by, and the certificate now use one
+measure: `phase_tangent_measure`, with the current `g`, the phase's activity
+coefficients and the dead set. The ideal `_phase_tangent` is removed. An
+admission violation in `kkt_error` is now the certificate's log-sum-exp rather
+than the sum minus one: 9 where 0.6.1 reported 8102 for the same state.
+
+### `converged` could be true on a point that was not a solution
+
+When the search returned the best state it had visited, `converged` was
+recomputed from that state's residual alone. A state that holds a supersaturated
+phase out solves its own subproblem exactly, so it could come back with
+`converged = true` beside a `kkt_error` of 9 that the certificate refused, and
+`dual_newton_solve`, which stops at the first converged start, did not try the
+next one. `converged` now also requires the admission violation of that state to
+be within `si_tol`.
+
+### Measured
+
+`benchmark/run.jl`, on one machine, against the recorded baseline:
+
+| solve | 0.6.1 | 0.6.2 |
+|:--|--:|--:|
+| cement, cold | 4.58 s | 4.38 s |
+| cement, cold, first call | 30.4 s | 30.0 s |
+| cement, warm from its answer | 0.20 s | 0.19 s |
+| cement, neighboring budget, warm | 0.17 s | 0.17 s |
+
+The benchmark cement is certified by both, with the same answer: the largest
+relative change of an amount above `1e-10` mol is `4.6e-13` against the baseline.
+Its search never met the three defects. Among cement pastes with the published
+AFm/AFt model that 0.6.1 did not certify, some certify with 0.6.2 as they stand.
+The others declare the sulfate ettringite in two phases at once, two descriptions
+of one substance whose Gibbs energies differ by 5 J/mol, and certify once one of
+the two is removed: a flat direction of the problem, which no admission rule
+removes.
+
+### Tests
+
+`test/test_dual_newton.jl`, each assertion failing on 0.6.1:
+
+- a solid solution absent from the start enters and reaches the answer of a
+  start that holds it (0.6.1 stops it at e·1e-9 mol, uncertified);
+- a phase whose one live member is undersaturated stays out although its dead
+  member carries a negative coefficient (0.6.1 admits it and ends uncertified,
+  KKT error 3.7), and forms when the live member is stable;
+- a result that holds a supersaturated phase out, because the phase rule leaves
+  it no room, is not flagged converged, and its flag agrees with the certificate.
+
+### Downstream — ChemistryLab
+
+No change is needed: its bound `"0.5.5, 0.6"` admits this release, and the options
+it forwards to `DualNewtonOptions` already exist. ChemistryLab 0.25.2 raises the
+bound to `"0.6.2"`, since the results its documentation now shows were measured
+with this release.
+
 ## v0.6.1 — an inner iteration that has stopped converging no longer runs to its cap
 
 The inner fixed point of the dual Newton, `_invert_phases!`, which recovers the

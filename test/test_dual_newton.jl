@@ -194,6 +194,69 @@ end
     @test r_in.x[3] + r_in.x[4] > r_out.x[3] + r_out.x[4]
     @test u_A < 0                       # the reference potential, for the record
 
+    # From a start WITHOUT the phase, the phase rule holds it out: one component,
+    # and the first phase may not leave. The phase stays supersaturated, so the
+    # answer is not a KKT point, and the result must not call itself converged.
+    # Until 0.6.2 it did, beside a `kkt_error` of 9: the best state of the search
+    # was flagged on its residual alone, which the subproblem satisfies exactly.
+    r_cold = dual_newton_solve(prob_in, b2, [0.5, 0.5, 0.0, 0.0])
+    @test !(2 in r_cold.active_phases)
+    @test r_cold.kkt_error > 1
+    @test !r_cold.converged
+    @test r_cold.converged == kkt_certificate(prob_in, r_cold.x, b2).optimal
+
+end
+
+@testset "a mixing phase absent from the start can enter" begin
+    # Two components, and each phase holds both, so the phase rule lets the two
+    # coexist. The second is a solid solution the start does not contain.
+    function h(x, _)
+        NA = x[1] + x[2]
+        NB = x[3] + x[4]
+        return [
+            log(max(x[1], 1.0e-300) / max(NA, 1.0e-300)),
+            log(max(x[2], 1.0e-300) / max(NA, 1.0e-300)),
+            log(max(x[3], 1.0e-300) / max(NB, 1.0e-300)),
+            log(max(x[4], 1.0e-300) / max(NB, 1.0e-300)),
+        ]
+    end
+    phases = [
+        SolutionPhase([1, 2], 1; always_present = true, mole_fraction = true),
+        SolutionPhase([3, 4], 1; mole_fraction = true),
+    ]
+
+    # Until 0.6.2 a phase entered the active set at 1e-9 mol. One Newton step
+    # moves `ln N` by one at most, so it reached e·1e-9 = 2.7e-9, below `si_tol`,
+    # and was dropped as vanished: the solve stopped with the phase at exactly
+    # that amount, uncertified, whatever the chemistry asked for.
+    A = Float64[1 0 1 0; 0 1 0 1]
+    b = [1.0, 1.0]
+    prob = DualNewtonProblem(A, [0.0, 1.0, 0.5, 0.2], h; phases = phases, idx_bounded = Int[])
+    warm = dual_newton_solve(prob, b, [0.5, 0.5, 0.5, 0.5])
+    cold = dual_newton_solve(prob, b, [1.0, 1.0, 0.0, 0.0])
+    @test kkt_certificate(prob, warm.x, b).optimal
+    @test 2 in cold.active_phases
+    @test cold.converged && kkt_certificate(prob, cold.x, b).optimal
+    @test cold.x ≈ warm.x rtol = 1.0e-8
+
+    # A member whose component is absent from the budget is DEAD: its row is
+    # degenerate and its potential pinned at `DEGENERATE_POTENTIAL`. With a
+    # negative coefficient on that row, as the species CEMDATA18 writes with
+    # `-H+` have, the sentinel reaches `uᵢ − gᵢ` with a positive sign. The
+    # admission test of 0.6.1 summed it as `exp(50)`, so the phase below was
+    # admitted although its one live member is undersaturated, and the solve
+    # ended uncertified with a KKT error of 3.7. The live member alone decides.
+    A = Float64[1 0 1 0; 0 1 0 0; 0 0 0 -1]
+    b = [1.0, 1.0, 0.0]
+    out = DualNewtonProblem(A, [0.0, 1.0, 3.0, 0.0], h; phases = phases, idx_bounded = Int[])
+    r_out = dual_newton_solve(out, b, [1.0, 1.0, 0.0, 0.0])
+    @test r_out.active_phases == [1]
+    @test r_out.converged && kkt_certificate(out, r_out.x, b).optimal
+    # …and the same phase with its live member stable does form.
+    in_ = DualNewtonProblem(A, [0.0, 1.0, -3.0, 0.0], h; phases = phases, idx_bounded = Int[])
+    r_in = dual_newton_solve(in_, b, [1.0, 1.0, 0.0, 0.0])
+    @test 2 in r_in.active_phases && r_in.x[3] > 0.5
+    @test r_in.converged && kkt_certificate(in_, r_in.x, b).optimal
 end
 
 @testset "an active set has to satisfy the phase rule" begin

@@ -81,6 +81,20 @@ const W_CEIL = 20.0
 # period of the cycles observed, and not by the fastest of those runs.
 const INNER_STALL_SWEEPS = 20
 
+# The amount a mixing phase is admitted with, as its total.
+#
+# It has to survive the first Newton step. Admitted at 1e-9, as it was until
+# 0.6.2, a phase could never be kept: the step changes `ln N` by at most one, so
+# after it the total is at most 2.7e-9, below `si_tol` (1e-8), the Newton
+# iteration of the round stops on it and the round drops it as vanished — to be
+# admitted again at the next round, with the same outcome, until the set repeats
+# and the search ends with the phase at e·1e-9.
+# A mixing phase could therefore be present only if the starting point already
+# held it; from a start without it, a supersaturated solid solution stayed out.
+# The seeding of the initial active set lifts a phase total to the same value,
+# for the same reason.
+const PHASE_ADMISSION_SEED = 1.0e-6
+
 """
     _degenerate_conservation_rows(prob, b) -> Vector{Int}
 
@@ -719,38 +733,21 @@ function _outer_residual(
     return vcat(R_ref, Rb, Rs, Rq)
 end
 
-"""
-    _phase_tangent(prob, k, u, x_buf) -> Float64
-
-Michelsen's stability measure for an absent mixing phase: `Σᵢ exp(uᵢ − gᵢ) − 1`,
-evaluated over its members.
-
-At equilibrium a present phase has `hᵢ = uᵢ − gᵢ` with `hᵢ = ln xᵢ + ln γᵢ`, so
-its fractions satisfy `Σᵢ exp(uᵢ − gᵢ)/γᵢ = 1`. A value above one means a trial
-composition of that phase lies below the tangent plane of the current state — the
-phase can form and lower `G`. Below one it cannot.
-
-This is the criterion a **mixing** phase needs, and it is not the sign of a
-saturation index: a solution phase has no single index, and its members are never
-exactly absent while it exists.
-"""
-function _phase_tangent(prob, k, u, x_buf, g = prob.g)
-    ph = prob.phases[k]
-    s = 0.0
-    for (j, i) in enumerate(ph.members)
-        # IDEAL test: `lnγ` is taken as zero, not read from the activity model.
-        # This is the SEARCH heuristic — which candidate phase to try next — and a
-        # first-order test is the right cost there. The comment here used to claim
-        # γ was read at the current state, which the code never did.
-        #
-        # Nothing in the proof depends on it: `kkt_certificate` uses the true
-        # `∇f = g + h(x)` for the variables it tests, and
-        # `phase_tangent_measure` for the mixing phases held absent, which
-        # refines the trial composition against the phase's own activity model.
-        s += exp(clamp(u[i] - g[i], -700.0, 50.0))
-    end
-    return s - 1.0
-end
+# The admission measure of an absent mixing phase: Michelsen's, the one the
+# certificate applies (`kkt_certificate`).
+#
+# Until 0.6.2 the search admitted phases on an ideal sum, `Σᵢ exp(uᵢ − gᵢ) − 1`,
+# with `lnγ = 0` and every member counted. The two disagree where it matters.
+# For a non-ideal phase (a Redlich-Kister binary) the ideal test and the
+# certificate can reach opposite verdicts on the same phase, so the search could
+# hold absent what the certificate then called supersaturated, or the reverse. And a DEAD member — one
+# whose component is absent from the budget, its potential pinned at the
+# sentinel `DEGENERATE_POTENTIAL` — enters the ideal sum as `exp(50)`, so a phase
+# with any dead member looked supersaturated whatever the chemistry: the
+# `CSHQ` of a binder without potassium, for one. `phase_tangent_trial` has
+# excluded dead members since it was written; the search now uses it.
+_admission_measure(prob, k, u, x_buf, q, dead) =
+    phase_tangent_measure(prob, k, u, x_buf; g = current_g(prob, q), q = q, dead = dead)
 
 """
     phase_tangent_measure(prob, k, u, x; maxit = 50, tol = 1e-12, total = 1e-6)
@@ -1323,8 +1320,8 @@ function dual_newton_solve(
     # logarithm the outer system carries.
     refs = Float64[
         let ph = prob.phases[k]
-            ph.mole_fraction ? max(sum(n0[i] for i in ph.members), 1.0e-6) :
-                max(n0[ph.members[ph.j_ref]], 1.0e-6)
+            ph.mole_fraction ? max(sum(n0[i] for i in ph.members), PHASE_ADMISSION_SEED) :
+                max(n0[ph.members[ph.j_ref]], PHASE_ADMISSION_SEED)
         end for k in act_ph
     ]
 
@@ -1695,7 +1692,7 @@ function _dual_newton_attempt(
             for k in eachindex(prob.phases)
                 k in act_ph && continue
                 all(i in dead for i in prob.phases[k].members) && continue
-                viol = max(viol, _phase_tangent(prob, k, u, x_buf))
+                viol = max(viol, _admission_measure(prob, k, u, x_buf, q, dead))
             end
             kkt_err = max(res_outer, viol)
             opts.verbose && @info "active-set round" kkt_err res_outer viol nph na inner_ok
@@ -1703,7 +1700,9 @@ function _dual_newton_attempt(
                 best_res = kkt_err
                 # `v` carries refs, `y` and the bounded amounts together, so the
                 # state is that vector plus the sets it is indexed by.
-                best_state = (copy(act_ph), copy(active), copy(v), [copy(w) for w in W])
+                best_state = (
+                    copy(act_ph), copy(active), copy(v), [copy(w) for w in W], viol,
+                )
             end
         end
 
@@ -1817,7 +1816,7 @@ function _dual_newton_attempt(
         cand_ph = [
             k for k in eachindex(prob.phases)
                 if !(k in act_ph) && !all(i in dead for i in prob.phases[k].members) &&
-                _phase_tangent(prob, k, u, x_buf, current_g(prob, q)) > opts.si_tol
+                _admission_measure(prob, k, u, x_buf, q, dead) > opts.si_tol
         ]
 
         if isempty(drop) && isempty(cand) && isempty(drop_ph) && isempty(cand_ph)
@@ -1878,9 +1877,9 @@ function _dual_newton_attempt(
             end
         end
         if !isempty(cand_ph)
-            k_best = cand_ph[argmax([_phase_tangent(prob, k, u, x_buf) for k in cand_ph])]
+            k_best = cand_ph[argmax([_admission_measure(prob, k, u, x_buf, q, dead) for k in cand_ph])]
             push!(act_ph, k_best)
-            push!(refs, 1.0e-9)
+            push!(refs, PHASE_ADMISSION_SEED)
             # A mole-fraction phase also spends one unit of stationarity capacity.
             if !_active_set_supports_a_solution(prob, active, act_ph)
                 for j in sort(eachindex(active); by = j -> xB[j])
@@ -1909,8 +1908,16 @@ function _dual_newton_attempt(
     # `v` already holds the solution of the inner Newton on that active set, so
     # there is nothing to re-solve: refs, `y` and the bounded amounts are read back
     # out of it and the residual is evaluated once to set `converged`.
+    #
+    # `converged` needs the state's admission violation as well as its residual.
+    # The residual is that of the subproblem the active set defines, and a set
+    # that holds a supersaturated phase out solves its own equations exactly:
+    # until 0.6.2 such a state was returned with `converged = true` next to a
+    # `kkt_error` of 9, and the certificate refused it. The multi-start loop in
+    # `dual_newton_solve` stops at the first converged attempt, so the flag also
+    # ended the search on a point that was not a solution.
     if best_state !== nothing
-        act_ph, active, v, W = best_state
+        act_ph, active, v, W, best_viol = best_state
         nph = length(act_ph)
         na = length(active)
         refs = [exp(v[a]) for a in 1:nph]
@@ -1919,7 +1926,7 @@ function _dual_newton_attempt(
         q = nq == 0 ? Float64[] : v[(nph + m + na + 1):(nph + m + na + nq)]
         converged = maximum(
             abs, _outer_residual(prob, v, W, act_ph, active, bv, x_buf; dead, degenerate),
-        ) <= opts.tol
+        ) <= opts.tol && best_viol <= opts.si_tol
     end
 
     _invert_phases!(
