@@ -241,11 +241,11 @@ end
 
     # A member whose component is absent from the budget is DEAD: its row is
     # degenerate and its potential pinned at `DEGENERATE_POTENTIAL`. With a
-    # negative coefficient on that row, as the species CEMDATA18 writes with
-    # `-H+` have, the sentinel reaches `uᵢ − gᵢ` with a positive sign. The
-    # admission test of 0.6.1 summed it as `exp(50)`, so the phase below was
-    # admitted although its one live member is undersaturated, and the solve
-    # ended uncertified with a KKT error of 3.7. The live member alone decides.
+    # negative coefficient on that row, the sentinel reaches `uᵢ = −(Aᵀy)ᵢ` with
+    # a positive sign. The admission test of 0.6.1 summed it as `exp(50)`, so the
+    # phase below was admitted although its one live member is undersaturated,
+    # and the solve ended uncertified with a KKT error of 3.7. The live member
+    # alone decides.
     A = Float64[1 0 1 0; 0 1 0 0; 0 0 0 -1]
     b = [1.0, 1.0, 0.0]
     out = DualNewtonProblem(A, [0.0, 1.0, 3.0, 0.0], h; phases = phases, idx_bounded = Int[])
