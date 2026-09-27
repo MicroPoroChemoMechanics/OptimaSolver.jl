@@ -6,10 +6,10 @@
 
 - Below 1.0 a minor release is a breaking one for Julia's resolver: a package
   bounding `OptimaSolver = "0.6"` does not accept 0.7.0 and must widen its bound.
-- `SolutionPhase` has two more fields, `newton` and `bounded_members`. Code that
-  builds it with the keyword constructor, as every documented call does, is
-  unaffected; a call to the positional constructor with five arguments no longer
-  exists.
+- `SolutionPhase` has three more fields, `newton`, `bounded_members` and
+  `local_h`. Code that builds it with the keyword constructor, as every
+  documented call does, is unaffected; a call to the positional constructor with
+  five arguments no longer exists.
 - `simplex_start` returns `nothing` only when the program is **proved**
   infeasible, and throws when the tableau's answer cannot be verified either way.
   It used to report such a case as infeasible or feasible without checking.
@@ -61,7 +61,9 @@ six sweeps, and damped it needed 370, beyond the inner cap of 200.
 on the bordered system `[H 1; fᵀ 0]`, `H` from `ForwardDiff` through `h`, with a
 backtracking step; the tangent-plane test of the phase uses the same iteration.
 The bordered matrix is regular whenever the mixing energy is strictly convex,
-which `theory.md` proves. `bounded_members` declares the members that may be
+which `theory.md` proves. `local_h`, a function of the members' amounts alone,
+lets that iteration differentiate the phase's own activities instead of the
+whole `h`: eight variables instead of about a hundred on a cement paste. `bounded_members` declares the members that may be
 exactly absent from a present phase (one that owns no species of its own on any
 site keeps a finite activity as it vanishes): the certificate tests them below
 the floor by the inequality a pure phase obeys, where it excluded every phase

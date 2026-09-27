@@ -4,6 +4,10 @@ CurrentModule = OptimaSolver
 
 # API Reference
 
+```@docs
+OptimaSolver
+```
+
 ## Problem definition
 
 ```@docs
@@ -46,7 +50,17 @@ stationarity_capacity
 OptimaSolver.DEGENERATE_POTENTIAL
 ```
 
-## The linear program over pure phases
+The tangent-plane measures the search and the certificate apply to a mixing
+phase, absent or present:
+
+```@docs
+phase_tangent_trial
+phase_tangent_measure
+phase_split_trial
+phase_split_measure
+```
+
+## Linear-programming start
 
 A start, or a proof that the budget cannot be met. Derived in
 [The linear program over pure phases](@ref).
@@ -81,6 +95,7 @@ They are not needed for typical usage.
 ```@docs
 KKTResidual
 kkt_residual
+OptimaSolver.row_scales
 hessian_diagonal
 gibbs_hessian_diag
 ```
@@ -101,6 +116,7 @@ OptimaSolver.reduce_barrier
 ```@docs
 NewtonStep
 compute_step!
+OptimaSolver.compute_step_nullspace!
 clamp_step
 ```
 
