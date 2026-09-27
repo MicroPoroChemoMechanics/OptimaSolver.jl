@@ -1014,11 +1014,10 @@ end
 end
 
 @testset "simplex_start lands on a vertex of the mass balance" begin
-    # GEM-Selektor's initial approximation, after Karpov: minimize the LINEAR
-    # part of the Gibbs energy over `A x = b, x ≥ 0`. The optimum of a linear
-    # program sits at a vertex, so the answer is a basic feasible solution with
-    # at most `m` nonzero species — a poor composition and an exact starting
-    # point.
+    # Minimize the LINEAR part of the Gibbs energy over `A x = b, x ≥ 0`. The
+    # optimum of a linear program sits at a vertex, so the answer is a basic
+    # feasible solution with at most `m` nonzero species — a poor composition
+    # and an exact starting point.
     #
     # 1. A two-species balance with an obvious answer. `x₁ + x₂ = 1` and `x₂`
     #    three times as expensive: everything goes to `x₁`, exactly.
