@@ -206,15 +206,13 @@ function lp_start(
     # supply, next to a row of 55 mol, is infeasible, and a tolerance relative
     # to the largest budget would call it feasible.
     phase1 = -T[end, end]
-    if phase1 > 1.0e-13 * bnorm
-        # The phase-I multipliers π solve Bᵀπ = c_B for the final basis; z = −S π
-        # then satisfies Aᵀz ≥ 0 and bᵀz < 0 when the program is infeasible.
-        z = scale .* _farkas(As, sgn, basis, alive, na, m)
-        if _is_farkas(Af, bf, z, alive, tol)
-            return LPStart{F}(:infeasible, zeros(F, n), zeros(F, m), zeros(Int, m), fill(F(NaN), n), Int[], z, F(NaN), it1)
-        end
-        phase1 > tol * bnorm && return _lp_answer(F, :undecided, m, n, it1)
-    end
+    # The phase-I multipliers π solve Bᵀπ = c_B for the final basis; z = −S π
+    # then satisfies Aᵀz ≥ 0 and bᵀz < 0 when the program is infeasible.
+    z = phase1 > 1.0e-13 * bnorm ? scale .* _farkas(As, sgn, basis, alive, na, m) : F[]
+    verdict = _phase1_verdict(phase1, bnorm, Af, bf, z, alive, tol)
+    verdict === :infeasible &&
+        return LPStart{F}(:infeasible, zeros(F, n), zeros(F, m), zeros(Int, m), fill(F(NaN), n), Int[], z, F(NaN), it1)
+    verdict === :undecided && return _lp_answer(F, :undecided, m, n, it1)
 
     # Drive the artificials out of the basis; a row where no alive column can
     # replace its artificial is redundant.
@@ -277,6 +275,17 @@ function lp_start(prob::DualNewtonProblem, b::AbstractVector; tol::Real = 1.0e-9
     y = copy(lp.y)
     y[degenerate] .= DEGENERATE_POTENTIAL
     return LPStart(lp.status, lp.x, y, lp.basis, lp.reduced_costs, lp.redundant_rows, lp.farkas, lp.balance, lp.iterations)
+end
+
+# What phase I proves. `:infeasible` only on a Farkas vector that verifies on
+# the data; `:feasible` when the phase-I value is at the rounding level of the
+# tableau, or within the tolerance with no such vector; `:undecided` when the
+# value says infeasible and no vector proves it, which is never reported as
+# either answer.
+function _phase1_verdict(phase1, bnorm, Af, bf, z, alive, tol)
+    phase1 <= 1.0e-13 * bnorm && return :feasible
+    _is_farkas(Af, bf, z, alive, tol) && return :infeasible
+    return phase1 > tol * bnorm ? :undecided : :feasible
 end
 
 _lp_answer(::Type{F}, status, m, n, it) where {F} =

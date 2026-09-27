@@ -132,6 +132,45 @@ using LinearAlgebra
         @test all(>=(-1.0e-12), lp.reduced_costs)
     end
 
+    @testset "an answer that cannot be verified is not given" begin
+        # The iteration limit: two rows need two pivots at least.
+        A = [1.0 0.0 1.0; 0.0 1.0 1.0]
+        lp = lp_start(A, [1.0, 1.0, 1.5], [1.0, 1.0]; maxit = 1)
+        @test lp.status === :iteration_limit
+        @test all(iszero, lp.x) && isempty(lp.farkas)
+        # simplex_start no longer turns such a program into an answer.
+        @test_throws ErrorException simplex_start(A, [1.0, 1.0, 1.5], [1.0, 1.0]; maxit = 1)
+        # A phase-I value that says infeasible, and a candidate vector that does
+        # not prove it: undecided, never infeasible.
+        z_bad = [1.0, -1.0]
+        @test !OptimaSolver._is_farkas(A, [1.0, 1.0], z_bad, 1:3, 1.0e-9)
+        @test OptimaSolver._phase1_verdict(1.0, 1.0, A, [1.0, 1.0], z_bad, 1:3, 1.0e-9) === :undecided
+        # Within the tolerance, the rounding of a feasible program.
+        @test OptimaSolver._phase1_verdict(1.0e-11, 1.0, A, [1.0, 1.0], z_bad, 1:3, 1.0e-9) === :feasible
+        @test OptimaSolver._phase1_verdict(0.0, 1.0, A, [1.0, 1.0], Float64[], 1:3, 1.0e-9) === :feasible
+    end
+
+    @testset "the program of a dual Newton problem" begin
+        # Three pure phases, two components, and the second component absent
+        # from the budget: its row is degenerate, the species holding it are
+        # dead, and its multiplier is the one the dual Newton pins.
+        A = [1.0 0.0 1.0; 0.0 1.0 1.0]
+        h(x, _) = zeros(length(x))
+        prob = DualNewtonProblem(
+            A, [-1.0, -2.0, -3.5], h;
+            phases = [SolutionPhase([1], 1; always_present = true)], idx_bounded = [2, 3],
+        )
+        lp = lp_start(prob, [1.0, 0.0])
+        @test lp.status === :optimal
+        @test lp.x ≈ [1.0, 0.0, 0.0]
+        @test lp.y[2] == OptimaSolver.DEGENERATE_POTENTIAL
+        @test isnan(lp.reduced_costs[2]) && isnan(lp.reduced_costs[3])
+        # With every component present, the same answer as the matrix form.
+        @test lp_start(prob, [1.0, 1.0]).x ≈ lp_start(A, [-1.0, -2.0, -3.5], [1.0, 1.0]).x
+        # An impossible budget is refused the same way.
+        @test lp_start(prob, [-1.0, 1.0]).status === :infeasible
+    end
+
     @testset "simplex_start keeps its answers" begin
         A = [1.0 1.0]
         @test simplex_start(A, [1.0, 3.0], [1.0]) == [1.0, 0.0]
