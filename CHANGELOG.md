@@ -1,5 +1,22 @@
 # Changelog
 
+## v0.7.1 — a component that vanishes with another
+
+### Fixed
+
+- `degenerate_components` read the signs of a row over every variable, so a row
+  whose entries of one sign all belonged to a component already absent was left
+  free. It is now a fixed point: a row is degenerate when its entries over the
+  variables still free share a sign. The case is the electron row of a system
+  with sulfate and chloride and no chlorine in the budget: perchlorate is absent,
+  nothing can then take the electrons of a sulfide, and the row forces the
+  reduced sulfur species to zero. Left free, its multiplier had to run to
+  infinity, and the dual Newton iteration stagnated. On a carbonated CEM I paste
+  declaring Friedel's and Kuzel's salts without chlorine, the certified solve of
+  ChemistryLab fell back from the linear-programming start to a search of two
+  minutes; the same paste without the two salts solved in a second. The dual
+  Newton solve, the linear program and the certificate all read this test.
+
 ## v0.7.0 — a linear program that proves a budget impossible, and phases the substitution cannot invert
 
 ### Breaking changes
