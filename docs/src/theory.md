@@ -528,6 +528,16 @@ for `H+` and `−1` for `OH-`, so its zero total is the ordinary state of pure
 water. Declaring it degenerate removes the entire acid–base system and returns
 pH 7.000 with the solid undissolved.
 
+The signs are read over the variables still free, which makes the test a fixed
+point. A degenerate row forces its variables to zero; a second row with a zero
+total, whose entries of one sign all sat on those variables, has only one sign
+left and is degenerate in turn. The electron row of a system with sulfate and
+chloride is the case: the reduced sulfur species carry one sign and perchlorate
+the other, so the row forces nothing by itself. Without chlorine in the budget
+the chlorine row is degenerate, perchlorate vanishes, and nothing is left to take
+a sulfide's electrons. Left free, the electron row asks its multiplier to go to
+infinity for the sulfide to vanish, and the iteration stagnates.
+
 Where a row *is* degenerate its multiplier is determined by nothing and the
 Jacobian is singular in that direction. The row is then replaced by
 ``y_k = \texttt{DEGENERATE\_POTENTIAL}``, which keeps the system square and makes

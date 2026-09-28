@@ -29,6 +29,33 @@ using LinearAlgebra
     @test degenerate_components(A, [50.0, 1.0e-14, 0.0]) == [2]
     @test isempty(degenerate_components(A, [50.0, 1.0, 0.0]))
 
+    # The signs are read over the variables still free. Columns: a sulfide, a
+    # perchlorate, a sulfate. Rows: chlorine (only the perchlorate holds it), the
+    # electron (the sulfide carries +8, the perchlorate -8) and sulfur. Without
+    # chlorine the perchlorate vanishes, and then nothing can take the sulfide's
+    # electrons: the electron row forces it to zero too, although its entries have
+    # both signs. The sulfate is untouched.
+    A = Float64[0 1 0; 8 -8 0; 1 0 1]
+    @test degenerate_components(A, [0.0, 0.0, 1.0]) == [1, 2]
+    # With chlorine in the budget the electron row is free again.
+    @test degenerate_components(A, [1.0, 0.0, 1.0]) == Int[]
+    # The order of the rows does not matter.
+    @test degenerate_components(A[[2, 1, 3], :], [0.0, 0.0, 1.0]) == [1, 2]
+
+    # And the solve that needed it: one ideal phase of the three, the sulfate its
+    # reference, a sulfide made favorable. Its electrons have nowhere to go, so the
+    # answer is the sulfate alone. With the electron row left free its multiplier
+    # had to run to infinity for the sulfide to vanish.
+    h(x, _) = log.(max.(x, 1.0e-300))
+    prob = DualNewtonProblem(
+        A, [-20.0, 0.0, 0.0], h;
+        phases = [SolutionPhase([1, 2, 3], 3; always_present = true)], idx_bounded = Int[],
+    )
+    res = dual_newton_solve(prob, [0.0, 0.0, 1.0], [1.0e-3, 1.0e-3, 1.0])
+    @test res.converged
+    @test res.x[3] ≈ 1 rtol = 1.0e-10
+    @test res.x[1] < 1.0e-100 && res.x[2] < 1.0e-100
+
 end
 
 @testset "dual_newton_solve on a problem with a known answer" begin

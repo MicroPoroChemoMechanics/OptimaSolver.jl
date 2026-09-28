@@ -128,24 +128,46 @@ That distinction is not academic. In a chemical system the `H+` row carries `−
 for `OH-` and `+1` for `H+`, so `b = 0` there is the ordinary state of pure
 water — declaring it degenerate kills the whole acid–base system and returns
 pH 7.000 with the solid undissolved.
+
+The signs are read over the variables still free, so the answer is a fixed
+point: a row found degenerate forces its variables to zero, and a row whose
+entries of the other sign all sat on those variables forces its own in turn. The
+electron row of a system with sulfate and chloride is one. Its budget is zero, it
+carries one sign on the reduced sulfur species and the other on perchlorate, so
+alone it forces nothing; with no chlorine in the budget, perchlorate is zero, and
+nothing is left to take the electrons of a sulfide. Read over every column, the
+row was left free: its multiplier then has to run to infinity for the sulfide to
+vanish, and the Newton iteration on a carbonated cement paste stagnated there,
+while the same paste without its two chloride phases solved at once.
 """
 function degenerate_components(A::AbstractMatrix, b::AbstractVector)
     m = size(A, 1)
     scale = max(maximum(abs, b; init = 0.0), 1.0)
     out = Int[]
-    @inbounds for k in 1:m
-        abs(b[k]) <= 1.0e-12 * scale || continue
-        pos = false
-        neg = false
-        for j in axes(A, 2)
-            a = A[k, j]
-            a > 0 && (pos = true)
-            a < 0 && (neg = true)
-            pos && neg && break
+    forced = falses(size(A, 2))
+    changed = true
+    while changed
+        changed = false
+        @inbounds for k in 1:m
+            (abs(b[k]) <= 1.0e-12 * scale && !(k in out)) || continue
+            pos = false
+            neg = false
+            for j in axes(A, 2)
+                forced[j] && continue
+                a = A[k, j]
+                a > 0 && (pos = true)
+                a < 0 && (neg = true)
+                pos && neg && break
+            end
+            (pos && neg) && continue
+            push!(out, k)
+            changed = true
+            for j in axes(A, 2)
+                iszero(A[k, j]) || (forced[j] = true)
+            end
         end
-        (pos && neg) || push!(out, k)
     end
-    return out
+    return sort!(out)
 end
 
 """
