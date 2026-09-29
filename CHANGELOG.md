@@ -1,5 +1,26 @@
 # Changelog
 
+## v0.7.2 — a member held below its equilibrium amount is not certified
+
+### Fixed
+
+- `kkt_certificate` left a member of a present mixing phase below `floor`
+  untested, on the ground that its amount is the truncation of a smaller exact
+  one. A member held far BELOW its equilibrium amount passed as well, and was
+  certified. Measured on a cement paste in ChemistryLab: H+ at 3e-100 mol in a
+  solution whose potentials give it 1.2e-16, certified optimal, and the pH read
+  from that amount came out 0.09 high. Such a member is now held to the one-sided
+  form of the equality the interior obeys, `∇fᵢ + (Aᵀy)ᵢ ≥ 0` (it may hold more
+  than its exact amount, not less), scaled and judged as `stationarity` is, so
+  that a member at its exact amount below the floor still passes. The docstring
+  had stated that inequality for every variable below the floor; the code
+  applied it only to pure phases and bounded members.
+- The certificate reports it as `stationarity_floored`, with the number of
+  members it tested, `n_floored`, and `optimal` requires it within `tol`.
+
+A composition that certified before and holds such a member is now refused; a
+search that tries several starts goes on to the next one.
+
 ## v0.7.1 — a component that vanishes with another
 
 ### Fixed

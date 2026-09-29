@@ -96,6 +96,40 @@ end
 
 end
 
+@testset "a member left below the floor is not certified" begin
+
+    # One ideal phase of three members, the third so unfavorable that at the
+    # answer it holds e^-60/2 ≈ 4.4e-27 of the total, below the certificate's
+    # floor of 1e-25. There it is excluded from the equality and held to the
+    # inequality: it may hold MORE than its exact amount, as the truncation of a
+    # smaller one, but not less. Before 0.7.2 it was held to nothing, and a
+    # member left at 1e-100 by the search was certified: measured on a cement,
+    # H+ at 3e-100 mol where the equilibrium holds 1.2e-16.
+    g = [0.0, 0.0, 60.0]
+    h(x, _) = log.(max.(x, 1.0e-300))
+    A = Float64[1 1 1]
+    b = [1.0]
+    prob = DualNewtonProblem(
+        A, g, h;
+        phases = [SolutionPhase([1, 2, 3], 1; always_present = true)], idx_bounded = Int[],
+    )
+    res = dual_newton_solve(prob, b, [0.4, 0.4, 0.2])
+    @test res.converged
+    @test res.x[3] ≈ exp(-60) / (2 + exp(-60)) rtol = 1.0e-8
+    @test res.x[3] < 1.0e-25
+    cert = kkt_certificate(prob, res.x, b)
+    @test cert.optimal && cert.n_floored == 1
+    @test cert.stationarity_floored < 1.0e-12
+    # More than its exact amount, as a truncation leaves it: certified.
+    @test kkt_certificate(prob, [0.5, 0.5 - 1.0e-26, 1.0e-26], b).optimal
+    # Far less: refused, by this test alone.
+    left = kkt_certificate(prob, [0.5, 0.5, 1.0e-100], b)
+    @test !left.optimal
+    @test left.stationarity_floored > 100
+    @test left.stationarity < 1.0e-12 && left.feasibility < 1.0e-12
+
+end
+
 @testset "a variable cannot be in two places at once" begin
 
     h(x, _) = log.(max.(x, 1.0e-300))

@@ -2016,7 +2016,16 @@ convex problem they are sufficient, so `optimal = true` is a **proof**.
 A variable is INTERIOR when `xᵢ > floor`. There the condition is the equality
 `∇fᵢ + (Aᵀy)ᵢ = 0`, and `y` is obtained from those variables by least squares.
 Below `floor` a variable is at its bound, where the condition is the INEQUALITY
-`∇fᵢ + (Aᵀy)ᵢ ≥ 0`.
+`∇fᵢ + (Aᵀy)ᵢ ≥ 0`:
+
+  - for a pure phase and a bounded member, as a saturation index
+    (`worst_violation_bounded`, judged against `si_tol`);
+  - for a member of a present phase, as the one-sided form of the equality,
+    scaled like it (`stationarity_floored`, judged against `tol`). Its amount is
+    taken to be the truncation of a smaller exact one; a member held below the
+    amount the multipliers give it fails;
+  - the members of an absent phase are tested together, by the tangent plane
+    (`worst_violation_phase`).
 
 Getting that split wrong is not a detail: imposing the equality on a variable
 held at `1e-16` whose stationarity value is `e⁻³⁰⁰` misstates `hᵢ` by 263 units,
@@ -2136,6 +2145,29 @@ function kkt_certificate(
     u = -(transpose(prob.A) * y)
     worst = isempty(at_bound) ? -Inf : maximum(u[i] - ∇f[i] for i in at_bound)
 
+    # A member of a PRESENT phase below the floor is excluded from the equality,
+    # on the ground that its amount is the truncation of `exp(w)`: the exact
+    # amount is smaller still, so the member would give matter back rather than
+    # take it, `uᵢ − ∇fᵢ ≤ 0`. That is the one test it must pass, and it was not
+    # made. A member held far BELOW its equilibrium amount wants the reverse, and
+    # went unexamined: measured on a cement, H+ at 3e-100 mol in a solution whose
+    # potentials give it 1.2e-16, certified, and a pH read from that amount came
+    # out 0.09 high. Bounded members are tested with the pure phases above, and
+    # the members of an absent phase by the tangent plane below.
+    floored = Int[]
+    for ph in prob.phases
+        any(xv[i] > floor && !(i in dead) for i in ph.members) || continue
+        for i in ph.members
+            xv[i] <= floor && !(i in dead) && !(i in bounded) && push!(floored, i)
+        end
+    end
+    # The one-sided form of the SAME condition the interior obeys, so it is
+    # scaled and judged as `stationarity` is: a member at its exact amount below
+    # the floor satisfies the equality to the same rounding, and an absolute
+    # threshold would refuse it on noise.
+    stationarity_floored = isempty(floored) ? 0.0 :
+        max(0.0, maximum(u[i] - ∇f[i] for i in floored)) / stat_scale
+
     # A mixing phase held ENTIRELY absent is tested by neither of the two above:
     # its members are excluded from `interior` (they are at the floor) and from
     # `at_bound` (they are phase members, whose condition is an equality). So a
@@ -2205,13 +2237,14 @@ function kkt_certificate(
         stationarity_scale = stat_scale, feasibility = feasibility,
         feasibility_abs = feas_abs,
         worst_violation = worst_all, worst_violation_bounded = worst,
+        stationarity_floored = stationarity_floored, n_floored = length(floored),
         worst_violation_phase = worst_phase, absent_phases = absent_phases,
         worst_violation_split = worst_split, split_phases = split_phases,
         split_trials = split_trials,
         n_interior = length(interior),
         n_forced_zero = length(dead),
         param_residual = param_residual,
-        optimal = stationarity <= tol && feasibility <= tol &&
+        optimal = stationarity <= tol && stationarity_floored <= tol && feasibility <= tol &&
             worst_all <= si_tol && param_residual <= max(tol, si_tol),
     )
 end
