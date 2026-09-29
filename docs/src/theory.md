@@ -510,8 +510,11 @@ a pure phase, as a saturation index. Every other member of a present phase held
 below the floor is taken to be truncated: its exact amount is smaller still, so
 it may hold more than that amount but not less, ``g_k + h_k \ge u_k`` again. The
 certificate tests this one-sided form of the stationarity, scaled as the
-equality is (`stationarity_floored`); until 0.7.2 it excluded such members from
-every test, and a member left far below its equilibrium amount was certified.
+equality is (`stationarity_floored`), on the members whose potential the interior
+determines; a member whose column reaches the null space of the interior columns
+has a potential the answer leaves free, and some multiplier meets its
+inequality. Before 0.7.2 such members were excluded from every test, and a member
+left far below its equilibrium amount was certified.
 
 ### Degenerate components
 

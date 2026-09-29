@@ -1,5 +1,21 @@
 # Changelog
 
+## v0.7.3 — the floored member is tested only where the interior fixes its potential
+
+### Fixed
+
+- The test 0.7.2 added to `kkt_certificate`, on a member of a present phase held
+  below the floor, used the multipliers of minimum norm. The interior species fix
+  the multipliers only up to the null space of their columns, and a member whose
+  column has a component in that null space has a potential the interior leaves
+  free: some multiplier of the answer meets its inequality, whatever the one of
+  minimum norm says. On a calcite solution the redox direction is free, since no
+  interior species carries it. The minimum-norm multiplier made H2⁰ at 1e-305 mol
+  "want" to rise, and a correct composition was refused; the multipliers of the
+  solve hold it 17 units below. Such a member is no longer tested. A member whose
+  potential the interior determines is tested as in 0.7.2, which is the case the
+  test exists for (H+ left at 3e-100 mol in a cement pore solution).
+
 ## v0.7.2 — a member held below its equilibrium amount is not certified
 
 ### Fixed

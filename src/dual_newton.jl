@@ -2020,10 +2020,12 @@ Below `floor` a variable is at its bound, where the condition is the INEQUALITY
 
   - for a pure phase and a bounded member, as a saturation index
     (`worst_violation_bounded`, judged against `si_tol`);
-  - for a member of a present phase, as the one-sided form of the equality,
-    scaled like it (`stationarity_floored`, judged against `tol`). Its amount is
-    taken to be the truncation of a smaller exact one; a member held below the
-    amount the multipliers give it fails;
+  - for a member of a present phase whose potential the interior determines, as
+    the one-sided form of the equality, scaled like it (`stationarity_floored`,
+    judged against `tol`). Its amount is taken to be the truncation of a smaller
+    exact one; a member held below the amount the multipliers give it fails. A
+    member whose potential the interior leaves free is not tested: some
+    multiplier of the answer meets its inequality;
   - the members of an absent phase are tested together, by the tangent plane
     (`worst_violation_phase`).
 
@@ -2154,11 +2156,27 @@ function kkt_certificate(
     # potentials give it 1.2e-16, certified, and a pH read from that amount came
     # out 0.09 high. Bounded members are tested with the pure phases above, and
     # the members of an absent phase by the tangent plane below.
+    #
+    # Only where the interior DETERMINES the member's potential. `y` is fixed by
+    # the interior up to the null space of `Aiᵀ`, and the least-squares `y` above
+    # is the one of minimum norm in it; a member whose column has a component in
+    # that null space has a potential the interior leaves free, and its
+    # inequality can be met by some multiplier of the answer whatever this one
+    # says. Measured: on a calcite solution the redox direction is free (no
+    # interior species carries it), the minimum-norm multiplier made H2⁰ at
+    # 1e-305 mol "want" to rise by 0.07, and the multipliers of the solve itself
+    # hold it 17 units below. That was a refusal of a correct answer (0.7.2).
+    free_directions = isempty(interior) ? Matrix{Float64}(I, size(prob.A, 1), size(prob.A, 1)) :
+        nullspace(transpose(Ai))
+    determined(i) = begin
+        a = @view prob.A[:, i]
+        isempty(free_directions) || norm(transpose(free_directions) * a) <= 1.0e-8 * max(1.0, norm(a))
+    end
     floored = Int[]
     for ph in prob.phases
         any(xv[i] > floor && !(i in dead) for i in ph.members) || continue
         for i in ph.members
-            xv[i] <= floor && !(i in dead) && !(i in bounded) && push!(floored, i)
+            xv[i] <= floor && !(i in dead) && !(i in bounded) && determined(i) && push!(floored, i)
         end
     end
     # The one-sided form of the SAME condition the interior obeys, so it is
