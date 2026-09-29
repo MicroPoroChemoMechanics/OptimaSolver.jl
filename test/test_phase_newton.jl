@@ -95,14 +95,17 @@ using LinearAlgebra
         @test r.x[2] < 1.0e-25
         @test r.x ≈ [0.5, 0.0, 0.5] atol = 1.0e-12
         @test kkt_certificate(prob, r.x, b).optimal
-        # Q very stable, and a composition that omits it anyway. Excluded from
-        # the tests as a member below the floor, it passes; declared bounded, it
-        # is tested by the inequality and refused.
+        # Q very stable, and a composition that omits it anyway. Declared
+        # bounded, it is tested by the inequality of a bounded member and
+        # refused. Not declared, it is a member below the floor: it passed until
+        # 0.7.2, excluded from every test, and is now held to the one-sided
+        # stationarity of such a member, and refused too.
         g = [0.0, -20.0, 0.0]
         x = [0.5, 0.0, 0.5]
         loose = DualNewtonProblem(A, g, h; phases = phase(newton = true))
         strict = DualNewtonProblem(A, g, h; phases = phase(newton = true, bounded_members = [2]))
-        @test kkt_certificate(loose, x, b).optimal
+        l = kkt_certificate(loose, x, b)
+        @test !l.optimal && l.stationarity_floored > 1
         c = kkt_certificate(strict, x, b)
         @test !c.optimal
         @test c.worst_violation > 1
