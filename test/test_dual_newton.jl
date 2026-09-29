@@ -128,6 +128,21 @@ end
     @test left.stationarity_floored > 100
     @test left.stationarity < 1.0e-12 && left.feasibility < 1.0e-12
 
+    # A member whose potential the interior leaves free is not tested. Its second
+    # component is carried by no interior member, so the multiplier of that
+    # component is free, and some value of it meets the member's inequality. The
+    # multiplier of minimum norm does not: under 0.7.2 it made this member "want"
+    # 229 units more, and refused a correct composition (on a calcite solution,
+    # the redox direction left free, H2⁰ at 1e-305 mol).
+    A2 = Float64[1 1 1; 0 0 1]
+    free = DualNewtonProblem(
+        A2, [0.0, 0.0, 0.0], h;
+        phases = [SolutionPhase([1, 2, 3], 1; always_present = true)], idx_bounded = Int[],
+    )
+    c2 = kkt_certificate(free, [0.5, 0.5, 1.0e-100], [1.0, 1.0e-100])
+    @test c2.n_floored == 0
+    @test c2.optimal
+
 end
 
 @testset "a variable cannot be in two places at once" begin
