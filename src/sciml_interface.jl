@@ -57,8 +57,8 @@ function OptimaOptimizer(;
         # but note that it disagrees with `OptimaOptions()`, whose own default is
         # `false`. The two are genuinely different regimes and neither is right
         # everywhere: on an aqueous-only system the analytic `1/nᵢ` (`false`)
-        # gives water at `[H⁺]/[OH⁻] = 1.000003`, while the finite-difference
-        # diagonal (`true`) gives 3.78; on a mixed solid/aqueous system the
+        # gives water at `[H⁺]/[OH⁻] = 1.000003`, while the diagonal of ∇²f
+        # (`true`, a difference quotient when this was measured) gives 3.78; on a mixed solid/aqueous system the
         # verdict reverses. Building the same optimizer two ways must at least
         # not silently pick opposite regimes, so the disagreement is documented
         # here and on `OptimaOptions` until the underlying conditioning issue is
@@ -142,20 +142,28 @@ function SciMLBase.solve(
         # `u` seeded as `ForwardDiff.Dual`, and a config built for `Float64`
         # cannot serve it. Keeping one per type preserves that -- reusing across
         # calls of the same type, rebuilding when the type changes.
-        cfg_cache = IdDict{DataType, Any}()
+        #
+        # The config carries the TAG of the function it differentiates,
+        # `Tag(fv, eltype(u))`, never `nothing`. A `nothing` tag switches off the
+        # check that keeps nested differentiations apart, and this gradient is
+        # differentiated again: by the exact Hessian diagonal of the solver
+        # (`use_fd_hessian`), and by a caller seeding `u` with its own duals. With
+        # distinct tags each perturbation is carried by its own dual component and
+        # none can be mistaken for another.
+        cfg_cache = Dict{Any, Any}()
         function (grad, u, par)
-            key = eltype(u)
-            cfg = get!(cfg_cache, key) do
-                ForwardDiff.GradientConfig(nothing, u)
+            fv = v -> f_obj(v, par)
+            cfg = get!(cfg_cache, (typeof(fv), eltype(u), length(u))) do
+                ForwardDiff.GradientConfig(fv, u, ForwardDiff.Chunk(u), ForwardDiff.Tag(fv, eltype(u)))
             end
-            return ForwardDiff.gradient!(grad, v -> f_obj(v, par), u, cfg)
+            return ForwardDiff.gradient!(grad, fv, u, cfg)
         end
     end
 
     # ── Extract linear constraints A n = b from OptimizationProblem ─────────
     # ChemistryLab encodes mass conservation as equality cons with lcons=ucons=0
-    # (res = A*u - b, so b is implicit). We extract A and b via finite differences
-    # on the constraint function evaluated at u0.
+    # (res = A*u - b, so b is implicit). We extract A and b by differentiating
+    # the constraint function at u0, in forward mode.
     #
     # If the problem was built with explicit A and b stored in p (Optima-native
     # usage), extract them directly.
@@ -349,7 +357,7 @@ Extract the linear constraint matrix A and RHS b from a SciML
 
 Two paths:
 1. `p` is a NamedTuple with fields `A` and `b` → use directly (Optima-native).
-2. Otherwise, finite-difference the constraint function at `u0` to get A, b.
+2. Otherwise, differentiate the constraint function at `u0` (forward mode) to get A, b.
 """
 function _extract_constraints(opt_prob, u0::AbstractVector{T}, p) where {T}
     # Path 1: parameters carry A and b explicitly
@@ -372,50 +380,18 @@ function _extract_constraints(opt_prob, u0::AbstractVector{T}, p) where {T}
         )
     end
 
-    # Path 3: finite-difference the constraint function
-    # Number of constraints = length(lcons) when available, else call cons once
+    # Path 3: differentiate the constraint function at `u0`, by forward mode.
+    # `cons` is documented as `A u - b`, and for an affine residual its Jacobian
+    # IS `A`, exactly; a nonlinear residual (a log-parameterized equilibrium sends
+    # `A exp(x) - b`) gets its local Jacobian, exact as well. Until 0.7.4 this was
+    # a difference quotient taken at two scales, whose small-step branch left `A`
+    # wrong by ~1e-9 relative.
     ns = length(u0)
     m = (opt_prob.lcons !== nothing && length(opt_prob.lcons) > 0) ?
         length(opt_prob.lcons) : ns
     res0 = zeros(T, m)
     opt_prob.f.cons(res0, u0, p)
-    m = length(res0)  # re-confirm
-
-    A = zeros(T, m, ns)
-    res1 = similar(res0)
-    u_pert = copy(u0)
-
-    # Step size, chosen per column and then checked.
-    #
-    # `cons` is documented as `A u - b`. For an affine residual the difference
-    # quotient is exact whatever the step, so the only error left is
-    # cancellation in `res1 - res0` — and a LARGE step is therefore right. The
-    # reflex 1e-7 is the worst choice here: against residuals of order one it
-    # leaves `A` wrong by ~1e-9 relative, which is a floor the solver cannot get
-    # below, so a `tol = 1e-12` run stalls at 3e-12 and reports `MaxIters` on a
-    # problem it has in fact solved.
-    #
-    # Callers do pass nonlinear residuals all the same — a log-parameterized
-    # equilibrium sends `A exp(x) - b` — and there a large step is not a
-    # derivative at all: on `exp` around x = -2 it comes out 72 % wrong. So
-    # affinity is verified rather than assumed. Each column is differenced at
-    # two scales; the large answer is kept only when the two agree, otherwise
-    # the small one stands, which is the local Jacobian and what this always did.
-    a_big = similar(res0)
-    a_small = similar(res0)
-    rtol = sqrt(eps(T))
-    for k in 1:ns
-        ε_big = max(one(T), abs(u0[k]))
-        for (ε, dest) in ((ε_big, a_big), (ε_big * T(1.0e-7), a_small))
-            u_pert[k] = u0[k] + ε
-            opt_prob.f.cons(res1, u_pert, p)
-            @. dest = (res1 - res0) / ε
-        end
-        u_pert[k] = u0[k]
-        scale = max(maximum(abs, a_big), one(T))
-        affine = maximum(abs, a_big .- a_small) <= rtol * scale
-        A[:, k] .= affine ? a_big : a_small
-    end
+    A = ForwardDiff.jacobian((r, u) -> opt_prob.f.cons(r, u, p), similar(res0), u0)
 
     # b = A*u0 - res0 (since cons encodes A*u - b = 0 → b = A*u0 - res0)
     b = A * u0 .- res0

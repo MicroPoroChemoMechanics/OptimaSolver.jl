@@ -47,13 +47,24 @@ function solve!(
     ws = NewtonStep(ns, m, T)
     grad = zeros(T, ns)
     hf = zeros(T, ns)          # diagonal of ∇²f(n)
-    g_pert_h = zeros(T, ns)   # scratch buffer for FD Hessian diagonal
+    g_pert_h = zeros(T, ns)   # gradient buffer of the forward-mode Hessian
+    H_ad = opts.use_fd_hessian ? zeros(T, ns, ns) : zeros(T, 0, 0)
     filter = LineSearchFilter(T)
     h = zeros(T, ns)
 
     n = state.n
     y = state.y
     μ = state.μ
+
+    # The Hessian is the Jacobian of the gradient, by forward mode, with the
+    # configuration built once per solve and tagged with the function it
+    # differentiates: the gradient may itself be a forward-mode one, and `n` may
+    # carry a caller's duals, so the tags are what keeps the nested
+    # perturbations apart.
+    grad_of! = (gg, nn) -> prob.g!(gg, nn, prob.p)
+    hess_cfg = opts.use_fd_hessian ?
+        ForwardDiff.JacobianConfig(grad_of!, g_pert_h, n, ForwardDiff.Chunk(n), ForwardDiff.Tag(grad_of!, eltype(n))) :
+        nothing
 
     # ── Feasibility initialization (ensure An = b, n ≥ lb) ───────────────────
     #
@@ -202,13 +213,12 @@ function solve!(
             if prob.p isa NamedTuple && haskey(prob.p, :hdiag)
                 prob.p.hdiag(hf, n)
             elseif opts.use_fd_hessian
-                ε_h = sqrt(eps(T))
+                # The true diagonal, by forward-mode differentiation of the
+                # gradient. (The option keeps its name; until 0.7.4 it meant a
+                # difference quotient per species.)
+                ForwardDiff.jacobian!(H_ad, grad_of!, g_pert_h, n, hess_cfg)
                 for i in 1:ns
-                    Δi = ε_h * max(one(T), abs(n[i]))
-                    n[i] += Δi
-                    eval_gradient!(g_pert_h, prob, n)
-                    hf[i] = max((g_pert_h[i] - grad[i]) / Δi, zero(T))
-                    n[i] -= Δi
+                    hf[i] = max(H_ad[i, i], zero(T))
                 end
             else
                 hf .= gibbs_hessian_diag(n)

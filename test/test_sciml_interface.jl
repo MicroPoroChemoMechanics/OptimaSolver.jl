@@ -40,7 +40,7 @@
 
     @testset "constraints carried by `p` (Optima-native path)" begin
         # `_extract_constraints` path 1: `p` is a NamedTuple holding A and b, so
-        # no finite differencing happens at all.
+        # nothing is differentiated at all.
         f = SciMLBase.OptimizationFunction(G; grad = ∇G!)
         prob = SciMLBase.OptimizationProblem(
             f, copy(lb), (μ⁰ = μ⁰, A = A, b = b); lb = lb, ub = fill(Inf, 3)
@@ -58,9 +58,23 @@
         @test length(sol.original.y) == 1
     end
 
-    @testset "constraints given as a residual function (finite-difference path)" begin
-        # `_extract_constraints` path 3: A and b are recovered by differencing
-        # `cons` at `u0`. The answer must be the same as when A and b are handed
+    @testset "a forward-mode gradient differentiated again for the Hessian" begin
+        # No `grad`: the gradient is built by forward mode, and `OptimaOptimizer()`
+        # (`use_fd_hessian = true`) differentiates that gradient to get the exact
+        # Hessian diagonal, so two differentiations are nested. Each carries its
+        # own tag; with the gradient's config built on a `nothing` tag, as until
+        # 0.7.4, nothing kept them apart.
+        f = SciMLBase.OptimizationFunction(G)
+        prob = SciMLBase.OptimizationProblem(
+            f, copy(lb), (μ⁰ = μ⁰, A = A, b = b); lb = lb, ub = fill(Inf, 3)
+        )
+        sol = SciMLBase.solve(prob, OptimaOptimizer(; tol = 1.0e-12))
+        @test sol.u ≈ n_analytic atol = 1.0e-7
+    end
+
+    @testset "constraints given as a residual function (forward-mode path)" begin
+        # `_extract_constraints` path 3: A and b are recovered by differentiating
+        # `cons` at `u0`, in forward mode. The answer must be the same as when A and b are handed
         # over directly — that equality is the whole point of the extraction.
         cons!(res, u, p) = (res[1] = sum(u) - 1.0; nothing)
         f = SciMLBase.OptimizationFunction(G; grad = ∇G!, cons = cons!)
