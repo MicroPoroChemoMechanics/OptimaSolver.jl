@@ -1,5 +1,39 @@
 # Changelog
 
+## v0.7.4 — options for sequences of warm-started solves
+
+### Added
+
+- **Two options of `DualNewtonOptions` for sequences of warm-started solves:**
+  `inner_fall_bound` and `lenient_line_search`. Both default to the behavior of
+  0.7.3, so no solve changes unless a caller asks.
+  - `inner_fall_bound` (default 30) is how far a solute's log-amount may fall in
+    one sweep of the inner fixed point. At 30, a solute that the potentials put
+    at 1e-300 mol, starting from 1e-7, moves by exactly 30 at every sweep. The
+    stall rule (`INNER_STALL_SWEEPS`) reads that as no progress, and the call
+    stops after 21 sweeps, unconverged. `Inf` lets it fall at once. A rise
+    stays bounded (`W_MAX_RISE`), since a rise is what overshoots.
+  - `lenient_line_search = true` asks the first pass of the line search for a
+    converged inner solve only where the current point has one. Without it, the
+    first pass refused forty candidates for want of what the current point
+    lacked too, before the second pass accepted the first of them.
+
+  Measured on the coupled hydration of a CEM I paste in ChemistryLab over three
+  hours (82 steps), where the inner solve had ended unconverged at 98 % of the
+  points the outer Newton accepted:
+
+  | options | time | Newton iterations |
+  |:--|--:|--:|
+  | defaults (0.7.3) | 176 s | 17 877 |
+  | `lenient_line_search` | 57 s | 18 195 |
+  | both | 10 s | 1 453 |
+
+  All three give the same trajectory to the last bit. They are not the default
+  because they also change the path of a cold solve, and a cold solve under the
+  Debye–Hückel limiting law near its range is sensitive to the path. Over 32
+  cement calculations run cold, both options together took 1238 s down to 590 s,
+  and one blended cement lost its certified answer under that model.
+
 ## v0.7.3 — the floored member is tested only where the interior fixes its potential
 
 ### Fixed

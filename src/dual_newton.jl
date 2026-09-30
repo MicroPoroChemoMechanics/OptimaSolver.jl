@@ -81,6 +81,14 @@ const W_CEIL = 20.0
 # period of the cycles observed, and not by the fastest of those runs.
 const INNER_STALL_SWEEPS = 20
 
+# The most a solute's log-amount may rise in one sweep of `_invert_phases!`.
+#
+# A rise is what can overshoot: a solute whose stationarity asks for thirteen
+# orders of magnitude more, granted in one sweep, can carry the ionic strength
+# from 0.1 to 100 mol/kg, and the next sweep swings back. How far it may FALL is
+# `DualNewtonOptions.inner_fall_bound`, the same 30 by default.
+const W_MAX_RISE = 30.0
+
 # The amount a mixing phase is admitted with, as its total.
 #
 # It has to survive the first Newton step. Admitted at 1e-9, as it was until
@@ -531,12 +539,34 @@ function _active_set_supports_a_solution(prob, active, act_ph)
 end
 
 """
-    DualNewtonOptions(; tol, maxit, max_active_updates, si_tol, verbose)
+    DualNewtonOptions(; tol, maxit, max_active_updates, si_tol, inner_tol,
+                      inner_maxit, inner_fall_bound, lenient_line_search, verbose)
 
   - `tol`: tolerance on the KKT residual.
   - `maxit`: Newton iterations per active set.
   - `max_active_updates`: how many times the active set may change.
   - `si_tol`: saturation index above which a variable at its bound is admitted.
+  - `inner_tol`, `inner_maxit`: the inner fixed point that recovers the phase
+    compositions.
+  - `inner_fall_bound`: the most a solute's log-amount may fall in one sweep of
+    that fixed point, `30` by default, as a rise may. `Inf` lets a solute fall to
+    what its potential asks at once.
+  - `lenient_line_search`: when `true`, the first pass of the line search asks the
+    candidate for a converged inner solve only where the current point has one.
+
+The last two change the path of the search, not its answer's conditions, and
+are off by default. They are for a caller that solves many neighboring problems
+from warm starts, such as the steps of a kinetic run. There the inner fixed point
+rarely converges at the points the Newton method passes through: a solute on its
+way down moves by exactly the bound at every sweep, which the stall rule reads
+as no progress, so the call stops before the solute arrives; and the first pass
+of the line search then refuses forty candidates for want of what the current
+point does not have either, before the second pass accepts the first of them.
+Measured on the coupled hydration of a CEM I paste over three hours (82 steps),
+the two together took the run from 176 s to 10 s on the same trajectory to the
+last bit. They are not the default because they also change the path of a cold
+solve, and a cold solve under the Debye-Hückel limiting law near its range is
+path-sensitive: on one cement it went from certified to not.
 """
 Base.@kwdef struct DualNewtonOptions
     tol::Float64 = 1.0e-10
@@ -554,6 +584,8 @@ Base.@kwdef struct DualNewtonOptions
     # residual that the next iteration will not reproduce.
     inner_tol::Float64 = 1.0e-10
     inner_maxit::Int = 200
+    inner_fall_bound::Float64 = 30.0
+    lenient_line_search::Bool = false
     verbose::Bool = false
 end
 
@@ -728,6 +760,7 @@ function _invert_phases!(
         prob, W, y, refs, act_ph, active, xB, x_buf;
         dead = Set{Int}(), g = prob.g, q = prob.q0,
         resid::Union{Nothing, Base.RefValue{Float64}} = nothing, maxsweeps::Int = 200,
+        max_fall::Float64 = 30.0,
     )
     u = -(transpose(prob.A) * y)
     worst = Inf
@@ -782,7 +815,7 @@ function _invert_phases!(
                 for (j, i) in enumerate(ph.members)
                     (j == ph.j_ref || i in dead) && continue
                     r = (u[i] - g[i]) - hv[i]
-                    w = clamp(W[k][j] + clamp(r, -30.0, 30.0), W_FLOOR, W_CEIL)
+                    w = clamp(W[k][j] + clamp(r, -max_fall, W_MAX_RISE), W_FLOOR, W_CEIL)
                     # THE MEASURE IS THE STEP, NOT THE RESIDUAL, and that is what
                     # `inner_tol` actually asks for: "re-running this loop from
                     # its own output changes nothing". That is a statement about
@@ -858,7 +891,7 @@ function _outer_residual(
         prob, v, W, act_ph, active, b, x_buf;
         dead = Set{Int}(), degenerate = Int[],
         resid::Union{Nothing, Base.RefValue{Float64}} = nothing,
-        inner_maxit::Int = 200,
+        inner_maxit::Int = 200, max_fall::Float64 = 30.0,
     )
     m = size(prob.A, 1)
     nph = length(act_ph)
@@ -873,7 +906,7 @@ function _outer_residual(
 
     _invert_phases!(
         prob, W, y, refs, act_ph, active, xB, x_buf; dead = dead, g = g, q = q,
-        resid = resid, maxsweeps = inner_maxit,
+        resid = resid, maxsweeps = inner_maxit, max_fall,
     )
 
     hv = current_h(prob, x_buf, q)
@@ -1575,6 +1608,7 @@ function _dual_newton_attempt(
             R = _outer_residual(
                 prob, v, W, act_ph, active, bv, x_buf;
                 dead, degenerate, resid = inner_resid, inner_maxit = opts.inner_maxit,
+                max_fall = opts.inner_fall_bound,
             )
             res = maximum(abs, R)
             if opts.verbose
@@ -1633,7 +1667,10 @@ function _dual_newton_attempt(
                 vp = copy(v)
                 vp[kk] += hk
                 W_t = [copy(w) for w in W_ref]
-                Rp = _outer_residual(prob, vp, W_t, act_ph, active, bv, x_buf; dead, degenerate)
+                Rp = _outer_residual(
+                    prob, vp, W_t, act_ph, active, bv, x_buf;
+                    dead, degenerate, max_fall = opts.inner_fall_bound,
+                )
                 J[:, kk] .= (Rp .- R) ./ hk
             end
             all(isfinite, J) || break
@@ -1682,6 +1719,16 @@ function _dual_newton_attempt(
             # does not depend on the composition has nothing to solve and can
             # never report convergence, and on such a problem the first pass would
             # refuse every step and the solve would stall at its starting point.
+            #
+            # With `lenient_line_search`, the first pass is not asked for what
+            # the current point does not have. Where the inner solve has not
+            # converged at `v` itself, shortening the step does not make it
+            # converge at `v + αδ`: the first pass then accepts what the second
+            # would, the first step that decreases the residual, instead of
+            # refusing forty candidates to reach the same one. Measured on the
+            # coupled hydration of a CEM I over three hours, that was 392 044
+            # inner solves spent in the first pass for 189 steps accepted there.
+            current_converged = !opts.lenient_line_search || inner_resid[] <= opts.inner_tol
             for strict in (true, false)
                 α = α0
                 for _ in 1:40
@@ -1690,10 +1737,10 @@ function _dual_newton_attempt(
                     R_t = _outer_residual(
                         prob, v_t, W_t, act_ph, active, bv, x_buf;
                         dead, degenerate, resid = cand_resid,
-                        inner_maxit = opts.inner_maxit,
+                        inner_maxit = opts.inner_maxit, max_fall = opts.inner_fall_bound,
                     )
                     ok = maximum(abs, R_t) < res &&
-                        (!strict || cand_resid[] <= opts.inner_tol)
+                        (!strict || !current_converged || cand_resid[] <= opts.inner_tol)
                     if ok
                         v = v_t
                         for kk in eachindex(W)
@@ -1741,6 +1788,7 @@ function _dual_newton_attempt(
                 abs, _outer_residual(
                     prob, v, W, act_ph, active, bv, x_buf;
                     dead, degenerate, inner_maxit = opts.inner_maxit,
+                    max_fall = opts.inner_fall_bound,
                 ),
             )
             viol = 0.0
@@ -1984,13 +2032,16 @@ function _dual_newton_attempt(
         xB = na == 0 ? Float64[] : v[(nph + m + 1):(nph + m + na)]
         q = nq == 0 ? Float64[] : v[(nph + m + na + 1):(nph + m + na + nq)]
         converged = maximum(
-            abs, _outer_residual(prob, v, W, act_ph, active, bv, x_buf; dead, degenerate),
+            abs, _outer_residual(
+                prob, v, W, act_ph, active, bv, x_buf;
+                dead, degenerate, max_fall = opts.inner_fall_bound,
+            ),
         ) <= opts.tol && best_viol <= opts.si_tol
     end
 
     _invert_phases!(
         prob, W, y, refs, act_ph, active, xB, x_buf;
-        dead = dead, g = current_g(prob, q), q = q,
+        dead = dead, g = current_g(prob, q), q = q, max_fall = opts.inner_fall_bound,
     )
     x = copy(x_buf)
     for (j, i) in enumerate(active)

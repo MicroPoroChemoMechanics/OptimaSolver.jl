@@ -914,6 +914,12 @@ end
     # Idempotence: solving again from the answer returns the answer.
     res2 = dual_newton_solve(prob, b, copy(res.x))
     @test maximum(abs, res2.x .- res.x) <= 1.0e-8
+
+    # The options for warm-started sequences change the path, not the answer.
+    fast = DualNewtonOptions(; inner_fall_bound = Inf, lenient_line_search = true)
+    res3 = dual_newton_solve(prob, b, copy(x); opts = fast)
+    @test kkt_certificate(prob, res3.x, b).optimal
+    @test maximum(abs, res3.x .- res.x) <= 1.0e-8
 end
 
 @testset "an inner iteration that has stopped converging stops sweeping" begin
@@ -959,6 +965,37 @@ end
     slow = sweeps(0.1)
     @test slow.calls == 200
     @test 0 < slow.step < 1.0e-9
+end
+
+@testset "a solute falls to its potential in one sweep, if the fall is unbounded" begin
+    # A solute the potentials put 650 below its start, in an ideal solution. By
+    # default a fall is bounded by 30 per sweep, as a rise is: the solute moves by
+    # exactly 30 at every sweep, the stall rule reads that as no progress, and the
+    # call stops at the twenty-first sweep, twenty short of the target. With
+    # `max_fall = Inf` (`DualNewtonOptions.inner_fall_bound`) it arrives in one
+    # sweep and the second finds nothing to move.
+    function fall(max_fall)
+        calls = Ref(0)
+        h(x, _) = (calls[] += 1; [0.0, log(x[2])])
+        prob = DualNewtonProblem(
+            Float64[1 1], [0.0, 650.0], h;
+            phases = [SolutionPhase([1, 2], 1)], idx_bounded = Int[],
+        )
+        W = [[0.0, 0.0]]
+        resid = Ref(NaN)
+        OptimaSolver._invert_phases!(
+            prob, W, [0.0], [1.0], [1], Int[], Float64[], zeros(2);
+            resid = resid, maxsweeps = 200, max_fall,
+        )
+        return (calls = calls[], w = W[1][2], step = resid[])
+    end
+    bounded = fall(30.0)
+    @test bounded.calls == OptimaSolver.INNER_STALL_SWEEPS + 1
+    @test bounded.w ≈ -30.0 * (OptimaSolver.INNER_STALL_SWEEPS + 1) && bounded.step == 30.0
+    free = fall(Inf)
+    @test free.calls == 2
+    @test free.w ≈ -650.0 atol = 1.0e-12
+    @test free.step <= 1.0e-14
 end
 
 @testset "the trial composition comes back with the verdict" begin
