@@ -575,6 +575,21 @@ when it decreases the worst residual or, failing that, when it decreases
 ``\|R\|^2`` by Armijo's condition against the slope ``-2\|J\delta\|^2`` of the
 least-squares step, the worst residual not growing.
 
+The step is taken with each balance row on the scale of what it currently
+holds: the rows of ``J`` and ``R`` are divided by ``s_k = \sum_j |A_{kj} x_j|``,
+floored at ``\varepsilon^2 |b_k|`` for a row with a budget and at the rounding
+``\varepsilon \max(1, \|b\|_\infty)`` for one without, and the decrease above is
+measured in that metric. The rank of the pivoted factorization is decided
+against its largest pivot, and the column of a trace component's potential
+carries derivatives the size of its carriers: unweighted, it fell below that
+threshold and the step left the potential where it was. On a square system the
+weights change which directions count, not the step. The step is then
+shortened so that the potential of no species, ``-A^\mathsf{T}y``, moves by more
+than 30, the rise the inversion allows a log-amount in one sweep: from below its
+budget, the linearization of a sum of exponentials asks for a step too long by
+the ratio of the two, which backtracking cannot shorten enough when the ratio
+is large.
+
 The same equations differentiate the answer. With ``\Phi(z; \theta) = 0`` the
 system of the active set and ``\theta`` the data (`b`, `A`, `g`, `params`),
 
@@ -973,6 +988,32 @@ $(n + \alpha\,\delta n,\; y + \alpha\,\delta y)$ satisfies:
 When the current iterate is already feasible ($\theta \approx 0$), the filter
 is bypassed and only the Armijo condition on $\phi_\mu$ is checked, switching
 the method to a pure descent algorithm for the final convergence phase.
+
+Near the solution that test is decided by rounding: the decrease it asks for
+falls below the spacing of floating-point numbers near $\phi_\mu$. A step tried
+whose requested decrease and actual change of $\phi_\mu$ are both below that
+rounding, $8\,n_s\,\varepsilon\,\max(|\phi_\mu|, 1)$, is judged instead on the
+residual of the optimality conditions in complementarity form,
+
+```math
+R(n, y) = \left(\|s \circ g_L(n, y) - \mu\|^2 + \|An - b\|^2\right)^{1/2},
+```
+
+which is resolved at its own scale. It is taken if it lowers that residual by
+Armijo's fraction, $R(n + \alpha\,\delta n,\, y + \alpha\,\delta y) \le
+(1 - \texttt{ls\_alpha}\,\alpha)\,R(n, y)$, and keeps every row of the balance:
+
+```math
+\left|(A n_{\rm new} - b)_k\right| \;\le\;
+\max\!\Big(\left|(A n - b)_k\right|,\;
+\sqrt{\varepsilon}\,\big(|b_k| + \textstyle\sum_j |A_{kj}\, n_{{\rm new},j}|\big)\Big)
+\quad \text{for every } k .
+```
+
+Row by row, because the rows do not share a scale: a trace component, whose
+budget is orders of magnitude below the others, fits whole inside a tolerance
+the major rows set, and was lost that way when the balance was judged on
+$\theta$ (0.7.5).
 
 ## Outer barrier loop
 
