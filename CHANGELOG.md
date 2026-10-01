@@ -40,6 +40,17 @@ trajectory; the certified replay of a 28-day run takes 9.7 s instead of 6.8 s.
   drove the amount of such a phase down until it fell below `si_tol`. With an
   exact Jacobian the direction of its amount carries no information on an
   active set that breaks the phase rule, and the phase stayed.
+- **The interior point no longer halves its step at random near the solution.**
+  There the barrier objective cannot resolve the decrease Armijo asks for, and
+  rounding decided the test: a three-species ideal solution converged in 44
+  iterations on one machine and ran to `MaxIters` on a continuous-integration
+  machine whose arithmetic differed in the last digits. A step that changes the
+  barrier objective by no more than its rounding is now judged on the residual of
+  the optimality conditions in complementarity form, the balance kept, which is
+  resolved at its own scale; it converges in 32 iterations of full steps. Taking
+  that residual as the test whenever Armijo was unresolved, rather than only for
+  such steps, moved the interior-point answer of a reference case by half on a
+  trace: it is not done.
 - The line search accepts a step that does not increase the worst residual and
   decreases `‖R‖²` by Armijo's condition against the slope `−2‖Jδ‖²` of the
   least-squares step, as well as one that decreases the worst residual. On an

@@ -55,6 +55,12 @@
         # The internal result travels along, so a caller can read the duals.
         @test sol.original isa OptimaResult
         @test sol.original.converged
+        # Near the solution the barrier objective no longer resolves the decrease
+        # Armijo asks for, and the step is judged on the KKT residual instead:
+        # full steps to the end, 32 iterations measured. Left to rounding, the
+        # search halved them at random, took 44 here and ran to `MaxIters` on a
+        # machine whose arithmetic differed in the last digits.
+        @test sol.original.iterations <= 34
         @test length(sol.original.y) == 1
     end
 

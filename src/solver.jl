@@ -46,6 +46,7 @@ function solve!(
     # ── Workspace allocations ─────────────────────────────────────────────────
     ws = NewtonStep(ns, m, T)
     grad = zeros(T, ns)
+    g_trial = zeros(T, ns)   # the gradient at a trial point of the line search
     hf = zeros(T, ns)          # diagonal of ∇²f(n)
     g_pert_h = zeros(T, ns)   # gradient buffer of the forward-mode Hessian
     H_ad = opts.use_fd_hessian ? zeros(T, ns, ns) : zeros(T, 0, 0)
@@ -264,6 +265,7 @@ function solve!(
             α, n_new, y_new, f_new = line_search(
                 prob, n, y, dn, dy, f_val, grad, μ, opts;
                 filter = filter, α_max = α_max,
+                kkt_merit = (nn, yy) -> _kkt_merit(prob, nn, yy, g_trial, μ),
             )
 
             # Bookkeeping: only add to filter during infeasible phase

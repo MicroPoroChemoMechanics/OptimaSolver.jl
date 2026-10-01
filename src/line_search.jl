@@ -67,6 +67,7 @@ function line_search(
         opts::OptimaOptions;
         filter::LineSearchFilter,
         α_max = 1.0,
+        kkt_merit = nothing,
     ) where {T}
     # `α_max` comes from `clamp_step`, hence carries the type of the iterates:
     # annotating it `::Float64` used to reject dual numbers outright, which is
@@ -124,8 +125,27 @@ function line_search(
     #
     #     Ipopt's own tiny-step check (`IpoptAlgorithm::CheckTinyStep`) tests
     #     `maxᵢ|dnᵢ|/max(1,|nᵢ|)` against `10·eps`, which is `6e-12` against
-    #     `2.2e-15` here: faithful Ipopt does nothing in this regime either. Until
-    #     there is a device with evidence behind it, neither does this.
+    #     `2.2e-15` here: faithful Ipopt does nothing in this regime either.
+    #
+    #     What is done instead, since 0.7.5, is to judge the step on a quantity
+    #     that is resolved there: the KKT residual of the barrier problem in
+    #     complementarity form, `‖s∘(∇f + Aᵀy) − μ‖` with the balance (`kkt_merit`),
+    #     which is bounded and measured at its own scale, `1e-11` to `1e-17`
+    #     rather than `1e-11` within `0.6`. A step is still refused unless it
+    #     lowers that residual by Armijo's fraction, so nothing is taken on
+    #     trust. Left to rounding, the same three-species solve stalled at
+    #     `MaxIters` on a continuous-integration machine whose arithmetic differed
+    #     in the last digits from the one it converged on in 44 iterations.
+    #
+    #     Only there, and only for a step that the objective cannot tell apart from
+    #     no change: one that raises `f_μ` by more than its rounding, or moves the
+    #     balance, is refused as before. Taken whenever Armijo was unresolved, the
+    #     residual let through steps far from the solution, where the curvature
+    #     makes the decrease asked for small too, and moved the interior-point
+    #     answer of the Reaktoro reference by half on a trace.
+    noise_f = 8 * length(n) * eps(T) * max(abs(f_μ_val), one(T))
+    resolvable = kkt_merit === nothing || opts.ls_alpha * Tv(α_max) * abs(descent_μ) > noise_f
+    R_curr = resolvable ? zero(Tv) : kkt_merit(n, y)
 
     for _ in 1:(opts.ls_max_iter)
         n_new = n .+ α .* dn
@@ -158,6 +178,13 @@ function line_search(
             if f_μ_new <= f_μ_val + opts.ls_alpha * α * descent_μ
                 return α, n_new, y_new, f_new
             end
+            # The barrier objective no longer resolves the decrease asked for, and
+            # this step changes it by no more than its rounding: judged on the
+            # residual of the optimality conditions, the balance kept.
+            if !resolvable && f_μ_new <= f_μ_val + noise_f && θ_new <= max(θ_curr, θ_tol) &&
+                    kkt_merit(n_new, y_new) <= (one(Tv) - Tv(opts.ls_alpha) * α) * R_curr
+                return α, n_new, y_new, f_new
+            end
         end
 
         α *= β
@@ -167,4 +194,14 @@ function line_search(
     n_new = n .+ α .* dn
     n_new .= max.(n_new, prob.lb .+ eps(T))
     return α, n_new, y .+ α .* dy, prob.f(n_new, prob.p)
+end
+
+# The KKT residual of the barrier problem at `(n, y)`, in complementarity form,
+# `‖s∘(∇f + Aᵀy) − μ‖` together with the balance `‖An − b‖`, `g` a buffer for the
+# gradient. Bounded as a bound is approached, and resolved at its own scale.
+function _kkt_merit(prob, n, y, g, μ)
+    eval_gradient!(g, prob, n)
+    s = n .- prob.lb
+    gL = g .+ prob.A' * y
+    return sqrt(sum(abs2, s .* gL .- μ) + sum(abs2, prob.A * n .- prob.b))
 end
