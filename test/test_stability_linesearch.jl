@@ -62,4 +62,29 @@
         @test OptimaSolver.is_acceptable(f, 0.5, 2.0)
         @test OptimaSolver.is_acceptable(f, 2.0, 0.5)
     end
+
+    @testset "a step judged on the KKT residual keeps every row of the balance" begin
+        # A major component and a trace one, at a feasible point, with an
+        # objective that cannot tell the steps below from no change: they are
+        # judged on the residual handed in, which here rewards whatever it is
+        # asked to. What it may not buy is a balance row.
+        A = [1.0 1.0 0.0; 0.0 0.0 1.0]
+        b = [1.0, 1.0e-9]
+        prob = OptimaProblem(A, b, (n, p) -> 0.0, (g, n, p) -> (g .= 0.0))
+        n = [0.5, 0.5, 1.0e-9]
+        opts = OptimaOptions()
+        step(dn, merit) = OptimaSolver.line_search(
+            prob, n, zeros(2), dn, zeros(2), 0.0, zeros(3), 1.0e-30, opts;
+            filter = OptimaSolver.LineSearchFilter(Float64), kkt_merit = merit,
+        )
+        # Halving the trace changes the sum of the residuals by 5e-10, under the
+        # √eps the sum was once allowed: refused, the carbon kept.
+        α, n_new, _, _ = step([0.0, 0.0, -0.5e-9], (nn, yy) -> nn[3] < 0.9e-9 ? 0.0 : 1.0)
+        @test n_new[3] ≈ 1.0e-9 rtol = 1.0e-8
+        @test α < 1.0e-6
+        # A step along the balance is still taken whole.
+        α, n_new, _, _ = step([0.1, -0.1, 0.0], (nn, yy) -> nn[1] > 0.55 ? 0.0 : 1.0)
+        @test α == 1.0
+        @test n_new ≈ [0.6, 0.4, 1.0e-9]
+    end
 end

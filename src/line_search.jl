@@ -77,8 +77,9 @@ function line_search(
     α = Tv(α_max)
     β = Tv(opts.ls_beta)
 
-    # Current feasibility
-    θ_curr = sum(abs, prob.A * n .- prob.b)
+    # Current feasibility, row by row and in sum
+    r_curr = prob.A * n .- prob.b
+    θ_curr = sum(abs, r_curr)
 
     # Barrier objective at current point: f_μ(n) = f(n) - μ Σ ln(nᵢ - lbᵢ)
     # A slack that has rounded to zero or below is a caller error, but it must not
@@ -160,7 +161,8 @@ function line_search(
         end
 
         f_new = prob.f(n_new, prob.p)
-        θ_new = sum(abs, prob.A * n_new .- prob.b)
+        r_new = prob.A * n_new .- prob.b
+        θ_new = sum(abs, r_new)
         s_new = max.(n_new .- prob.lb, floatmin(T))
         f_μ_new = real(f_new) - μ * sum(log, s_new)
 
@@ -184,7 +186,7 @@ function line_search(
             # this step changes it by no more than its rounding: judged on the
             # residual of the optimality conditions, the balance kept.
             if kkt_merit !== nothing && opts.ls_alpha * α * abs(descent_μ) <= noise_f &&
-                    f_μ_new <= f_μ_val + noise_f && θ_new <= max(θ_curr, θ_tol)
+                    f_μ_new <= f_μ_val + noise_f && _balance_kept(prob, r_new, r_curr, n_new, sqrt(eps(T)))
                 R_curr === nothing && (R_curr = kkt_merit(n, y))
                 kkt_merit(n_new, y_new) <= (one(Tv) - Tv(opts.ls_alpha) * α) * R_curr &&
                     return α, n_new, y_new, f_new
@@ -198,6 +200,28 @@ function line_search(
     n_new = n .+ α .* dn
     n_new .= max.(n_new, prob.lb .+ eps(T))
     return α, n_new, y .+ α .* dy, prob.f(n_new, prob.p)
+end
+
+# Whether a step keeps the balance: every row no worse than it was, up to `√eps`
+# of that row's own scale, `|bₖ| + Σⱼ |Aₖⱼ nⱼ|`.
+#
+# Row by row, because the rows do not share a scale. Judged on the sum against
+# `√eps` absolute, as 0.7.5 did, a trace component could vanish whole inside a
+# tolerance the major elements set. Measured on blended cement pastes carrying a
+# trace of carbon nine orders of magnitude below their major elements: the
+# interior point lost it, every start of the certified search downstream came
+# from there, and the answer was stationary to rounding with every carrier of
+# carbon orders of magnitude too low, the carbon balance wrong by its whole
+# budget. The major rows keep the latitude they had.
+function _balance_kept(prob, r_new, r_curr, n_new, tol)
+    for k in eachindex(r_new)
+        scale = abs(prob.b[k])
+        for j in eachindex(n_new)
+            scale += abs(prob.A[k, j] * n_new[j])
+        end
+        abs(r_new[k]) <= max(abs(r_curr[k]), tol * scale) || return false
+    end
+    return true
 end
 
 # The KKT residual of the barrier problem at `(n, y)`, in complementarity form,

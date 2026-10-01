@@ -1846,6 +1846,38 @@ function _dual_newton_attempt(
 
             N = length(v)
             W_ref = [copy(w) for w in W]
+            # Each balance row on the scale of what it currently holds,
+            # `Σⱼ |Aₖⱼ xⱼ|`, for the factorization below; read before the Jacobian
+            # reuses `x_buf`. The rank of a pivoted QR is decided against its
+            # largest pivot, and the row of a trace component carries the
+            # derivatives of amounts as small as its carriers: a budget of 1e-9
+            # mol whose carriers sat at 1e-16 gave its potential a column of
+            # 1e-16 beside entries of order a hundred, below the rank threshold,
+            # so the step left that potential where it was and the Newton stopped
+            # with the row unmet. On a square system the weights do not change
+            # the step; they change which directions count as there.
+            #
+            # The floor tells the two kinds of small row apart. A row with a
+            # budget is resolved down to carriers `eps²` of it, which also keeps
+            # the weighted residual finite. A row whose budget is zero within
+            # rounding keeps the floor of that rounding, so that a direction no
+            # species carries (a redox potential held by amounts of 1e-305) stays
+            # as absent as it was.
+            wR = ones(length(R))
+            let bscale = max(1.0, maximum(abs, bv)), qv = @view v[(nph + m + na + 1):(nph + m + na + nq)]
+                for k in 1:m
+                    k in degenerate && continue
+                    s = 0.0
+                    for j in axes(prob.A, 2)
+                        s += abs(prob.A[k, j] * x_buf[j])
+                    end
+                    for l in 1:nq
+                        s += abs(prob.Aq[k, l] * qv[l])
+                    end
+                    floor_k = abs(bv[k]) > eps() * bscale ? eps()^2 * abs(bv[k]) : eps() * bscale
+                    wR[nph + k] = 1.0 / max(s, floor_k)
+                end
+            end
             # Exact, by the implicit-function theorem over the inversion where it
             # has converged (`_outer_jacobian`), and by forward mode through its
             # sweeps where it has not (`_swept_jacobian`): in both cases the
@@ -1859,12 +1891,30 @@ function _dual_newton_attempt(
                 )
             all(isfinite, J) || break
 
-            δ = qr(J, ColumnNorm()) \ (-R)
+            δ = qr(wR .* J, ColumnNorm()) \ (-(wR .* R))
 
             α = 1.0
             for a in 1:nph
                 abs(δ[a]) > 1.0 && (α = min(α, 1.0 / abs(δ[a])))
             end
+            # The potential of a species, `−Aᵀy`, moves by no more per step than
+            # the inner inversion lets a log-amount rise in one sweep. The
+            # balance of a component is a sum of exponentials of its potential,
+            # and from below its budget the linearization overshoots by the
+            # ratio of the two: carriers twenty-one orders of magnitude short ask
+            # for a step of 1e21 in a potential that has to move by forty-eight,
+            # which no backtracking down to 2⁻⁴⁰ brings within reach, and the
+            # Newton stopped there with that balance unmet.
+            dmax = 0.0
+            for j in axes(prob.A, 2)
+                j in dead && continue
+                dj = 0.0
+                for k in 1:m
+                    dj += prob.A[k, j] * δ[nph + k]
+                end
+                dmax = max(dmax, abs(dj))
+            end
+            dmax > W_MAX_RISE && (α = min(α, W_MAX_RISE / dmax))
             for j in 1:na
                 dj = δ[nph + m + j]
                 if dj < 0 && xB[j] + α * dj < 0
@@ -1927,8 +1977,9 @@ function _dual_newton_attempt(
             # what the decrease is measured against. Below the tolerance it
             # predicts no change worth a step: the iterate is then the
             # least-squares point of this active set.
-            φ = sum(abs2, R)
-            pred = sum(abs2, J * δ)
+            # In the metric the step was taken in, the balance rows weighted.
+            φ = sum(abs2, wR .* R)
+            pred = sum(abs2, wR .* (J * δ))
             for strict in (true, false)
                 α = α0
                 for _ in 1:40
@@ -1942,7 +1993,7 @@ function _dual_newton_attempt(
                     mx = maximum(abs, R_t)
                     decrease = mx < res || (
                         pred > opts.tol^2 && mx <= res * (1 + 1.0e-12) &&
-                            sum(abs2, R_t) <= φ - 2.0e-4 * α * pred
+                            sum(abs2, wR .* R_t) <= φ - 2.0e-4 * α * pred
                     )
                     ok = decrease &&
                         (!strict || !current_converged || cand_resid[] <= opts.inner_tol)

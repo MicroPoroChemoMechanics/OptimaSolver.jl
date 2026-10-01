@@ -1,5 +1,45 @@
 # Changelog
 
+## v0.7.6 — a trace component is kept, and brought back
+
+A component whose budget is orders of magnitude below the others could be lost,
+and once lost could not be recovered. On blended cement pastes carrying a trace
+of carbon nine orders of magnitude below their major elements, both happened in
+0.7.5: the interior point let the trace go inside a tolerance the major
+elements set, and the dual Newton, started where its carriers sat far below
+their budget, stopped there. The answers were stationary to rounding with the
+carbon balance wrong by its whole budget, and ChemistryLab's certificate
+refused them, which on these pastes gave up an activity model for its fallback
+where 0.7.4 had certified. Both are fixed by the same principle: a balance row
+is judged on its own scale, as the convergence test of the interior point
+already did.
+
+### Fixed
+
+- **The interior point keeps the balance row by row.** A step judged on the
+  residual of the optimality conditions is taken only if every row of `A n − b`
+  is no worse than it was, up to `√eps` times that row's own scale,
+  `|bₖ| + Σⱼ |Aₖⱼ nⱼ|`. It was the sum of the rows against `√eps`, which a trace
+  fits inside whole. The major rows keep the latitude they had, and the steps
+  that keep every row are taken as before.
+- **The dual Newton brings a trace back to its budget.** Two things stopped it,
+  both hidden until 0.7.5 by the difference quotients, whose secant is steeper
+  than the tangent of an exponential:
+  - The rank of the pivoted factorization was decided against its largest
+    pivot, and the column of a trace's potential carries derivatives the size
+    of its carriers, so it was dropped and the step left that potential where
+    it was. The balance rows are now weighted by what they currently hold,
+    `Σⱼ |Aₖⱼ xⱼ|`, down to `eps²` of a nonzero budget; a row with no budget keeps
+    the floor of rounding, so a direction no species carries stays absent. On a
+    square system the weights do not change the step, only which directions
+    count; the decrease of the least-squares step is measured in the same
+    metric.
+  - From below its budget, the linearization of a sum of exponentials asks for
+    a step longer than the one needed by the ratio of the two, beyond what
+    backtracking can shorten. The potential of a species, `−Aᵀy`, now moves by
+    at most 30 per step, the rise the inner inversion allows a log-amount in one
+    sweep.
+
 ## v0.7.5 — exact derivatives everywhere, and derivatives through the solver
 
 Every derivative the solver takes is now exact, and the answer of a dual Newton

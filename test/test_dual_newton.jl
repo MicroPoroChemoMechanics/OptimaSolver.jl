@@ -1042,6 +1042,29 @@ end
     @test free.step <= 1.0e-14
 end
 
+@testset "a trace far below its budget is brought back to it" begin
+    # A solvent and one solute carrying a trace component, its potentials put
+    # where a guess holding the solute at `x₂` puts them. Its balance row has
+    # derivatives of the size of `x₂`, below the rank of a factorization whose
+    # largest pivot is of order a hundred, and from below the linearization asks
+    # for a step `b/x₂` times too long. Unweighted and unbounded, the Newton
+    # stayed at every start below 1e-12.
+    h(x, _) = [0.0, log(x[2] / x[1])]
+    prob = DualNewtonProblem(
+        Float64[1 0; 0 1], [0.0, 0.0], h;
+        phases = [SolutionPhase([1, 2], 1; always_present = true)], idx_bounded = Int[],
+    )
+    b = [55.5, 1.0e-9]
+    for x2 in (1.0e-16, 1.0e-23, 1.0e-30)
+        out = OptimaSolver._dual_newton_attempt(
+            prob, b, [0.0, -log(x2 / 55.5)], [[log(55.5), log(x2)]], [1], [55.5], Int[],
+            Float64[], zeros(2), Set{Int}(), Int[], 2, DualNewtonOptions(),
+        )
+        @test out.converged
+        @test abs(out.x[2] - 1.0e-9) <= DualNewtonOptions().tol
+    end
+end
+
 @testset "the trial composition comes back with the verdict" begin
     # `phase_tangent_measure` and `phase_split_measure` answer WHETHER, and a
     # caller that means to act on the answer needs WHICH: the composition the
