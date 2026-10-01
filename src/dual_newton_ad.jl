@@ -16,10 +16,14 @@
 # time: the primal solve is again a solve on duals, one level down, so second
 # derivatives are exact as well.
 
-_is_dual_data(x) = false
-_is_dual_data(x::ForwardDiff.Dual) = true
-_is_dual_data(x::AbstractArray) = eltype(x) <: ForwardDiff.Dual || any(_is_dual_data, x)
-_is_dual_data(x::Union{Tuple, NamedTuple}) = any(_is_dual_data, values(x))
+# Whether `x` carries a dual number anywhere: itself, an element, a field of a
+# tuple.
+function _is_dual_data(x)
+    x isa ForwardDiff.Dual && return true
+    x isa AbstractArray && return eltype(x) <: ForwardDiff.Dual || any(_is_dual_data, x)
+    x isa Union{Tuple, NamedTuple} && return any(_is_dual_data, values(x))
+    return false
+end
 
 # The values of `x`, one level of duals down.
 _values(x) = x
@@ -28,8 +32,7 @@ _values(x::AbstractArray{<:ForwardDiff.Dual}) = ForwardDiff.value.(x)
 # An array of an abstract number type may mix dual numbers with plain ones: each
 # element is taken down, and the result is of their common type.
 _values(x::AbstractArray) = (eltype(x) <: Number && isconcretetype(eltype(x))) ? x : map(_values, x)
-_values(x::Tuple) = map(_values, x)
-_values(x::NamedTuple) = map(_values, x)
+_values(x::Union{Tuple, NamedTuple}) = map(_values, x)
 
 # The dual type the answer is returned in: that of the data, of the budget, or of
 # what the callbacks return at the answer when they capture the duals themselves.
