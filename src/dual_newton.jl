@@ -369,7 +369,7 @@ struct DualNewtonProblem{T <: Real, H, G, C, HQ}
     always_active::Vector{Int}   # bounded variables pinned by a linear row
     conservation_rows::Vector{Int}   # rows the degeneracy criterion applies to
     q0::Vector{T}        # starting guess
-    qscale::Vector{T}    # difference-step scale, one per entry
+    qscale::Vector{T}    # scale of each parameter (not read since the Jacobian is exact)
 end
 
 function DualNewtonProblem(
@@ -421,12 +421,14 @@ function DualNewtonProblem(
                     "needs one residual equation."
             )
         )
+        # `qscale` set the difference step of the Jacobian's `q` columns until
+        # 0.7.4. The Jacobian is exact now and reads no scale; one given is
+        # still checked, so that no caller breaks, and none is needed.
+        isempty(qscale) && (qscale = ones(nq))
         length(qscale) == nq || throw(
             ArgumentError(
                 "`qscale` must have one entry per unknown parameter " *
-                    "($nq), got $(length(qscale)). It sets the difference " *
-                    "step, and a temperature in kelvin and a reaction extent " *
-                    "in moles do not share a scale."
+                    "($nq), got $(length(qscale))."
             )
         )
         all(>(0), qscale) || throw(ArgumentError("`qscale` entries must be positive."))
@@ -438,12 +440,15 @@ function DualNewtonProblem(
         )
     end
 
+    # The element type of the data is kept: a problem whose potentials carry
+    # dual numbers is differentiated through (`_dual_newton_solve_ad`).
+    T = promote_type(Float64, eltype(A), eltype(g), eltype(Aq), eltype(q0), eltype(qscale))
     return DualNewtonProblem(
-        Matrix{Float64}(A), Vector{Float64}(g), h,
+        Matrix{T}(A), Vector{T}(g), h,
         collect(SolutionPhase, phases), collect(Int, idx_bounded), params,
-        nq, gq, cq, hq, Matrix{Float64}(Aq),
+        nq, gq, cq, hq, Matrix{T}(Aq),
         collect(Int, always_active), collect(Int, conservation_rows),
-        Vector{Float64}(q0), Vector{Float64}(qscale),
+        Vector{T}(q0), Vector{T}(qscale),
     )
 end
 
@@ -466,8 +471,8 @@ An activity model can depend on the unknown parameters as well: the Debye-Hücke
 coefficients are functions of temperature, so an adiabatic solve that left `h` at
 the starting temperature would be minimizing the wrong Gibbs energy. Declaring it
 explicitly is what keeps that dependence visible instead of routing it through a
-mutated `params`, where the difference-quotient loop would evaluate it in an order
-nothing guarantees.
+mutated `params`, which the forward-mode Jacobian of the outer residual would not
+differentiate.
 """
 current_h(prob::DualNewtonProblem, x, q) =
     (prob.nq == 0 || prob.hq === nothing) ? prob.h(x, prob.params) :
@@ -614,7 +619,7 @@ meaningless.
 # written with the maximum factored out, which is the only form that survives the
 # range of `u − g` a cement produces.
 function _mole_fraction_exponents(prob, ph, u, hv, x_buf, N, dead, g = prob.g)
-    d = Vector{Float64}(undef, length(ph.members))
+    d = Vector{promote_type(eltype(u), eltype(hv), eltype(x_buf), eltype(g), typeof(N))}(undef, length(ph.members))
     for (j, i) in enumerate(ph.members)
         if i in dead
             d[j] = -Inf
@@ -628,6 +633,26 @@ function _mole_fraction_exponents(prob, ph, u, hv, x_buf, N, dead, g = prob.g)
     end
     return d
 end
+
+# The saturation of a present mixing phase at the multipliers `u`, at the
+# composition the inversion gave it: `uᵢ − ∇fᵢ` of its reference member, or the
+# log-sum-exp of its exponents for a mole-fraction phase. Zero where its
+# stationarity holds, negative where the phase is undersaturated.
+function _phase_saturation(prob, k, u, hv, x_buf, g, dead)
+    ph = prob.phases[k]
+    if ph.mole_fraction
+        N = sum(x_buf[i] for i in ph.members)
+        return _logsumexp(_mole_fraction_exponents(prob, ph, u, hv, x_buf, N, dead, g))
+    end
+    ir = ph.members[ph.j_ref]
+    return u[ir] - g[ir] - hv[ir]
+end
+
+# The value of a number with every level of duals removed: what a decision of an
+# iteration (convergence, a stall, a step length) is taken on, so that a pass on
+# dual numbers follows exactly the path of the pass on their values.
+_primal_value(x) = x
+_primal_value(x::ForwardDiff.Dual) = _primal_value(ForwardDiff.value(x))
 
 function _logsumexp(d)
     M = maximum(d)
@@ -664,12 +689,16 @@ function _newton_phase_composition(
     )
     nm = length(ph.members)
     live = [j for j in 1:nm if !(ph.members[j] in dead)]
-    f = zeros(nm)
+    # In the number type of the potentials and of the composition: the outer
+    # Jacobian is taken through this iteration when the inversion around it has
+    # not converged (`_swept_jacobian`).
+    T = promote_type(eltype(c), eltype(xt), typeof(total))
+    f = zeros(T, nm)
     K = length(live)
     K == 0 && return (f, -Inf, true)
     mem = ph.members[live]
     cl = [c[j] for j in live]
-    xw = Vector{Float64}(xt)
+    xw = Vector{T}(xt)
     for (j, i) in enumerate(ph.members)
         j in live || (xw[i] = 0.0)
     end
@@ -696,7 +725,7 @@ function _newton_phase_composition(
         L = _logsumexp(cl .- hz .+ zz)
         r = hz .- cl .+ L
         out = held(zz, r)
-        φ = sum(abs2(r[a]) for a in 1:K if !out[a]; init = 0.0)
+        φ = sum(abs2(r[a]) for a in 1:K if !out[a]; init = zero(eltype(r)))
         return (; hz, L, r, out, φ)
     end
     st = state(z)
@@ -709,7 +738,7 @@ function _newton_phase_composition(
         end
         H = ForwardDiff.jacobian(hfun, z)
         nf = length(free)
-        B = zeros(nf + 1, nf + 1)
+        B = zeros(eltype(H), nf + 1, nf + 1)
         B[1:nf, 1:nf] .= @view H[free, free]
         B[1:nf, nf + 1] .= 1.0
         for (p, a) in enumerate(free)
@@ -719,7 +748,8 @@ function _newton_phase_composition(
         sol = qr(B, ColumnNorm()) \ rhs
         all(isfinite, sol) || break
         δ = sol[1:nf]
-        α = min(1.0, 30.0 / max(maximum(abs, δ), eps()))
+        # The step length is a decision of the iteration, taken on the values.
+        α = min(1.0, 30.0 / max(maximum(a -> abs(_primal_value(a)), δ), eps()))
         accepted = false
         for _ in 1:30
             zt = copy(z)
@@ -786,7 +816,7 @@ function _invert_phases!(
                 f, _, _ = _newton_phase_composition(prob, ph, c, x_buf, f0, N, q, dead)
                 for j in eachindex(ph.members)
                     w = f[j] > 0 ? clamp(log(N) + log(f[j]), -700.0, 700.0) : -700.0
-                    worst = max(worst, abs(w - W[k][j]))
+                    worst = max(worst, abs(_primal_value(w - W[k][j])))
                     W[k][j] = w
                 end
             elseif ph.mole_fraction
@@ -799,12 +829,12 @@ function _invert_phases!(
                 # total is the outer unknown. Nothing here can overflow.
                 N = refs[a]
                 d = _mole_fraction_exponents(prob, ph, u, hv, x_buf, N, dead, g)
-                M = maximum(d)
+                M = maximum(_primal_value, d)
                 isfinite(M) || continue          # every member of the phase is dead
                 lZ = M + log(sum(exp(dj - M) for dj in d))
                 for (j, _) in enumerate(ph.members)
                     w = clamp(log(N) + d[j] - lZ, -700.0, 700.0)
-                    worst = max(worst, abs(w - W[k][j]))
+                    worst = max(worst, abs(_primal_value(w - W[k][j])))
                     W[k][j] = w
                 end
             else
@@ -839,7 +869,7 @@ function _invert_phases!(
                     # -- a species sits at the floor only while the others hold
                     # it there, and excluding it lets the loop stop one sweep
                     # before it comes off.
-                    worst = max(worst, abs(w - W[k][j]))
+                    worst = max(worst, abs(_primal_value(w - W[k][j])))
                     W[k][j] = w
                 end
             end
@@ -900,8 +930,8 @@ function _outer_residual(
 
     refs = [exp(v[a]) for a in 1:nph]
     y = v[(nph + 1):(nph + m)]
-    xB = na == 0 ? Float64[] : v[(nph + m + 1):(nph + m + na)]
-    q = nq == 0 ? Float64[] : v[(nph + m + na + 1):(nph + m + na + nq)]
+    xB = v[(nph + m + 1):(nph + m + na)]
+    q = v[(nph + m + na + 1):(nph + m + na + nq)]
     g = current_g(prob, q)
 
     _invert_phases!(
@@ -919,7 +949,7 @@ function _outer_residual(
     # log-sum-exp — which is the same quantity the tangent-plane test uses to
     # decide whether the phase may form at all, so admission and stationarity are
     # measured by one expression rather than two that could disagree.
-    R_ref = Float64[]
+    R_ref = promote_type(eltype(v), eltype(x_buf), eltype(hv), eltype(g))[]
     for (a, k) in enumerate(act_ph)
         ph = prob.phases[k]
         if ph.mole_fraction
@@ -942,7 +972,7 @@ function _outer_residual(
     # not `gᵢ = uᵢ`. The two coincide only when `hᵢ = 0`, the case of a pure phase;
     # writing the general form costs nothing there and is the only correct one
     # otherwise.
-    Rs = na == 0 ? Float64[] : g[active] .+ hv[active] .- u[active]
+    Rs = g[active] .+ hv[active] .- u[active]
 
     # For a vanished component the balance row carries no information — every
     # variable containing it is pinned at the floor, so the row reads 0 = 0 and
@@ -952,7 +982,7 @@ function _outer_residual(
         Rb[k] = y[k] - DEGENERATE_POTENTIAL
     end
 
-    Rq = nq == 0 ? Float64[] : prob.cq(x_buf, q, prob.params)
+    Rq = nq == 0 ? eltype(R_ref)[] : prob.cq(x_buf, q, prob.params)
     length(Rq) == nq || throw(
         DimensionMismatch(
             "`cq` returned $(length(Rq)) residuals for $nq unknown " *
@@ -1371,6 +1401,20 @@ function dual_newton_solve(
         prob::DualNewtonProblem, b::AbstractVector, x0::AbstractVector;
         opts::DualNewtonOptions = DualNewtonOptions(),
     )
+    # A budget or data carrying dual numbers: solved on their values, with the
+    # derivatives of the answer from the implicit-function theorem
+    # (`_dual_newton_solve_ad`).
+    (_is_dual_data(b) || _is_dual_data(prob.A) || _is_dual_data(prob.g) || _is_dual_data(prob.params)) &&
+        return _dual_newton_solve_ad(prob, b, x0; opts)
+    # Duals captured by the callbacks themselves cannot be stripped from here:
+    # say so, rather than fail on the first buffer of the solve.
+    eltype(current_h(prob, x0, prob.q0)) <: ForwardDiff.Dual && throw(
+        ArgumentError(
+            "`h` returns dual numbers it captures: pass the data being " *
+                "differentiated through `params`, or solve on the values and lift the " *
+                "answer with `dual_newton_tangent(...; primal)`.",
+        ),
+    )
     bv = Vector{Float64}(b)
     n0 = Vector{Float64}(x0)
     m = size(prob.A, 1)
@@ -1552,6 +1596,181 @@ function dual_newton_solve(
     return best
 end
 
+# ── the exact Jacobian of the outer residual ─────────────────────────────────
+#
+# The outer residual is `R(v) = F(v, W(v))`, the compositions `W` being what the
+# inner inversion recovers from `v`: `G(v, W) = 0`. Where the inversion has
+# converged, the implicit-function theorem gives its Jacobian exactly,
+#
+#     dR/dv = F_v − F_W G_W⁻¹ G_v,
+#
+# with every partial derivative from one forward-mode pass over `z = (v, w)`, `w`
+# the log-amounts the inversion determines. Until 0.7.4 it was formed by finite
+# differences, one inner inversion per column, on states whose inner iteration had
+# not always converged.
+
+# The unknowns of the inversion at a converged state: `(a, k, j, i, mf)` for each
+# member it determines, `a` the phase's place in `act_ph`, `mf` whether the phase
+# is a mole-fraction one. A member at a bound it cannot leave is not one of them.
+function _inner_unknowns(prob, W, v, act_ph, dead)
+    m = size(prob.A, 1)
+    nph = length(act_ph)
+    y = v[(nph + 1):(nph + m)]
+    out = Tuple{Int, Int, Int, Int, Bool}[]
+    for (a, k) in enumerate(act_ph)
+        ph = prob.phases[k]
+        for (j, i) in enumerate(ph.members)
+            i in dead && continue
+            if ph.mole_fraction
+                W[k][j] <= W_FLOOR + 1.0e-9 && continue
+                push!(out, (a, k, j, i, true))
+            else
+                j == ph.j_ref && continue
+                (W[k][j] <= W_FLOOR + 1.0e-9 || W[k][j] >= W_CEIL - 1.0e-9) && continue
+                push!(out, (a, k, j, i, false))
+            end
+        end
+    end
+    return out
+end
+
+# `[G; F]` at `z = (v, w)`, in the element type of `z`.
+function _implicit_system(prob, z, unk, W, act_ph, active, bv; dead, degenerate)
+    Tz = eltype(z)
+    m = size(prob.A, 1)
+    nph = length(act_ph)
+    na = length(active)
+    nq = prob.nq
+    Nv = nph + m + na + nq
+    y = z[(nph + 1):(nph + m)]
+    xB = z[(nph + m + 1):(nph + m + na)]
+    q = z[(nph + m + na + 1):Nv]
+
+    x = zeros(Tz, length(prob.g))
+    for k in act_ph, (j, i) in enumerate(prob.phases[k].members)
+        x[i] = exp(W[k][j])
+    end
+    for (a, k) in enumerate(act_ph)
+        ph = prob.phases[k]
+        ph.mole_fraction || (x[ph.members[ph.j_ref]] = exp(z[a]))
+    end
+    for (p, (_, _, _, i, _)) in enumerate(unk)
+        x[i] = exp(z[Nv + p])
+    end
+    for (j, i) in enumerate(active)
+        x[i] = xB[j]
+    end
+
+    g = nq == 0 ? prob.g : current_g(prob, q)
+    hv = current_h(prob, x, q)
+    u = -(transpose(prob.A) * y)
+    cqv = nq == 0 ? Float64[] : prob.cq(x, q, prob.params)
+    # The element type of the system: that of the unknowns, or of the data when
+    # it carries the duals of a caller differentiating the answer, the
+    # constraint's equations included (a prescribed target they capture).
+    T = promote_type(Tz, eltype(g), eltype(hv), eltype(u), eltype(prob.A), eltype(bv), eltype(cqv))
+
+    # The exponents `u − g − lnγ` of each mole-fraction phase and their
+    # log-sum-exp, over its live members.
+    lZ = Dict{Int, T}()
+    dexp = Dict{Tuple{Int, Int}, T}()
+    for (a, k) in enumerate(act_ph)
+        ph = prob.phases[k]
+        ph.mole_fraction || continue
+        N = exp(z[a])
+        ds = T[]
+        for (j, i) in enumerate(ph.members)
+            i in dead && continue
+            lnγ = x[i] > 0 ? hv[i] - log(x[i] / N) : zero(T)
+            d = u[i] - g[i] - lnγ
+            dexp[(k, j)] = d
+            push!(ds, d)
+        end
+        M = maximum(ForwardDiff.value, ds)
+        lZ[k] = M + log(sum(exp(d - M) for d in ds))
+    end
+
+    G = T[
+        mf ? z[Nv + p] - (z[a] + dexp[(k, j)] - lZ[k]) : (u[i] - g[i]) - hv[i]
+            for (p, (a, k, j, i, mf)) in enumerate(unk)
+    ]
+    R_ref = T[
+        let ph = prob.phases[k]
+            ph.mole_fraction ? lZ[k] :
+                (ir = ph.members[ph.j_ref]; g[ir] + hv[ir] - u[ir])
+        end for k in act_ph
+    ]
+    Rb = nq == 0 ? prob.A * x .- bv : prob.A * x .+ prob.Aq * q .- bv
+    Rb = T.(Rb)
+    for k in degenerate
+        Rb[k] = y[k] - DEGENERATE_POTENTIAL
+    end
+    Rs = T[g[i] + hv[i] - u[i] for i in active]
+    Rq = T.(cqv)
+    return vcat(G, R_ref, Rb, Rs, Rq)
+end
+
+# The inner unknowns the inversion determines, given `G_W`: a member whose own
+# amount does not enter its equation (a model that floors a vanishing activity,
+# below its floor) is not one of them. It is held, its equation dropped and its
+# amount a constant.
+_determined(Gw) = [p for p in axes(Gw, 1) if abs(Gw[p, p]) > 1.0e-10]
+
+"""
+    _outer_jacobian(prob, v, W, act_ph, active, bv; dead, degenerate) -> Matrix
+
+The Jacobian of the outer residual at `v`, the inversion having converged at `W`,
+by the implicit-function theorem and forward-mode differentiation. The callbacks
+of the problem (`h`, and `gq`, `hq`, `cq` when it has parameters) must accept
+dual numbers.
+"""
+function _outer_jacobian(prob, v, W, act_ph, active, bv; dead, degenerate)
+    unk = _inner_unknowns(prob, W, v, act_ph, dead)
+    z0 = vcat(v, Float64[W[k][j] for (_, k, j, _, _) in unk])
+    Jz = ForwardDiff.jacobian(z -> _implicit_system(prob, z, unk, W, act_ph, active, bv; dead, degenerate), z0)
+    Nv = length(v)
+    nG = length(unk)
+    Gv = Jz[1:nG, 1:Nv]
+    Gw = Jz[1:nG, (Nv + 1):end]
+    Fv = Jz[(nG + 1):end, 1:Nv]
+    Fw = Jz[(nG + 1):end, (Nv + 1):end]
+    nG == 0 && return Fv
+    keep = _determined(Gw)
+    Gv, Gw, Fw = Gv[keep, :], Gw[keep, keep], Fw[:, keep]
+    isempty(keep) && return Fv
+    F = lu(Gw; check = false)
+    # A singular `G_W` (a composition the inversion does not determine) gets the
+    # least-squares derivative.
+    return Fv .- Fw * (issuccess(F) ? F \ Gv : qr(Gw, ColumnNorm()) \ Gv)
+end
+
+"""
+    _swept_jacobian(prob, v, W_ref, act_ph, active, bv; dead, degenerate,
+                    inner_maxit, max_fall) -> Matrix
+
+The Jacobian of the outer residual as it is evaluated where the inversion has
+not converged: the sweeps it runs from `W_ref`, the warm start every candidate
+of the line search is also evaluated from, differentiated by forward mode. The
+implicit-function Jacobian (`_outer_jacobian`) is that of the converged
+inversion, and differs from the derivative of the residual the Newton actually
+sees by as much as the inversion is short of convergence: measured on the
+coupled hydration of a CEM I over three hours, where the inversion ends
+unconverged at most iterations, it took 5007 Newton iterations where this takes
+the number the difference quotients of 0.7.4 did, on the same trajectory.
+"""
+function _swept_jacobian(prob, v, W_ref, act_ph, active, bv; dead, degenerate, inner_maxit, max_fall)
+    f = function (vv)
+        T = eltype(vv)
+        Wd = [Vector{T}(w) for w in W_ref]
+        xd = zeros(T, length(prob.g))
+        return _outer_residual(
+            prob, vv, Wd, act_ph, active, bv, xd;
+            dead, degenerate, inner_maxit, max_fall,
+        )
+    end
+    return ForwardDiff.jacobian(f, v)
+end
+
 """
     _dual_newton_attempt(...) -> (; x, y, q, active_phases, active, converged)
 
@@ -1626,53 +1845,18 @@ function _dual_newton_attempt(
             end
 
             N = length(v)
-            J = zeros(N, N)
             W_ref = [copy(w) for w in W]
-            for kk in 1:N
-                # The difference step is scaled to the RESIDUAL's sensitivity, not
-                # to the size of the unknown, and for the multipliers those are not
-                # the same thing at all.
-                #
-                # The residual depends on `y` only through `u = −Aᵀy`, and
-                # exponentially so. A relative step `1e-5·|y_k|` looks harmless
-                # until one notices what `|y_k|` is: the `gᵢ` are Gibbs energies of
-                # formation FROM THE ELEMENTS, of order 10²–10³ in RT units, and
-                # `y` carries that offset — an offset that says nothing about the
-                # problem. The step came out near `5e-3`, which moves `u` by
-                # `|A|·5e-3 ≈ 0.15` and every `exp(uᵢ − gᵢ)` by some sixteen
-                # percent. That is a secant across a wide interval, not a
-                # derivative: on an LC³ equilibrium the resulting direction reduced
-                # the residual at no step length, all forty backtracks were
-                # refused, and the residual sat at 30.94 while moving by 1e-11 per
-                # iteration.
-                #
-                # The scale over which the residual varies with `y_k` is
-                # `1/maxᵢ|A[k,i]|`, so that is what sets the step; `√eps` in `u`
-                # is the usual forward-difference compromise between truncation and
-                # roundoff. `ln x_ref` and the bounded amounts are O(1) in their own
-                # right and keep the relative rule.
-                hk = if kk > nph && kk <= nph + m
-                    krow = kk - nph
-                    1.0e-8 / max(1.0, maximum(abs, @view prob.A[krow, :]))
-                elseif nq > 0 && kk > nph + m + na
-                    # A temperature in kelvin and a reaction extent in moles do
-                    # not share a scale, and the caller is the only one who knows
-                    # theirs — hence `qscale`. The relative rule below would give
-                    # 3e-3 K on a 298 K unknown, which moves every `exp(uᵢ − gᵢ)`
-                    # by a visible amount and secants across it.
-                    1.0e-6 * prob.qscale[kk - (nph + m + na)]
-                else
-                    1.0e-5 * max(abs(v[kk]), 1.0)
-                end
-                vp = copy(v)
-                vp[kk] += hk
-                W_t = [copy(w) for w in W_ref]
-                Rp = _outer_residual(
-                    prob, vp, W_t, act_ph, active, bv, x_buf;
-                    dead, degenerate, max_fall = opts.inner_fall_bound,
+            # Exact, by the implicit-function theorem over the inversion where it
+            # has converged (`_outer_jacobian`), and by forward mode through its
+            # sweeps where it has not (`_swept_jacobian`): in both cases the
+            # derivative of the residual the line search then evaluates. Until
+            # 0.7.4 it was one inner inversion per finite-difference column.
+            J = inner_resid[] <= opts.inner_tol ?
+                _outer_jacobian(prob, v, W, act_ph, active, bv; dead, degenerate) :
+                _swept_jacobian(
+                    prob, v, W_ref, act_ph, active, bv; dead, degenerate,
+                    inner_maxit = opts.inner_maxit, max_fall = opts.inner_fall_bound,
                 )
-                J[:, kk] .= (Rp .- R) ./ hk
-            end
             all(isfinite, J) || break
 
             δ = qr(J, ColumnNorm()) \ (-R)
@@ -1729,6 +1913,22 @@ function _dual_newton_attempt(
             # coupled hydration of a CEM I over three hours, that was 392 044
             # inner solves spent in the first pass for 189 steps accepted there.
             current_converged = !opts.lenient_line_search || inner_resid[] <= opts.inner_tol
+            # The decrease asked for is that of the worst row or, where that one
+            # cannot decrease, Armijo's on `‖R‖²` with the worst row not growing.
+            # The step is the least-squares one, a descent direction of `‖R‖²`
+            # and not always of `max|Rᵢ|`: on an active set holding more
+            # stationarity conditions than there are multipliers, the rows it
+            # cannot satisfy stay where they are, and a test on the worst row
+            # alone refuses the step that restores the element balance. Until
+            # 0.7.4 the noise of a difference quotient let such a step through.
+            #
+            # The slope of `‖R‖²` along the least-squares step is `−2‖Jδ‖²`,
+            # the part of the residual the linearization can remove, so that is
+            # what the decrease is measured against. Below the tolerance it
+            # predicts no change worth a step: the iterate is then the
+            # least-squares point of this active set.
+            φ = sum(abs2, R)
+            pred = sum(abs2, J * δ)
             for strict in (true, false)
                 α = α0
                 for _ in 1:40
@@ -1739,7 +1939,12 @@ function _dual_newton_attempt(
                         dead, degenerate, resid = cand_resid,
                         inner_maxit = opts.inner_maxit, max_fall = opts.inner_fall_bound,
                     )
-                    ok = maximum(abs, R_t) < res &&
+                    mx = maximum(abs, R_t)
+                    decrease = mx < res || (
+                        pred > opts.tol^2 && mx <= res * (1 + 1.0e-12) &&
+                            sum(abs2, R_t) <= φ - 2.0e-4 * α * pred
+                    )
+                    ok = decrease &&
                         (!strict || !current_converged || cand_resid[] <= opts.inner_tol)
                     if ok
                         v = v_t
@@ -1920,6 +2125,29 @@ function _dual_newton_attempt(
             a for (a, k) in enumerate(act_ph)
                 if !prob.phases[k].always_present && refs[a] < opts.si_tol
         ]
+        # Where the Newton stalled with nothing leaving, the most undersaturated
+        # phase is the incumbent to release, as the bounded variable carrying the
+        # residual is above: on an active set breaking the phase rule, the
+        # stationarity of its reference cannot be met at any amount, so no step
+        # reduces it. Waiting for its amount to fall below `si_tol` relied on the
+        # noise of a difference quotient, which drove it down by accident.
+        #
+        # A present phase is judged at the composition the inversion gave it,
+        # which is the one its own stationarity selects at these multipliers, and
+        # not by the tangent-plane search that admits an absent phase: that search
+        # starts from the corners and can return a local maximum below zero for a
+        # phase inside a miscibility gap, which would then be released although
+        # the answer needs it.
+        if !inner_ok && isempty(drop) && isempty(drop_ph) && last_added == 0
+            gq_now = current_g(prob, q)
+            hv_now = current_h(prob, x_buf, q)
+            under = [
+                (a, _phase_saturation(prob, k, u, hv_now, x_buf, gq_now, dead))
+                    for (a, k) in enumerate(act_ph) if !prob.phases[k].always_present
+            ]
+            filter!(t -> t[2] < -max(opts.si_tol, opts.tol), under)
+            isempty(under) || push!(drop_ph, first(under[argmin([t[2] for t in under])]))
+        end
         cand_ph = [
             k for k in eachindex(prob.phases)
                 if !(k in act_ph) && !all(i in dead for i in prob.phases[k].members) &&
@@ -2093,10 +2321,14 @@ function kkt_certificate(
         floor::Float64 = 1.0e-25, tol::Float64 = 1.0e-10, si_tol::Float64 = 1.0e-8,
         q = prob.q0,
     )
-    xv = Vector{Float64}(x)
-    bv = Vector{Float64}(b)
+    # A certificate is a verdict on values: a problem, an answer or a budget
+    # carrying dual numbers is judged on its primal values, every level down.
+    prob = _full_primal_problem(prob)
+    xv = Float64[_primal_value(v) for v in x]
+    bv = Float64[_primal_value(v) for v in b]
+    q = Float64[_primal_value(v) for v in q]
     gq = current_g(prob, q)
-    ∇f = gq .+ current_h(prob, xv, q)
+    ∇f = _primal_value.(gq .+ current_h(prob, xv, q))
 
     degenerate = _degenerate_conservation_rows(prob, bv)
     dead = isempty(degenerate) ? Set{Int}() :
@@ -2193,7 +2425,7 @@ function kkt_certificate(
     # `Δξ − Δt·M·r(n) = 0`. Measured, a march that should have stopped at
     # saturation dissolved everything and was proved optimal.
     param_residual = prob.nq == 0 ? 0.0 :
-        maximum(abs, prob.cq(xv, collect(q), prob.params))
+        _primal_value(maximum(abs, prob.cq(xv, collect(q), prob.params)))
 
     u = -(transpose(prob.A) * y)
     worst = isempty(at_bound) ? -Inf : maximum(u[i] - ∇f[i] for i in at_bound)
@@ -2252,7 +2484,7 @@ function kkt_certificate(
         push!(absent_phases, k)
         worst_phase = max(
             worst_phase,
-            phase_tangent_measure(prob, k, u, xv; g = gq, q = q, dead = dead),
+            _primal_value(phase_tangent_measure(prob, k, u, xv; g = gq, q = q, dead = dead)),
         )
     end
     # A mixing phase that is PRESENT is tested by the stationarity of its members
@@ -2284,6 +2516,7 @@ function kkt_certificate(
         ph.always_present && continue
         any(xv[i] > floor && !(i in dead) for i in ph.members) || continue
         m, trial = phase_split_trial(prob, k, u, xv; g = gq, q = q, dead = dead)
+        m, trial = _primal_value(m), _primal_value.(trial)
         if m > worst_split
             worst_split = m
         end

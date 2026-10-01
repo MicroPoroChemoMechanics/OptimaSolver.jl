@@ -552,6 +552,43 @@ Jacobian is singular in that direction. The row is then replaced by
 the pinning of those variables consistent with their stationarity rather than
 merely imposed on it.
 
+### The outer Jacobian, and the derivatives of the answer
+
+The outer residual is ``R(v) = F(v, W(v))``, the compositions ``W`` being what
+the inversion recovers from ``G(v, W) = 0``. Where the inversion has converged,
+the implicit-function theorem gives its Jacobian exactly,
+
+```math
+\frac{\mathrm{d}R}{\mathrm{d}v} = F_v - F_W\, G_W^{-1} G_v ,
+```
+
+every partial derivative coming from one forward-mode pass over ``z = (v, w)``.
+A member whose own amount does not enter its equation (an activity the model
+floors, below the floor) has ``\partial G/\partial w = 0`` there: it is held,
+its equation dropped. Where the inversion has not converged, the Jacobian is
+that of the residual as evaluated, by forward mode through the sweeps it runs. Until 0.7.4 this Jacobian was formed by
+differences, one inner inversion per column. Their noise had been doing work of
+its own, which the rules above now do on purpose: driving out a phase that breaks
+the phase rule, and letting through the step that restores the balance while the
+rows that cannot be satisfied stay where they are. A step is therefore accepted
+when it decreases the worst residual or, failing that, when it decreases
+``\|R\|^2`` by Armijo's condition against the slope ``-2\|J\delta\|^2`` of the
+least-squares step, the worst residual not growing.
+
+The same equations differentiate the answer. With ``\Phi(z; \theta) = 0`` the
+system of the active set and ``\theta`` the data (`b`, `A`, `g`, `params`),
+
+```math
+\Phi_z\, \dot z = -\Phi_\theta\, \dot\theta .
+```
+
+[`dual_newton_solve`](@ref) called with dual numbers solves on their values and
+returns `x`, `y` and `q` in duals of the caller's tag, with the active set frozen
+at the answer: the derivative of the solution, not of the iteration that found
+it. [`dual_newton_tangent`](@ref) does the same at an answer obtained by any
+route. Each level of a nested differentiation is taken in turn, so second
+derivatives are exact as well.
+
 ### Termination
 
 The outer loop admits **one** variable per round, the most violated, and records

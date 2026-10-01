@@ -451,6 +451,28 @@ end
 
 end
 
+@testset "a mole-fraction phase breaking the phase rule is released" begin
+    # Two ideal mole-fraction phases of one component: the phase rule leaves room
+    # for one. The second, whose members sit far above the potential the first
+    # sets, is undersaturated at its own composition and has to leave; with an
+    # exact Jacobian nothing drives its amount down, so the stall rule does it.
+    hmf2(x, _) = (
+        NA = x[1] + x[2]; NB = x[3] + x[4];
+        [log(x[1] / NA), log(x[2] / NA), log(x[3] / NB), log(x[4] / NB)]
+    )
+    prob = DualNewtonProblem(
+        Float64[1 1 1 1], [0.0, 1.0, 8.0, 9.0], hmf2;
+        phases = [
+            SolutionPhase([1, 2], 1; always_present = true, mole_fraction = true),
+            SolutionPhase([3, 4], 1; mole_fraction = true),
+        ],
+    )
+    r = dual_newton_solve(prob, [1.0], [0.5, 0.4, 0.05, 0.05])
+    @test kkt_certificate(prob, r.x, [1.0]).optimal
+    @test r.x[3] + r.x[4] < 1.0e-6
+    @test r.x[1] / r.x[2] ≈ exp(1.0) rtol = 1.0e-6
+end
+
 @testset "the q block solves for a prescribed property" begin
 
     # Two ideal species in one phase, `x₁ + x₂ = 1`, whose standard potentials
@@ -493,13 +515,35 @@ end
     c_guess = kkt_certificate(prob, res.x, b; q = prob.q0)
     @test c_guess.stationarity > 1.0e-3
 
-    # A `qscale` of the wrong length is refused, because it sets the difference
-    # step and a silent default would secant across the wrong interval.
+    # Differentiated with respect to the target its equation captures, at the
+    # answer, the problem on the values given: x₁ = t, q = log(t/(1 − t)).
+    at_target(t) = DualNewtonProblem(
+        A, [0.0, 0.0], h;
+        phases = [SolutionPhase([1, 2], 2; always_present = true)],
+        idx_bounded = Int[], gq = (q, _) -> [0.0, q[1]], cq = (x, q, _) -> [x[1] - t], q0 = [0.1],
+    )
+    dt = ForwardDiff.derivative(target) do t
+        r = dual_newton_tangent(at_target(t), b, res.x; q = res.q, primal = prob)
+        vcat(r.x, r.q)
+    end
+    @test dt ≈ [1.0, -1.0, 1 / (target * (1 - target))] rtol = 1.0e-8
+
+    # `qscale` set the difference step of the Jacobian until 0.7.4. The Jacobian
+    # is exact now: the scale may be left out, and the answer does not depend on
+    # it. One given with the wrong length is still refused.
+    p_noscale = DualNewtonProblem(
+        A, [0.0, 0.0], h;
+        phases = [SolutionPhase([1, 2], 2; always_present = true)],
+        gq = (q, _) -> [0.0, q[1]], cq = (x, q, _) -> [x[1] - target],
+        q0 = [0.1],
+    )
+    @test p_noscale.qscale == [1.0]
+    @test dual_newton_solve(p_noscale, b, [0.5, 0.5]).q ≈ res.q rtol = 1.0e-12
     @test_throws ArgumentError DualNewtonProblem(
         A, [0.0, 0.0], h;
         phases = [SolutionPhase([1, 2], 2; always_present = true)],
         gq = (q, _) -> [0.0, q[1]], cq = (x, q, _) -> [x[1] - target],
-        q0 = [0.1], qscale = Float64[],
+        q0 = [0.1], qscale = [1.0, 2.0],
     )
     # And `q0` without the two callbacks is refused too.
     @test_throws ArgumentError DualNewtonProblem(

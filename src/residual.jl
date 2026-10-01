@@ -236,8 +236,8 @@ For an ideal solution where μᵢ(n) = μᵢ⁰(T,P)/RT + ln(aᵢ(n)):
 - Aqueous solutes (molality): ∂²G/∂nᵢ² ≈ 1/nᵢ
 - Pure solids/gases: ∂²G/∂nᵢ² = 0 (or small positive for regularization)
 
-For the general case we use finite-difference or AD. Here we provide the
-ideal approximation H_diag[i] = 1/nᵢ as a sensible default that is always
+For the general case the solver differentiates the gradient (forward mode). Here the
+ideal approximation H_diag[i] = 1/nᵢ is the default that is always
 positive definite.
 
 **When using AD via ForwardDiff**: do not call this function; instead pass

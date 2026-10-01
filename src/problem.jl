@@ -139,7 +139,8 @@ Solver hyperparameters.
 - `ls_beta`:       backtracking contraction factor (default 0.5)
 - `ls_max_iter`:   maximum backtracking steps (default 40)
 - `verbose`:          print iteration log (default false)
-- `use_fd_hessian`:   compute Hessian diagonal via finite differences of ∇f
+- `use_fd_hessian`:   compute the Hessian diagonal exactly, by forward-mode
+                      differentiation of ∇f (a difference quotient until 0.7.4),
                       instead of the ideal-solution approximation 1/nᵢ
                       (default false). Enable for problems with pure solid or
                       gas species where the true ∂²f/∂nᵢ² = 0, otherwise the
@@ -156,7 +157,7 @@ Solver hyperparameters.
     | | pure water | mixed solid/aqueous |
     |:--|--:|--:|
     | `false` (analytic 1/nᵢ) | `[H⁺]/[OH⁻] = 1.000003` ✓ | worst ×6181 ✗ |
-    | `true` (finite difference) | `[H⁺]/[OH⁻] = 3.78` ✗ | worst ×19.8 |
+    | `true` (the diagonal of ∇²f; measured with 0.7.4's difference quotient) | `[H⁺]/[OH⁻] = 3.78` ✗ | worst ×19.8 |
 
     A Hessian affects the *rate* of Newton's method, not its limit, so a solver
     that merely converged slowly would still reach the right answer. It does

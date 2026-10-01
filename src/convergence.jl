@@ -112,4 +112,4 @@ function log_final(state::OptimaState, opts::OptimaOptions)
 end
 
 # ── Formatting helper ─────────────────────────────────────────────────────────
-_fmt_sci(x) = string(round(Float64(real(x)); sigdigits = 3))
+_fmt_sci(x) = string(round(Float64(_primal_value(real(x))); sigdigits = 3))

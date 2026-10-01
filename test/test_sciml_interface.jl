@@ -40,7 +40,7 @@
 
     @testset "constraints carried by `p` (Optima-native path)" begin
         # `_extract_constraints` path 1: `p` is a NamedTuple holding A and b, so
-        # no finite differencing happens at all.
+        # nothing is differentiated at all.
         f = SciMLBase.OptimizationFunction(G; grad = ∇G!)
         prob = SciMLBase.OptimizationProblem(
             f, copy(lb), (μ⁰ = μ⁰, A = A, b = b); lb = lb, ub = fill(Inf, 3)
@@ -55,12 +55,67 @@
         # The internal result travels along, so a caller can read the duals.
         @test sol.original isa OptimaResult
         @test sol.original.converged
+        # Near the solution the barrier objective no longer resolves the decrease
+        # Armijo asks for, and the step is judged on the KKT residual instead:
+        # full steps to the end, 32 iterations measured. Left to rounding, the
+        # search halved them at random, took 44 here and ran to `MaxIters` on a
+        # machine whose arithmetic differed in the last digits.
+        @test sol.original.iterations <= 34
         @test length(sol.original.y) == 1
     end
 
-    @testset "constraints given as a residual function (finite-difference path)" begin
-        # `_extract_constraints` path 3: A and b are recovered by differencing
-        # `cons` at `u0`. The answer must be the same as when A and b are handed
+    @testset "convergence does not depend on the last digits" begin
+        # The same solve with its data moved by a few ulp, which is what another
+        # machine's arithmetic does to it. Left to rounding near the solution,
+        # the line search failed on 34 of 200 such variants and took 32 to 102
+        # iterations on the others (26 failures with 0.7.4); judged on the KKT
+        # residual where the objective cannot resolve the step, all 200 converge
+        # in 32.
+        f = SciMLBase.OptimizationFunction(G; grad = ∇G!)
+        its = map(1:50) do k
+            moved = μ⁰ .+ (((7k) % 17 - 8) .* [1, -1, 1]) .* eps(2.0)
+            bk = [1.0 + ((5k) % 17 - 8) * eps(1.0)]
+            sol = SciMLBase.solve(
+                SciMLBase.OptimizationProblem(f, copy(lb), (μ⁰ = moved, A = A, b = bk); lb = lb, ub = fill(Inf, 3)),
+                OptimaOptimizer(; tol = 1.0e-12),
+            )
+            sol.original.converged ? sol.original.iterations : typemax(Int)
+        end
+        @test maximum(its) <= 34
+    end
+
+    @testset "a forward-mode gradient differentiated again for the Hessian" begin
+        # No `grad`: the gradient is built by forward mode, and `OptimaOptimizer()`
+        # (`use_fd_hessian = true`) differentiates that gradient to get the exact
+        # Hessian diagonal, so two differentiations are nested. Each carries its
+        # own tag; with the gradient's config built on a `nothing` tag, as until
+        # 0.7.4, nothing kept them apart.
+        f = SciMLBase.OptimizationFunction(G)
+        prob = SciMLBase.OptimizationProblem(
+            f, copy(lb), (μ⁰ = μ⁰, A = A, b = b); lb = lb, ub = fill(Inf, 3)
+        )
+        sol = SciMLBase.solve(prob, OptimaOptimizer(; tol = 1.0e-12))
+        @test sol.u ≈ n_analytic atol = 1.0e-7
+    end
+
+    @testset "parameters carrying dual numbers" begin
+        # Solved on them: the answer carries the derivatives of the iterations
+        # that reached it, those of the softmax at convergence,
+        # ∂nᵢ/∂μ⁰₁ = −nᵢ(δᵢ₁ − n₁).
+        f = SciMLBase.OptimizationFunction(G; grad = ∇G!)
+        solve_at(m1) = SciMLBase.solve(
+            SciMLBase.OptimizationProblem(
+                f, copy(lb), (μ⁰ = [m1, μ⁰[2], μ⁰[3]], A = A, b = b); lb = lb, ub = fill(Inf, 3)
+            ),
+            OptimaOptimizer(; tol = 1.0e-12, warm_start = false),
+        ).u
+        dn = ForwardDiff.derivative(solve_at, μ⁰[1])
+        @test dn ≈ -n_analytic .* ([1.0, 0.0, 0.0] .- n_analytic[1]) rtol = 1.0e-6
+    end
+
+    @testset "constraints given as a residual function (forward-mode path)" begin
+        # `_extract_constraints` path 3: A and b are recovered by differentiating
+        # `cons` at `u0`, in forward mode. The answer must be the same as when A and b are handed
         # over directly — that equality is the whole point of the extraction.
         cons!(res, u, p) = (res[1] = sum(u) - 1.0; nothing)
         f = SciMLBase.OptimizationFunction(G; grad = ∇G!, cons = cons!)

@@ -49,6 +49,7 @@ end
     include("test_phase_newton.jl")
     include("test_sensitivity.jl")
     include("test_ad.jl")
+    include("test_dual_newton_ad.jl")
     include("test_sciml_interface.jl")
     include("test_solver_paths.jl")
     include("test_stability_linesearch.jl")

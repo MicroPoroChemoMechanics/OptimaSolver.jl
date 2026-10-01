@@ -96,7 +96,7 @@ Key options in [`OptimaOptions`](@ref):
 | `verbose` | `false` | print per-iteration log |
 | `barrier_init` | `1e-4` | initial barrier weight $\mu_0$ |
 | `barrier_decay` | `0.1` | $\mu \leftarrow 0.1\,\mu$ each outer step |
-| `use_fd_hessian` | `false` | finite-difference Hessian diagonal |
+| `use_fd_hessian` | `false` | exact Hessian diagonal, by forward mode |
 
 ### When to use `use_fd_hessian = true`
 
@@ -108,9 +108,10 @@ the Schur complement and the effective Newton step for such species is negligibl
 causing the solver to converge only linearly (hundreds of iterations) instead of
 quadratically.
 
-Setting `use_fd_hessian = true` computes $h_i$ by a forward finite difference on
-$\nabla f$ at marginal cost and yields correct quadratic convergence for all problem
-types. The [`OptimaOptimizer`](@ref) SciML interface defaults to
+Setting `use_fd_hessian = true` computes $h_i$ as the diagonal of the Jacobian of
+$\nabla f$, by forward-mode differentiation (the gradient must then accept dual
+numbers; the option keeps its name, from when this was a difference quotient), and
+yields correct quadratic convergence for all problem types. The [`OptimaOptimizer`](@ref) SciML interface defaults to
 `use_fd_hessian = true` for this reason.
 
 ## Running the documentation locally

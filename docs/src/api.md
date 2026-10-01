@@ -44,6 +44,7 @@ SolutionPhase
 DualNewtonProblem
 DualNewtonOptions
 dual_newton_solve
+dual_newton_tangent
 kkt_certificate
 degenerate_components
 stationarity_capacity

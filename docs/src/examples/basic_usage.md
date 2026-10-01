@@ -113,7 +113,7 @@ prob_mixed = OptimaProblem(A, b, G, ∇G!;
 ```
 
 For solids and gases with zero curvature ($\partial^2 G/\partial n_i^2 = 0$),
-enable finite-difference Hessian computation:
+enable the exact Hessian diagonal (forward-mode differentiation of the gradient):
 
 ```@example basic
 opts = OptimaOptions(tol=1e-10, use_fd_hessian=true)

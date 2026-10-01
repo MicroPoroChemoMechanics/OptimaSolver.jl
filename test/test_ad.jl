@@ -93,6 +93,19 @@
     sens_b = sensitivity(prob_b, res_b.n, res_b.y, h_b, 1.0e-14)
     @test d_ad ≈ sens_b.∂n_∂b[1, 1] rtol = 1.0e-6
 
+    # ── nested differentiations stay apart ───────────────────────────────────
+    # With `use_fd_hessian = true` the solver differentiates the gradient for the
+    # exact Hessian diagonal, and here the caller differentiates the solve: the
+    # gradient then sees duals of two tags, one inside the other. Were they
+    # confused the derivative would be wrong, not merely slow; it must be the
+    # analytic sensitivity.
+    opts_h = OptimaOptions(tol = 1.0e-10, use_fd_hessian = true)
+    d_nested = ForwardDiff.derivative(
+        x -> solve(OptimaProblem(A2, [x, 1.0], G, ∇G!; lb = fill(1.0e-16, 3), p = (μ⁰ = μ⁰,)), opts_h).n[1],
+        1.0,
+    )
+    @test d_nested ≈ sens_b.∂n_∂b[1, 1] rtol = 1.0e-6
+
     # ── a dual-valued PARAMETER drives the whole Newton loop ──────────────────
     # The test above seeds `b`, whose element type has always been part of the
     # problem's promotion. Seeding `p` is the case that was broken: `p` is typed

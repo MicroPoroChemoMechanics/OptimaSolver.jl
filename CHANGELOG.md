@@ -1,5 +1,94 @@
 # Changelog
 
+## v0.7.5 — exact derivatives everywhere, and derivatives through the solver
+
+Every derivative the solver takes is now exact, and the answer of a dual Newton
+solve can be differentiated with respect to its budget, its data or the
+parameters its callbacks capture, at every level of a nested differentiation:
+what an inversion needs whose forward model is a chemical equilibrium. Removing
+the difference quotients showed that their noise had been doing two jobs, which
+are now done on purpose (the release of a phase on a stall, the acceptance of a
+step restoring the balance). Measured on the three-hour hydration of a CEM I
+paste in ChemistryLab, the run takes 7.8 s instead of 10.3 s, on the same
+trajectory; the certified replay of a 28-day run takes 10.3 s instead of 6.8 s.
+
+### Changed
+
+- **No difference quotient anywhere.** Every derivative the solver takes is
+  exact and by forward mode, each under the tag of the function it
+  differentiates, so that a caller's own dual numbers are never confused with
+  the solver's.
+  - The Jacobian of the outer Newton of `dual_newton_solve` comes from the
+    implicit-function theorem over the inner inversion,
+    `dR/dv = F_v − F_W G_W⁻¹ G_v`, with the partial derivatives from one
+    forward-mode pass. Until 0.7.4 it was formed by differences, one inner
+    inversion per column, on states whose inversion had not always converged.
+    A member whose own amount does not enter its equation (an activity floored
+    below its floor) is held in that derivative, as the inversion holds it.
+  - The Hessian diagonal of the interior point (`use_fd_hessian = true`) is the
+    diagonal of the forward-mode Jacobian of the gradient. The option keeps its
+    name.
+  - The constraint matrix of the SciML interface is extracted by forward mode,
+    and the gradient configuration carries a tag (it had `nothing`).
+  - `qscale` is no longer read, and is optional; one given is still checked.
+- When the Newton stalls with nothing else leaving, the most undersaturated
+  mixing phase is released, as the bounded variable carrying the residual is. A
+  present phase is judged at the composition the inversion gave it (the
+  residual of its reference), not by the tangent-plane search that admits an
+  absent one, which can return a local maximum below zero inside a miscibility
+  gap. The difference quotients had been doing this by accident: their noise
+  drove the amount of such a phase down until it fell below `si_tol`. With an
+  exact Jacobian the direction of its amount carries no information on an
+  active set that breaks the phase rule, and the phase stayed.
+- **The interior point no longer depends on the last digits of the arithmetic.**
+  Near the solution the barrier objective cannot resolve the decrease Armijo
+  asks for, and rounding decided the test: the step was halved at random. With
+  the data of a three-species ideal solution moved by a few ulp, which is what
+  another machine's arithmetic does, 34 of 200 variants ran to `MaxIters` (26
+  with 0.7.4), and the others took 32 to 102 iterations; this is how a test that
+  passed here failed in continuous integration. A step tried that the objective
+  cannot tell from no change, and that keeps the balance, is now judged on the
+  residual of the optimality conditions in complementarity form, resolved at
+  its own scale: all 200 variants converge, in 32 iterations of full steps.
+  Taking that residual as the test for any step whose Armijo test is
+  unresolved, whatever it did to the objective, moved the interior-point answer
+  of a reference case by half on a trace: it is not done.
+- The line search accepts a step that does not increase the worst residual and
+  decreases `‖R‖²` by Armijo's condition against the slope `−2‖Jδ‖²` of the
+  least-squares step, as well as one that decreases the worst residual. On an
+  active set with more stationarity conditions than multipliers the rows the
+  step cannot satisfy stay where they are, and the step restoring the element
+  balance was refused (a balance left at 9e-6); here too the noise of the
+  difference quotient had let it through.
+
+### Added
+
+- **Derivatives through the solver.** `dual_newton_solve` accepts a budget `b`,
+  or data (`A`, `g`, `params`), carrying `ForwardDiff` dual numbers. It solves on
+  their values and returns `x`, `y` and `q` in duals of the caller's tag, the
+  partials those of the answer with the active set frozen. Nested
+  differentiations are stripped one level at a time, so second derivatives are
+  exact as well. This is what an inversion needs whose forward model is an
+  equilibrium: the derivative of the solution, not of the iteration that found
+  it.
+- `dual_newton_tangent(prob, b, x; y, q, active_phases, active, primal)`: the
+  same derivatives at an answer obtained by any route, the active set and the
+  multipliers recovered from the answer when not given. The duals may also be
+  captured by the callbacks (`h`, `gq`, `hq`, `cq`: the parameters of an activity
+  model, the target of a prescribed property), the same problem on values then
+  given as `primal`.
+- The SciML interface solves a problem whose parameters carry dual numbers in
+  their number type, the start and the bounds promoted to it, so the answer
+  carries the derivatives of the iterations that reached it. It took the number
+  type of the start alone, and a dual parameter could not be stored.
+
+### Fixed
+
+- `kkt_certificate` judges a problem, an answer or a budget carrying dual
+  numbers on their values, every level of duals down. It converted the answer
+  to `Float64` and raised.
+- The iteration log prints a dual number as its value instead of raising.
+
 ## v0.7.4 — options for sequences of warm-started solves
 
 ### Added
