@@ -16,7 +16,10 @@ of the line search to be judged on a residual the next sweep would change.
 Measured in ChemistryLab on 32 cement pastes solved with the certified search,
 with every printed value unchanged: 323 s for the set, against 1238 s with 0.7.3
 and 1645 s with 0.7.6, the fall from a limiting law past its range to an ion
-size per ion taking seconds where it took minutes.
+size per ion taking seconds where it took minutes. The three-hour hydration of a
+CEM I paste takes 5.5 s instead of 7.8 s on a trajectory identical to the last
+digit, no inversion at a Newton iterate left unconverged where 1226 of 1427
+were; its 28-day certified replay takes 2.5 s instead of 10.3 s.
 
 ### Added
 
