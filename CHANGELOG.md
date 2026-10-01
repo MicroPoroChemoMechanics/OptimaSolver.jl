@@ -1,5 +1,54 @@
 # Changelog
 
+## v0.7.7 — a phase that recovers its own solutes, and an inversion that says when it cannot
+
+The dual Newton recovers the solutes of the aqueous phase from the potentials
+by sweeps that assume each solute's activity depends on its own amount alone.
+An activity model of the Debye–Hückel family couples them through the ionic
+strength, and where multivalent ions are concentrated the sweeps cycle instead
+of converging; where the model has no solution they cycle as well. Measured
+with ChemistryLab, most inversions ended unconverged: 84 % on a cement paste
+where the model has a solution, 94 % of the 790 000 of a three-hour hydration,
+and every one under the limiting law past its range. An unconverged inversion
+also leaves the outer Jacobian to be taken through the sweeps, and every trial
+of the line search to be judged on a residual the next sweep would change.
+
+Measured in ChemistryLab on 32 cement pastes solved with the certified search,
+with every printed value unchanged: 350 s for the set, against 1238 s with 0.7.3
+and 1645 s with 0.7.6, the fall from a limiting law past its range to an ion
+size per ion taking seconds where it took minutes. The three-hour hydration of a
+CEM I paste takes 6.2 s instead of 7.8 s on a trajectory identical to the last
+digit, 18 of 2703 inversions at a Newton iterate left unconverged where 1226 of
+1427 were; its 28-day certified replay takes 2.6 s instead of 10.3 s.
+
+### Added
+
+- **`SolutionPhase(…; invert)`.** A phase with a solvent may recover its
+  solutes itself: `invert(c, ref, w, q, params)` returns the log-amounts at
+  which every member but the reference meets `hᵢ = cᵢ`, or `nothing` when no
+  composition does. It is called once per inversion, and a phase recovered this
+  way needs no evaluation of `h`. A model whose coefficients depend on the
+  composition through the ionic strength alone reduces the inversion to one
+  equation in it, the ionic strength becoming an unknown of its own as in
+  PHREEQC; ChemistryLab supplies that inversion for its Debye–Hückel, Davies and
+  Truesdell–Jones models.
+
+### Changed
+
+- **The inversion of a trial that runs away ends at once.** At a trial of the
+  line search, a solute driven to the ceiling of its log-amount, or an `invert`
+  returning `nothing`, ends the inversion with an infinite step instead of
+  sweeping on until the stall rule. The iterate itself and a start still need a
+  composition to move from: there the sweeps take over, as before. Stopping
+  there too ended every attempt from a start whose potentials, fitted to a
+  composition mostly at the floor, hold none, and a pore solution solved alone
+  came back as given.
+- **The line search passes over trials that hold no composition.** Such a trial
+  is not judged; twenty in a row end the pass, and a pass that met only such
+  trials is not repeated under the other acceptance rule, which would meet the
+  same ones. Under the limiting law past its range, nine trials in ten were such
+  and each pass ran its forty.
+
 ## v0.7.6 — a trace component is kept, and brought back
 
 A component whose budget is orders of magnitude below the others could be lost,

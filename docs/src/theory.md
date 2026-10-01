@@ -516,6 +516,48 @@ has a potential the answer leaves free, and some multiplier meets its
 inequality. Before 0.7.2 such members were excluded from every test, and a member
 left far below its equilibrium amount was certified.
 
+### Solutes coupled through the ionic strength
+
+The solutes of a phase with a solvent are recovered one by one, each from its own
+condition, ``w_i \leftarrow w_i + (u_i - g_i - h_i(w))``. That sweep is exact if
+``\partial h_i/\partial w_j = \delta_{ij}``, and an activity model of the
+Debye–Hückel family is not: ``\ln\gamma_i`` depends on the composition through the
+ionic strength ``I = \tfrac12\sum_j z_j^2 m_j``, which gives
+``\partial h/\partial w`` a part of rank one,
+
+```math
+\frac{\partial h_i}{\partial w_j} = \delta_{ij}
+  + \frac{\mathrm{d}\ln\gamma_i}{\mathrm{d}I}\,\tfrac12 z_j^2 m_j .
+```
+
+The sweep then multiplies the error along that direction by
+``\sum_j \tfrac12 z_j^2 m_j\,\mathrm{d}\ln\gamma_j/\mathrm{d}I``, more than one
+in a concentrated solution of multivalent ions: it cycles, and where the model
+has no solution it cycles as well, so the two cannot be told apart. Measured on
+cement pore solutions, most inversions ended unconverged, which also leaves the
+outer Jacobian to be taken through the sweeps rather than by the
+implicit-function theorem.
+
+When the coefficients depend on the composition through ``I`` alone, the
+solutes are explicit at a given ``I``, ``\ln m_i = u_i - g_i - \ln\gamma_i(I)``, and
+the inversion is one equation in one unknown,
+
+```math
+I = \tfrac12 \sum_i z_i^2\, e^{\,u_i - g_i - \ln\gamma_i(I)} .
+```
+
+This is how PHREEQC treats the ionic strength, as an unknown of its own
+(Parkhurst & Appelo, 2013). A phase given `invert` (see [`SolutionPhase`](@ref))
+is recovered by it in one call; ChemistryLab supplies it for its Debye–Hückel,
+Davies and Truesdell–Jones models, solving that equation exactly or reporting
+that it has no root. A solute driven to the ceiling of its log-amount, the other
+sign of a runaway, ends the inversion of a trial at once. Such a trial of the
+line search holds no composition and is passed over without being judged, and a
+pass that met only such trials is not repeated with the other acceptance rule.
+The iterate itself, and a start, need a composition to move from whether or not
+their potentials hold one: there the sweeps take over, as they did before the
+inversion existed, and a poor start still gets going.
+
 ### Degenerate components
 
 A row `k` with ``b_k = 0`` need not be degenerate. With ``x \ge 0``,
@@ -1163,6 +1205,13 @@ The scaling is transparent: the returned solution is always in the original unit
   A thermodynamic model for C-(N-)A-S-H gel: CNASH_ss. Derivation and validation.
   *Cement and Concrete Research*, **66**, 27–47.
   <https://doi.org/10.1016/j.cemconres.2014.07.005>
+
+- Parkhurst, D.L., Appelo, C.A.J. (2013).
+  Description of input and examples for PHREEQC version 3: A computer program
+  for speciation, batch-reaction, one-dimensional transport, and inverse
+  geochemical calculations.
+  U.S. Geological Survey Techniques and Methods, book 6, chap. A43.
+  <https://doi.org/10.3133/tm6a43>
 
 - Wächter, A., Biegler, L.T. (2006).
   On the implementation of an interior-point filter line-search algorithm for

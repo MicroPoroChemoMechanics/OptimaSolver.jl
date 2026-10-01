@@ -1042,6 +1042,69 @@ end
     @test free.step <= 1.0e-14
 end
 
+@testset "a phase that inverts itself is solved by its inversion" begin
+    # A solvent and two charged solutes whose activity coefficients follow the
+    # ionic strength, Debye–Hückel fashion: the solutes are coupled through it.
+    z = [0, 2, -1]
+    lnγ(I, i) = -1.2 * z[i]^2 * sqrt(I) / (1 + sqrt(I))
+    ionic(x) = 0.5 * (z[2]^2 * x[2] + z[3]^2 * x[3]) / x[1]
+    calls = Ref(0)
+    h(x, _) = (calls[] += 1; I = ionic(x); [0.0, log(x[2] / x[1]) + lnγ(I, 2), log(x[3] / x[1]) + lnγ(I, 3)])
+    # The same solutes from their potentials: one equation in the ionic strength.
+    function invert(c, ref, w, q, params)
+        S(I) = 0.5 * sum(z[i]^2 * exp(c[i] - lnγ(I, i)) for i in 2:3)
+        lo, hi = 1.0e-12, 1.0e3
+        S(hi) > hi && return nothing
+        for _ in 1:200
+            mid = sqrt(lo * hi)
+            S(mid) > mid ? (lo = mid) : (hi = mid)
+        end
+        I = sqrt(lo * hi)
+        return [w[1], c[2] - lnγ(I, 2) + log(ref), c[3] - lnγ(I, 3) + log(ref)]
+    end
+    A = Float64[1 0 0; 0 1 0; 0 0 1]
+    g = [0.0, 1.0, -0.5]
+    b = [55.5, 0.3, 0.6]
+    problem(inv) = DualNewtonProblem(
+        A, g, h; phases = [SolutionPhase([1, 2, 3], 1; always_present = true, invert = inv)],
+        idx_bounded = Int[],
+    )
+    x0 = [55.5, 0.1, 0.1]
+    calls[] = 0
+    swept = dual_newton_solve(problem(nothing), b, x0)
+    n_swept = calls[]
+    calls[] = 0
+    inverted = dual_newton_solve(problem(invert), b, x0)
+    n_inverted = calls[]
+    @test swept.converged && inverted.converged
+    @test inverted.x ≈ swept.x rtol = 1.0e-10
+    @test kkt_certificate(problem(invert), inverted.x, b).optimal
+    # The inversion needs `h` for nothing but the residual of the outer system.
+    @test n_inverted < n_swept
+    # An inversion that finds no composition anywhere: the iterate is swept, to
+    # have a point to move from, but no trial holds a composition, so no step is
+    # taken and the solve says so, after a bounded number of evaluations.
+    calls[] = 0
+    none = dual_newton_solve(problem((c, ref, w, q, params) -> nothing), b, x0)
+    @test !none.converged
+    @test calls[] < 2000
+    # A trial of the line search that holds no composition is passed over: the
+    # step is cut until one does. Calls 2 to 1 + k are the trials of the first
+    # step; past twenty in a row, the pass ends, and the other pass is not run.
+    function refusing(k)
+        n = Ref(0)
+        return (c, ref, w, q, params) -> (n[] += 1; 2 <= n[] <= 1 + k ? nothing : invert(c, ref, w, q, params))
+    end
+    cut = dual_newton_solve(problem(refusing(3)), b, x0)
+    @test cut.converged
+    @test cut.x ≈ swept.x rtol = 1.0e-10
+    stopped = dual_newton_solve(problem(refusing(25)), b, x0)
+    @test stopped.converged
+    @test stopped.x ≈ swept.x rtol = 1.0e-10
+    # A phase without a solvent has none to fix its members by.
+    @test_throws ArgumentError SolutionPhase([1, 2], 1; mole_fraction = true, invert = (args...) -> nothing)
+end
+
 @testset "a trace far below its budget is brought back to it" begin
     # A solvent and one solute carrying a trace component, its potentials put
     # where a guess holding the solute at `x₂` puts them. Its balance row has
