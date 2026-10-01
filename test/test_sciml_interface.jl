@@ -64,6 +64,26 @@
         @test length(sol.original.y) == 1
     end
 
+    @testset "convergence does not depend on the last digits" begin
+        # The same solve with its data moved by a few ulp, which is what another
+        # machine's arithmetic does to it. Left to rounding near the solution,
+        # the line search failed on 34 of 200 such variants and took 32 to 102
+        # iterations on the others (26 failures with 0.7.4); judged on the KKT
+        # residual where the objective cannot resolve the step, all 200 converge
+        # in 32.
+        f = SciMLBase.OptimizationFunction(G; grad = ∇G!)
+        its = map(1:50) do k
+            moved = μ⁰ .+ (((7k) % 17 - 8) .* [1, -1, 1]) .* eps(2.0)
+            bk = [1.0 + ((5k) % 17 - 8) * eps(1.0)]
+            sol = SciMLBase.solve(
+                SciMLBase.OptimizationProblem(f, copy(lb), (μ⁰ = moved, A = A, b = bk); lb = lb, ub = fill(Inf, 3)),
+                OptimaOptimizer(; tol = 1.0e-12),
+            )
+            sol.original.converged ? sol.original.iterations : typemax(Int)
+        end
+        @test maximum(its) <= 34
+    end
+
     @testset "a forward-mode gradient differentiated again for the Hessian" begin
         # No `grad`: the gradient is built by forward mode, and `OptimaOptimizer()`
         # (`use_fd_hessian = true`) differentiates that gradient to get the exact

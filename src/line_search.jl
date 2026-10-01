@@ -143,9 +143,11 @@ function line_search(
     #     residual let through steps far from the solution, where the curvature
     #     makes the decrease asked for small too, and moved the interior-point
     #     answer of the Reaktoro reference by half on a trace.
+    #
+    #     Resolvability is judged at each step tried, not at the first one only:
+    #     backtracking from a resolvable step comes down into the same regime.
     noise_f = 8 * length(n) * eps(T) * max(abs(f_μ_val), one(T))
-    resolvable = kkt_merit === nothing || opts.ls_alpha * Tv(α_max) * abs(descent_μ) > noise_f
-    R_curr = resolvable ? zero(Tv) : kkt_merit(n, y)
+    R_curr = nothing          # the residual at `(n, y)`, computed when first needed
 
     for _ in 1:(opts.ls_max_iter)
         n_new = n .+ α .* dn
@@ -181,9 +183,11 @@ function line_search(
             # The barrier objective no longer resolves the decrease asked for, and
             # this step changes it by no more than its rounding: judged on the
             # residual of the optimality conditions, the balance kept.
-            if !resolvable && f_μ_new <= f_μ_val + noise_f && θ_new <= max(θ_curr, θ_tol) &&
-                    kkt_merit(n_new, y_new) <= (one(Tv) - Tv(opts.ls_alpha) * α) * R_curr
-                return α, n_new, y_new, f_new
+            if kkt_merit !== nothing && opts.ls_alpha * α * abs(descent_μ) <= noise_f &&
+                    f_μ_new <= f_μ_val + noise_f && θ_new <= max(θ_curr, θ_tol)
+                R_curr === nothing && (R_curr = kkt_merit(n, y))
+                kkt_merit(n_new, y_new) <= (one(Tv) - Tv(opts.ls_alpha) * α) * R_curr &&
+                    return α, n_new, y_new, f_new
             end
         end
 
