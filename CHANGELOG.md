@@ -1,6 +1,16 @@
 # Changelog
 
-## Unreleased
+## v0.7.5 — exact derivatives everywhere, and derivatives through the solver
+
+Every derivative the solver takes is now exact, and the answer of a dual Newton
+solve can be differentiated with respect to its budget, its data or the
+parameters its callbacks capture, at every level of a nested differentiation:
+what an inversion needs whose forward model is a chemical equilibrium. Removing
+the difference quotients showed that their noise had been doing two jobs, which
+are now done on purpose (the release of a phase on a stall, the acceptance of a
+step restoring the balance). Measured on the three-hour hydration of a CEM I
+paste in ChemistryLab, the run takes 7.5 s instead of 10.3 s, on the same
+trajectory; the certified replay of a 28-day run takes 9.7 s instead of 6.8 s.
 
 ### Changed
 
