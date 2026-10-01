@@ -35,11 +35,14 @@ were; its 28-day certified replay takes 2.5 s instead of 10.3 s.
 
 ### Changed
 
-- **An inversion that runs away ends at once.** A solute driven to the ceiling
-  of its log-amount, or an `invert` returning `nothing`, ends the inversion with
-  an infinite step instead of sweeping on until the stall rule. An iterate whose
-  inversion runs away ends the attempt, the next start or route being the
-  remedy, and no active set is judged there.
+- **The inversion of a trial that runs away ends at once.** At a trial of the
+  line search, a solute driven to the ceiling of its log-amount, or an `invert`
+  returning `nothing`, ends the inversion with an infinite step instead of
+  sweeping on until the stall rule. The iterate itself and a start still need a
+  composition to move from: there the sweeps take over, as before. Stopping
+  there too ended every attempt from a start whose potentials, fitted to a
+  composition mostly at the floor, hold none, and a pore solution solved alone
+  came back as given.
 - **The line search passes over trials that hold no composition.** Such a trial
   is not judged; twenty in a row end the pass, and a pass that met only such
   trials is not repeated under the other acceptance rule, which would meet the

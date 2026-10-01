@@ -551,11 +551,12 @@ This is how PHREEQC treats the ionic strength, as an unknown of its own
 is recovered by it in one call; ChemistryLab supplies it for its Debye–Hückel,
 Davies and Truesdell–Jones models, solving that equation exactly or reporting
 that it has no root. A solute driven to the ceiling of its log-amount, the other
-sign of a runaway, ends the inversion at once. In either case the outer system
-learns that the multipliers hold no composition: such a trial of the line search
-is passed over without being judged, a pass that met only such trials is not
-repeated with the other acceptance rule, and an iterate that is itself such a
-point ends the attempt, the next start or route being the remedy.
+sign of a runaway, ends the inversion of a trial at once. Such a trial of the
+line search holds no composition and is passed over without being judged, and a
+pass that met only such trials is not repeated with the other acceptance rule.
+The iterate itself, and a start, need a composition to move from whether or not
+their potentials hold one: there the sweeps take over, as they did before the
+inversion existed, and a poor start still gets going.
 
 ### Degenerate components
 

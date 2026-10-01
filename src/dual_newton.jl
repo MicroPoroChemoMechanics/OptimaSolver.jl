@@ -267,10 +267,10 @@ return what `h` would return for them.
 
 `invert`, for a phase with a solvent, recovers its solutes in one call instead of
 by sweeps: `invert(c, ref, w, q, params)`, with `c` the `uᵢ − gᵢ` of the members
-(a vector over `members`), `ref` the amount of the reference, `w` their current
-log-amounts and `q`, `params` what `h` is given, returns the log-amounts at which
-every member but the reference meets `hᵢ = cᵢ`, or `nothing` when no composition
-does. The sweep below assumes `∂hᵢ/∂wᵢ = 1` and nothing else, and an activity
+(a vector over `members`, `-Inf` for a member whose component is absent from the
+budget), `ref` the amount of the reference, `w` their current log-amounts and
+`q`, `params` what `h` is given, returns the log-amounts at which every member
+but the reference meets `hᵢ = cᵢ`, or `nothing` when no composition does. The sweep below assumes `∂hᵢ/∂wᵢ = 1` and nothing else, and an activity
 model couples the solutes: through the ionic strength, the Debye–Hückel and
 B-dot models give `∂h/∂w` a part of rank one. Where that coupling is strong the
 sweep cycles instead of converging, and where the model has no solution it
@@ -813,7 +813,7 @@ function _invert_phases!(
         prob, W, y, refs, act_ph, active, xB, x_buf;
         dead = Set{Int}(), g = prob.g, q = prob.q0,
         resid::Union{Nothing, Base.RefValue{Float64}} = nothing, maxsweeps::Int = 200,
-        max_fall::Float64 = 30.0,
+        max_fall::Float64 = 30.0, trial::Bool = false,
     )
     u = -(transpose(prob.A) * y)
     worst = Inf
@@ -826,8 +826,14 @@ function _invert_phases!(
     # potentials and the amount of the reference, do not change from one sweep
     # to the next.
     inverted = falses(length(prob.phases))
+    # Whether each phase's own inversion is used. A point that is not a trial of
+    # the line search (the iterate itself, a start) needs a composition to move
+    # from whether or not its potentials hold one: where the inversion finds
+    # none there, the sweeps take over, as they did before it existed. A trial
+    # stops at once instead, which is where nearly all the inversions are.
+    use_invert = [prob.phases[k].invert !== nothing for k in eachindex(prob.phases)]
     # `h` is needed by the phases that are swept, and only by them.
-    swept = any(k -> prob.phases[k].invert === nothing, act_ph)
+    swept = any(k -> !use_invert[k], act_ph)
 
     for _ in 1:maxsweeps
         _fill_x!(x_buf, prob, W, refs, act_ph, active, xB)
@@ -869,16 +875,27 @@ function _invert_phases!(
                     worst = max(worst, abs(_primal_value(w - W[k][j])))
                     W[k][j] = w
                 end
-            elseif ph.invert !== nothing
+            elseif use_invert[k]
                 # The solutes in one call, exactly, by the phase's own inversion
                 # (see `SolutionPhase`); `nothing` is a model with no solution at
                 # these potentials, which the sweep would only cycle on.
                 inverted[k] && continue
                 inverted[k] = true
-                c = [u[i] - g[i] for i in ph.members]
+                # A member whose component is absent from the budget (`dead`) is
+                # held at the floor by the sweep, and is no amount here: `-Inf`.
+                # Counted with the potential that pins its row, it would carry the
+                # ionic strength away on its own: a pore solution without a redox
+                # carrier came back as given, every start judged to hold nothing.
+                c = [i in dead ? oftype(u[i] - g[i], -Inf) : u[i] - g[i] for i in ph.members]
                 wn = ph.invert(c, refs[a], W[k], q, prob.params)
                 if wn === nothing
-                    runaway = true
+                    if trial
+                        runaway = true
+                    else
+                        use_invert[k] = false
+                        swept = true
+                        worst = max(worst, one(worst))   # the sweeps start next
+                    end
                     continue
                 end
                 for (j, i) in enumerate(ph.members)
@@ -886,7 +903,7 @@ function _invert_phases!(
                     w = clamp(wn[j], W_FLOOR, W_CEIL)
                     worst = max(worst, abs(_primal_value(w - W[k][j])))
                     W[k][j] = w
-                    w >= W_CEIL && (runaway = true)
+                    trial && w >= W_CEIL && (runaway = true)
                 end
             else
                 # An aqueous solution has a solvent, and the solutes carry
@@ -922,7 +939,7 @@ function _invert_phases!(
                     # before it comes off.
                     worst = max(worst, abs(_primal_value(w - W[k][j])))
                     W[k][j] = w
-                    w >= W_CEIL && (runaway = true)
+                    trial && w >= W_CEIL && (runaway = true)
                 end
             end
         end
@@ -933,8 +950,8 @@ function _invert_phases!(
         # 91 % of 200 000 inversions ended unconverged, cycling with a period of
         # about eight sweeps between the ceiling and a fall of thirty while the
         # ionic strength swung with it, each until the stall rule stopped it twenty
-        # sweeps later. No sweep after the first touch changes the verdict, so the
-        # inversion stops there and reports an infinite step.
+        # sweeps later. No sweep after the first touch changes the verdict, so a
+        # trial of the line search stops there and reports an infinite step.
         if runaway
             worst = Inf
             break
@@ -988,7 +1005,7 @@ function _outer_residual(
         prob, v, W, act_ph, active, b, x_buf;
         dead = Set{Int}(), degenerate = Int[],
         resid::Union{Nothing, Base.RefValue{Float64}} = nothing,
-        inner_maxit::Int = 200, max_fall::Float64 = 30.0,
+        inner_maxit::Int = 200, max_fall::Float64 = 30.0, trial::Bool = false,
     )
     m = size(prob.A, 1)
     nph = length(act_ph)
@@ -1003,7 +1020,7 @@ function _outer_residual(
 
     _invert_phases!(
         prob, W, y, refs, act_ph, active, xB, x_buf; dead = dead, g = g, q = q,
-        resid = resid, maxsweeps = inner_maxit, max_fall,
+        resid = resid, maxsweeps = inner_maxit, max_fall, trial,
     )
 
     hv = current_h(prob, x_buf, q)
@@ -1882,7 +1899,6 @@ function _dual_newton_attempt(
     # last one tried.
     best_res = Inf
     best_state = nothing
-    runaway = false
 
     for _ in 1:(opts.max_active_updates)
         nph = length(act_ph)
@@ -1898,13 +1914,6 @@ function _dual_newton_attempt(
                 max_fall = opts.inner_fall_bound,
             )
             res = maximum(abs, R)
-            # The inversion at the current multipliers ran away: they hold no
-            # composition, and there is nothing to linearize. The attempt ends,
-            # and another start or route is the remedy.
-            if isinf(inner_resid[])
-                runaway = true
-                break
-            end
             if opts.verbose
                 # Split by block: the three carry different units — log-activities
                 # for the phase and stationarity rows, moles for the balance — and
@@ -2072,7 +2081,7 @@ function _dual_newton_attempt(
                     R_t = _outer_residual(
                         prob, v_t, W_t, act_ph, active, bv, x_buf;
                         dead, degenerate, resid = cand_resid,
-                        inner_maxit = opts.inner_maxit, max_fall = opts.inner_fall_bound,
+                        inner_maxit = opts.inner_maxit, max_fall = opts.inner_fall_bound, trial = true,
                     )
                     if isinf(cand_resid[])
                         runaway_streak += 1
@@ -2112,8 +2121,6 @@ function _dual_newton_attempt(
             end
             nph > 0 && minimum(@view v[1:nph]) < log(opts.si_tol) && break
         end
-        # No active set is judged at multipliers that hold no composition.
-        runaway && break
 
         refs = [exp(v[a]) for a in 1:nph]
         y = v[(nph + 1):(nph + m)]

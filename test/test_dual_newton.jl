@@ -1081,11 +1081,26 @@ end
     @test kkt_certificate(problem(invert), inverted.x, b).optimal
     # The inversion needs `h` for nothing but the residual of the outer system.
     @test n_inverted < n_swept
-    # No composition at these potentials: the solve ends, unconverged, at once.
+    # An inversion that finds no composition anywhere: the iterate is swept, to
+    # have a point to move from, but no trial holds a composition, so no step is
+    # taken and the solve says so, after a bounded number of evaluations.
     calls[] = 0
     none = dual_newton_solve(problem((c, ref, w, q, params) -> nothing), b, x0)
     @test !none.converged
-    @test calls[] < 50
+    @test calls[] < 2000
+    # A trial of the line search that holds no composition is passed over: the
+    # step is cut until one does. Calls 2 to 1 + k are the trials of the first
+    # step; past twenty in a row, the pass ends, and the other pass is not run.
+    function refusing(k)
+        n = Ref(0)
+        return (c, ref, w, q, params) -> (n[] += 1; 2 <= n[] <= 1 + k ? nothing : invert(c, ref, w, q, params))
+    end
+    cut = dual_newton_solve(problem(refusing(3)), b, x0)
+    @test cut.converged
+    @test cut.x ≈ swept.x rtol = 1.0e-10
+    stopped = dual_newton_solve(problem(refusing(25)), b, x0)
+    @test stopped.converged
+    @test stopped.x ≈ swept.x rtol = 1.0e-10
     # A phase without a solvent has none to fix its members by.
     @test_throws ArgumentError SolutionPhase([1, 2], 1; mole_fraction = true, invert = (args...) -> nothing)
 end
