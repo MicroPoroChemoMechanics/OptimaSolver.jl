@@ -205,6 +205,7 @@ struct SolutionPhase
     newton::Bool
     bounded_members::Vector{Int}
     local_h::Union{Nothing, Function}
+    invert::Union{Nothing, Function}
 end
 
 """
@@ -264,6 +265,21 @@ solution's do. The Newton iteration then differentiates it rather than the whole
 `h`, which for a cement means eight variables instead of a hundred, and must
 return what `h` would return for them.
 
+`invert`, for a phase with a solvent, recovers its solutes in one call instead of
+by sweeps: `invert(c, ref, w, q, params)`, with `c` the `uᵢ − gᵢ` of the members
+(a vector over `members`), `ref` the amount of the reference, `w` their current
+log-amounts and `q`, `params` what `h` is given, returns the log-amounts at which
+every member but the reference meets `hᵢ = cᵢ`, or `nothing` when no composition
+does. The sweep below assumes `∂hᵢ/∂wᵢ = 1` and nothing else, and an activity
+model couples the solutes: through the ionic strength, the Debye–Hückel and
+B-dot models give `∂h/∂w` a part of rank one. Where that coupling is strong the
+sweep cycles instead of converging, and where the model has no solution it
+cycles as well, so the two cannot be told apart. A model whose coefficients
+depend on the composition through the ionic strength alone reduces the
+inversion to one equation in it, which a caller that knows the model solves
+exactly, or proves has no root; that is how PHREEQC treats the ionic strength,
+as an unknown of its own. The sweep remains for a phase without `invert`.
+
 `bounded_members` lists the members (positions within `members`) that may be
 **exactly absent from the phase while it is present**. A member's activity
 normally vanishes with its fraction, so its stationarity is an equality however
@@ -277,6 +293,13 @@ function SolutionPhase(
         members, j_ref; always_present::Bool = false, mole_fraction::Bool = false,
         split_starts = Vector{Vector{Float64}}(), newton::Bool = false,
         bounded_members = Int[], local_h::Union{Nothing, Function} = nothing,
+        invert::Union{Nothing, Function} = nothing,
+    )
+    invert !== nothing && mole_fraction && throw(
+        ArgumentError(
+            "SolutionPhase: `invert` recovers the solutes of a phase with a solvent; " *
+                "a phase whose members are all mole fractions has no solvent to fix them by."
+        )
     )
     newton && !mole_fraction && throw(
         ArgumentError(
@@ -294,7 +317,7 @@ function SolutionPhase(
     return SolutionPhase(
         collect(Int, members), j_ref, always_present, mole_fraction,
         Vector{Vector{Float64}}(collect(collect(float.(s)) for s in split_starts)),
-        newton, bm, local_h,
+        newton, bm, local_h, invert,
     )
 end
 
@@ -796,10 +819,19 @@ function _invert_phases!(
     worst = Inf
     smallest = Inf
     stalled = 0
+    # A solute pushed to the ceiling: these potentials hold no composition (see
+    # below, after the sweep).
+    runaway = false
+    # The phases recovered by their own `invert`, once: its inputs, the
+    # potentials and the amount of the reference, do not change from one sweep
+    # to the next.
+    inverted = falses(length(prob.phases))
+    # `h` is needed by the phases that are swept, and only by them.
+    swept = any(k -> prob.phases[k].invert === nothing, act_ph)
 
     for _ in 1:maxsweeps
         _fill_x!(x_buf, prob, W, refs, act_ph, active, xB)
-        hv = current_h(prob, x_buf, q)
+        hv = swept ? current_h(prob, x_buf, q) : nothing
         worst = 0.0
 
         for (a, k) in enumerate(act_ph)
@@ -837,6 +869,25 @@ function _invert_phases!(
                     worst = max(worst, abs(_primal_value(w - W[k][j])))
                     W[k][j] = w
                 end
+            elseif ph.invert !== nothing
+                # The solutes in one call, exactly, by the phase's own inversion
+                # (see `SolutionPhase`); `nothing` is a model with no solution at
+                # these potentials, which the sweep would only cycle on.
+                inverted[k] && continue
+                inverted[k] = true
+                c = [u[i] - g[i] for i in ph.members]
+                wn = ph.invert(c, refs[a], W[k], q, prob.params)
+                if wn === nothing
+                    runaway = true
+                    continue
+                end
+                for (j, i) in enumerate(ph.members)
+                    (j == ph.j_ref || i in dead) && continue
+                    w = clamp(wn[j], W_FLOOR, W_CEIL)
+                    worst = max(worst, abs(_primal_value(w - W[k][j])))
+                    W[k][j] = w
+                    w >= W_CEIL && (runaway = true)
+                end
             else
                 # An aqueous solution has a solvent, and the solutes carry
                 # molalities that are unbounded above, so each of them IS
@@ -871,10 +922,26 @@ function _invert_phases!(
                     # before it comes off.
                     worst = max(worst, abs(_primal_value(w - W[k][j])))
                     W[k][j] = w
+                    w >= W_CEIL && (runaway = true)
                 end
             end
         end
 
+        # A solute at the ceiling, `e^20` mol, is an inversion running away and
+        # not one converging: the potentials ask for more of it than any budget
+        # holds. Measured on cement pastes under the limiting law past its range,
+        # 91 % of 200 000 inversions ended unconverged, cycling with a period of
+        # about eight sweeps between the ceiling and a fall of thirty while the
+        # ionic strength swung with it, each until the stall rule stopped it twenty
+        # sweeps later. No sweep after the first touch changes the verdict, so the
+        # inversion stops there and reports an infinite step.
+        if runaway
+            worst = Inf
+            break
+        end
+        # Every phase recovered by its own inversion is exact after one call:
+        # sweeping again would change nothing.
+        swept || (worst = 0.0)
         worst <= 1.0e-14 && break
         # Not converging: see `INNER_STALL_SWEEPS`.
         if worst < smallest
@@ -1815,6 +1882,7 @@ function _dual_newton_attempt(
     # last one tried.
     best_res = Inf
     best_state = nothing
+    runaway = false
 
     for _ in 1:(opts.max_active_updates)
         nph = length(act_ph)
@@ -1830,6 +1898,13 @@ function _dual_newton_attempt(
                 max_fall = opts.inner_fall_bound,
             )
             res = maximum(abs, R)
+            # The inversion at the current multipliers ran away: they hold no
+            # composition, and there is nothing to linearize. The attempt ends,
+            # and another start or route is the remedy.
+            if isinf(inner_resid[])
+                runaway = true
+                break
+            end
             if opts.verbose
                 # Split by block: the three carry different units — log-activities
                 # for the phase and stationarity rows, moles for the balance — and
@@ -1982,6 +2057,15 @@ function _dual_newton_attempt(
             pred = sum(abs2, wR .* (J * δ))
             for strict in (true, false)
                 α = α0
+                # Trials whose multipliers hold no composition (an inversion that
+                # ran away, `_invert_phases!`) say nothing of the residual. A pass
+                # that met only those leaves the other pass nothing to meet either,
+                # the inversion not depending on the pass; and twenty in a row,
+                # the step cut by a million, end the pass. Measured under the
+                # limiting law past its range, nine trials in ten were such, and
+                # each pass ran its forty.
+                only_runaway = true
+                runaway_streak = 0
                 for _ in 1:40
                     v_t = v .+ α .* δ
                     W_t = [copy(w) for w in W_ref]
@@ -1990,6 +2074,14 @@ function _dual_newton_attempt(
                         dead, degenerate, resid = cand_resid,
                         inner_maxit = opts.inner_maxit, max_fall = opts.inner_fall_bound,
                     )
+                    if isinf(cand_resid[])
+                        runaway_streak += 1
+                        runaway_streak >= 20 && break
+                        α /= 2
+                        continue
+                    end
+                    only_runaway = false
+                    runaway_streak = 0
                     mx = maximum(abs, R_t)
                     decrease = mx < res || (
                         pred > opts.tol^2 && mx <= res * (1 + 1.0e-12) &&
@@ -2008,7 +2100,7 @@ function _dual_newton_attempt(
                     end
                     α /= 2
                 end
-                accepted && break
+                (accepted || only_runaway) && break
             end
             accepted || break
 
@@ -2020,6 +2112,8 @@ function _dual_newton_attempt(
             end
             nph > 0 && minimum(@view v[1:nph]) < log(opts.si_tol) && break
         end
+        # No active set is judged at multipliers that hold no composition.
+        runaway && break
 
         refs = [exp(v[a]) for a in 1:nph]
         y = v[(nph + 1):(nph + m)]
