@@ -131,12 +131,17 @@ It extracts them via one of three paths (in order of preference):
 
 1. **Explicit parameters**: if `p` is a `NamedTuple` with fields `:A` and `:b`,
    they are used directly. This is the most efficient path.
-2. **No constraints**: if `cons` is `nothing`, the problem is treated as
-   unconstrained ($A = 0 \times n_s$, $b = []$).
-3. **Finite-difference extraction**: otherwise, $A$ is recovered by forward
-   differencing the constraint function at `u0` (one evaluation per species).
-   Accurate for linear constraints; adds $n_s$ extra function evaluations at
-   problem setup time.
+2. **Forward-mode extraction**: otherwise, $A$ is the Jacobian of the
+   constraint function at `u0`, by `ForwardDiff`. Exact for linear constraints;
+   the constraint function must accept dual numbers.
+3. **No constraints**: if `cons` is `nothing` and `p` holds no `A` and `b`, the
+   problem is refused with an `ArgumentError`: the solver needs at least one
+   constraint.
+
+Parameters carrying `ForwardDiff` dual numbers are solved on: the start and the
+bounds are promoted to their number type, and the answer carries the derivatives
+of the iterations that reached it, which at convergence are those of the
+solution.
 
 To use path 1 directly:
 

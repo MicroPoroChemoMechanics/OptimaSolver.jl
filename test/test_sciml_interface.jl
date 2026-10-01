@@ -72,6 +72,21 @@
         @test sol.u ≈ n_analytic atol = 1.0e-7
     end
 
+    @testset "parameters carrying dual numbers" begin
+        # Solved on them: the answer carries the derivatives of the iterations
+        # that reached it, those of the softmax at convergence,
+        # ∂nᵢ/∂μ⁰₁ = −nᵢ(δᵢ₁ − n₁).
+        f = SciMLBase.OptimizationFunction(G; grad = ∇G!)
+        solve_at(m1) = SciMLBase.solve(
+            SciMLBase.OptimizationProblem(
+                f, copy(lb), (μ⁰ = [m1, μ⁰[2], μ⁰[3]], A = A, b = b); lb = lb, ub = fill(Inf, 3)
+            ),
+            OptimaOptimizer(; tol = 1.0e-12, warm_start = false),
+        ).u
+        dn = ForwardDiff.derivative(solve_at, μ⁰[1])
+        @test dn ≈ -n_analytic .* ([1.0, 0.0, 0.0] .- n_analytic[1]) rtol = 1.0e-6
+    end
+
     @testset "constraints given as a residual function (forward-mode path)" begin
         # `_extract_constraints` path 3: A and b are recovered by differentiating
         # `cons` at `u0`, in forward mode. The answer must be the same as when A and b are handed

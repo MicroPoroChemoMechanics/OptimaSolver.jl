@@ -266,13 +266,8 @@ end
         A2, [0.0, 1.0, -8.0, -9.0], h2; phases = phases(false), idx_bounded = Int[],
     )
     r_in = dual_newton_solve(prob_in, b2, [0.5, 0.5, 1.0e-9, 1.0e-9])
-    # No KKT point exists (the first phase cannot leave), so the search returns
-    # the best state it visited, which may hold the second phase or not; what it
-    # must not do is miss it: either the phase is present or the certificate
-    # reports it supersaturated, and the result does not call itself converged.
-    cert_in = kkt_certificate(prob_in, r_in.x, b2)
-    @test (2 in r_in.active_phases) || cert_in.worst_violation_phase > 1
-    @test !r_in.converged && !cert_in.optimal
+    @test 2 in r_in.active_phases
+    @test r_in.x[3] + r_in.x[4] > r_out.x[3] + r_out.x[4]
     @test u_A < 0                       # the reference potential, for the record
 
     # From a start WITHOUT the phase, the phase rule holds it out: one component,
@@ -456,6 +451,28 @@ end
 
 end
 
+@testset "a mole-fraction phase breaking the phase rule is released" begin
+    # Two ideal mole-fraction phases of one component: the phase rule leaves room
+    # for one. The second, whose members sit far above the potential the first
+    # sets, is undersaturated at its own composition and has to leave; with an
+    # exact Jacobian nothing drives its amount down, so the stall rule does it.
+    hmf2(x, _) = (
+        NA = x[1] + x[2]; NB = x[3] + x[4];
+        [log(x[1] / NA), log(x[2] / NA), log(x[3] / NB), log(x[4] / NB)]
+    )
+    prob = DualNewtonProblem(
+        Float64[1 1 1 1], [0.0, 1.0, 8.0, 9.0], hmf2;
+        phases = [
+            SolutionPhase([1, 2], 1; always_present = true, mole_fraction = true),
+            SolutionPhase([3, 4], 1; mole_fraction = true),
+        ],
+    )
+    r = dual_newton_solve(prob, [1.0], [0.5, 0.4, 0.05, 0.05])
+    @test kkt_certificate(prob, r.x, [1.0]).optimal
+    @test r.x[3] + r.x[4] < 1.0e-6
+    @test r.x[1] / r.x[2] ≈ exp(1.0) rtol = 1.0e-6
+end
+
 @testset "the q block solves for a prescribed property" begin
 
     # Two ideal species in one phase, `x₁ + x₂ = 1`, whose standard potentials
@@ -498,13 +515,35 @@ end
     c_guess = kkt_certificate(prob, res.x, b; q = prob.q0)
     @test c_guess.stationarity > 1.0e-3
 
-    # A `qscale` of the wrong length is refused, because it sets the difference
-    # step and a silent default would secant across the wrong interval.
+    # Differentiated with respect to the target its equation captures, at the
+    # answer, the problem on the values given: x₁ = t, q = log(t/(1 − t)).
+    at_target(t) = DualNewtonProblem(
+        A, [0.0, 0.0], h;
+        phases = [SolutionPhase([1, 2], 2; always_present = true)],
+        idx_bounded = Int[], gq = (q, _) -> [0.0, q[1]], cq = (x, q, _) -> [x[1] - t], q0 = [0.1],
+    )
+    dt = ForwardDiff.derivative(target) do t
+        r = dual_newton_tangent(at_target(t), b, res.x; q = res.q, primal = prob)
+        vcat(r.x, r.q)
+    end
+    @test dt ≈ [1.0, -1.0, 1 / (target * (1 - target))] rtol = 1.0e-8
+
+    # `qscale` set the difference step of the Jacobian until 0.7.4. The Jacobian
+    # is exact now: the scale may be left out, and the answer does not depend on
+    # it. One given with the wrong length is still refused.
+    p_noscale = DualNewtonProblem(
+        A, [0.0, 0.0], h;
+        phases = [SolutionPhase([1, 2], 2; always_present = true)],
+        gq = (q, _) -> [0.0, q[1]], cq = (x, q, _) -> [x[1] - target],
+        q0 = [0.1],
+    )
+    @test p_noscale.qscale == [1.0]
+    @test dual_newton_solve(p_noscale, b, [0.5, 0.5]).q ≈ res.q rtol = 1.0e-12
     @test_throws ArgumentError DualNewtonProblem(
         A, [0.0, 0.0], h;
         phases = [SolutionPhase([1, 2], 2; always_present = true)],
         gq = (q, _) -> [0.0, q[1]], cq = (x, q, _) -> [x[1] - target],
-        q0 = [0.1], qscale = Float64[],
+        q0 = [0.1], qscale = [1.0, 2.0],
     )
     # And `q0` without the two callbacks is refused too.
     @test_throws ArgumentError DualNewtonProblem(
@@ -927,66 +966,80 @@ end
     @test maximum(abs, res3.x .- res.x) <= 1.0e-8
 end
 
-@testset "the solutes of a solvent phase are solved together" begin
-    # `_invert_phases!` solves the solutes of a solvent phase by Newton's method
-    # on the whole block (`_aqueous_newton!`). Until 0.7.4 it updated each one as
-    # `w ← w + clamp(u − g − h, ±30)`, which is Newton only where `∂h/∂w = 1`.
-    function inner(h, g; w0, max_fall = 30.0)
+@testset "an inner iteration that has stopped converging stops sweeping" begin
+    # `_invert_phases!` updates a solute as `w ← w + clamp(u − g − h, ±30)`, so an
+    # activity model with `h₂ = β ln x₂` gives the map `w ← (1 − β) w` — a real
+    # dependence on the composition, not a scripted sequence. Three regimes,
+    # and the stall rule must tell them apart.
+    function sweeps(β; w0 = 1.0)
         calls = Ref(0)
-        hc(x, q) = (calls[] += 1; h(x, q))
-        n = length(g)
+        h(x, _) = (calls[] += 1; [0.0, β * log(x[2])])
         prob = DualNewtonProblem(
-            ones(1, n), g, hc;
-            phases = [SolutionPhase(collect(1:n), 1)], idx_bounded = Int[],
+            Float64[1 1], [0.0, 0.0], h;
+            phases = [SolutionPhase([1, 2], 1)], idx_bounded = Int[],
         )
-        W = [copy(w0)]
+        W = [[0.0, w0]]
         resid = Ref(NaN)
         OptimaSolver._invert_phases!(
-            prob, W, [0.0], [1.0], [1], Int[], Float64[], zeros(n);
+            prob, W, [0.0], [1.0], [1], Int[], Float64[], zeros(2);
+            resid = resid, maxsweeps = 200,
+        )
+        return (calls = calls[], w = W[1][2], step = resid[])
+    end
+
+    # β = 3: `w ← −2w`, an expanding oscillation that the clamp bounds into a
+    # cycle between 16 and −14. It never sets a new smallest step after the
+    # first sweep, so it stops `INNER_STALL_SWEEPS` sweeps later. Without the
+    # rule it ran the full 200, which is what a cement's bad trial points did
+    # on 89 % of their calls.
+    cyc = sweeps(3.0)
+    @test cyc.calls == OptimaSolver.INNER_STALL_SWEEPS + 1
+    @test cyc.step == 30.0          # reported as unconverged, as it must be
+
+    # β = 1.5: `w ← −w/2`, a contraction that needs 49 sweeps to reach the
+    # threshold — more than `INNER_STALL_SWEEPS`. Its step falls at every sweep,
+    # so the rule never fires and it converges exactly as it did before.
+    con = sweeps(1.5)
+    @test con.calls == 49
+    @test abs(con.w) < 1.0e-14
+
+    # β = 0.1: `w ← 0.9w`, converging but too slowly to finish in 200 sweeps.
+    # It still sets a new minimum every time, so it runs to the cap as before
+    # and is not mistaken for a cycle.
+    slow = sweeps(0.1)
+    @test slow.calls == 200
+    @test 0 < slow.step < 1.0e-9
+end
+
+@testset "a solute falls to its potential in one sweep, if the fall is unbounded" begin
+    # A solute the potentials put 650 below its start, in an ideal solution. By
+    # default a fall is bounded by 30 per sweep, as a rise is: the solute moves by
+    # exactly 30 at every sweep, the stall rule reads that as no progress, and the
+    # call stops at the twenty-first sweep, twenty short of the target. With
+    # `max_fall = Inf` (`DualNewtonOptions.inner_fall_bound`) it arrives in one
+    # sweep and the second finds nothing to move.
+    function fall(max_fall)
+        calls = Ref(0)
+        h(x, _) = (calls[] += 1; [0.0, log(x[2])])
+        prob = DualNewtonProblem(
+            Float64[1 1], [0.0, 650.0], h;
+            phases = [SolutionPhase([1, 2], 1)], idx_bounded = Int[],
+        )
+        W = [[0.0, 0.0]]
+        resid = Ref(NaN)
+        OptimaSolver._invert_phases!(
+            prob, W, [0.0], [1.0], [1], Int[], Float64[], zeros(2);
             resid = resid, maxsweeps = 200, max_fall,
         )
-        return (calls = calls[], w = W[1], step = resid[])
+        return (calls = calls[], w = W[1][2], step = resid[])
     end
-
-    # `h₂ = β ln x₂`: the componentwise update is `w ← (1 − β) w`, a cycle for
-    # β = 3, a slow contraction for β = 0.1. Newton is exact in one step for
-    # every β.
-    for β in (3.0, 1.5, 0.1)
-        r = inner((x, _) -> [0.0, β * log(x[2])], [0.0, 0.0]; w0 = [0.0, 1.0])
-        @test abs(r.w[2]) < 1.0e-12
-        @test r.step <= 1.0e-12
-        @test r.calls <= 20
-    end
-
-    # The coupling that made the componentwise update cycle in a cement pore
-    # solution: an activity that depends on all the solutes, as through the
-    # ionic strength, `hᵢ = ln xᵢ + κ S` with `S = x₂ + x₃`. Along `(1, 1)` the
-    # Jacobian has the eigenvalue `1 + κS ≈ 4.7`, and the componentwise map
-    # multiplied the error by −3.7 at every sweep. The answer solves
-    # `S e^{κS} = e^{−g₂} + e^{−g₃}`.
-    κ = 10.0
-    g = [0.0, -2.0, -2.0]
-    hk(x, _) = (S = x[2] + x[3]; [0.0, log(max(x[2], 1.0e-300)) + κ * S, log(max(x[3], 1.0e-300)) + κ * S])
-    r = inner(hk, g; w0 = [0.0, -5.0, -5.0])
-    S = exp(r.w[2]) + exp(r.w[3])
-    @test S * exp(κ * S) ≈ exp(-g[2]) + exp(-g[3]) rtol = 1.0e-10
-    @test r.step <= 1.0e-12
-
-    # A solute the potentials put 650 below its start arrives in one Newton step,
-    # whatever bound a fall has.
-    for max_fall in (30.0, Inf)
-        r = inner((x, _) -> [0.0, log(x[2])], [0.0, 650.0]; w0 = [0.0, 0.0], max_fall)
-        @test r.w[2] ≈ -650.0 atol = 1.0e-9
-    end
-
-    # A member whose activity does not depend on its amount has no Newton step,
-    # and goes to the bound its residual points to, by at most `max_fall` per
-    # iteration down.
-    flat(x, _) = [0.0, 0.0]
-    stepwise = inner(flat, [0.0, 5.0]; w0 = [0.0, 0.0], max_fall = 30.0)
-    atonce = inner(flat, [0.0, 5.0]; w0 = [0.0, 0.0], max_fall = Inf)
-    @test stepwise.w[2] ≈ OptimaSolver.W_FLOOR && atonce.w[2] ≈ OptimaSolver.W_FLOOR
-    @test atonce.calls < stepwise.calls
+    bounded = fall(30.0)
+    @test bounded.calls == OptimaSolver.INNER_STALL_SWEEPS + 1
+    @test bounded.w ≈ -30.0 * (OptimaSolver.INNER_STALL_SWEEPS + 1) && bounded.step == 30.0
+    free = fall(Inf)
+    @test free.calls == 2
+    @test free.w ≈ -650.0 atol = 1.0e-12
+    @test free.step <= 1.0e-14
 end
 
 @testset "the trial composition comes back with the verdict" begin

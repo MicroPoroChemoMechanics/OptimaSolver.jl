@@ -117,12 +117,16 @@ function SciMLBase.solve(
     # ── Extract components ───────────────────────────────────────────────────
     f_obj = opt_prob.f.f
     p = opt_prob.p
-    u0 = opt_prob.u0
-    T = eltype(u0)
+    # In the number type of the start and of the parameters: a problem whose
+    # parameters carry dual numbers is solved on them, and the answer carries
+    # the derivatives of the iterations that reached it.
+    D = _param_dual_type(p)
+    T = D === nothing ? eltype(opt_prob.u0) : promote_type(eltype(opt_prob.u0), D)
+    u0 = convert(Vector{T}, collect(opt_prob.u0))
     ns = length(u0)
 
-    lb = opt_prob.lb !== nothing ? opt_prob.lb : fill(T(1.0e-16), ns)
-    ub = opt_prob.ub !== nothing ? opt_prob.ub : fill(T(Inf), ns)
+    lb = opt_prob.lb !== nothing ? convert(Vector{T}, collect(opt_prob.lb)) : fill(T(1.0e-16), ns)
+    ub = opt_prob.ub !== nothing ? convert(Vector{T}, collect(opt_prob.ub)) : fill(T(Inf), ns)
 
     # ── Build gradient function ──────────────────────────────────────────────
     g! = if opt_prob.f.grad !== nothing
