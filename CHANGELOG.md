@@ -1,5 +1,18 @@
 # Changelog
 
+## Unreleased
+
+### Documentation
+
+- Getting Started asked for Julia ≥ 1.10; the package requires 1.12.
+- The quick example announced "typically 15–25" iterations; it takes 32 at
+  its tolerance of `1e-12`, measured on 0.8.0 and already reported in the
+  0.7.5 notes.
+- The home page promised that a warm start typically halves the iteration
+  count, which the Warm Start page measures to be false on its own example
+  (52 warm against 39 cold); it now says that the saving depends on the
+  problem and why.
+
 ## v0.8.0 — each balance row judged against what it holds
 
 Until 0.7.8 the dual Newton converged, and `kkt_certificate` certified, on the

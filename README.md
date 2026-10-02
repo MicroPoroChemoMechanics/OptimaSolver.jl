@@ -81,7 +81,7 @@ result = solve(prob, OptimaOptions(tol=1e-12))
 
 println(result.n)          # ≈ [0.665241, 0.244728, 0.090031]  (exp(-μᵢ⁰)/Z)
 println(result.converged)  # true
-println(result.iterations) # typically 15–25
+println(result.iterations) # 32 at this tolerance
 ```
 
 ## SciML / ChemistryLab interface

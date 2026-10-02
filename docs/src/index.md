@@ -34,8 +34,9 @@ element-abundance vector, and $\varepsilon$ is a small positivity floor.
   $\partial n^*/\partial b$ and $\partial n^*/\partial(\mu^0/RT)$ using the
   same Schur-complement factorization as the last Newton step.
 - **Warm-start** — consecutive solves (e.g. temperature scans, titration curves)
-  reuse the previous solution as the starting point, typically halving the iteration
-  count or more.
+  reuse the previous solution as the starting point. Whether that saves iterations
+  depends on the problem, since the barrier parameter restarts from `barrier_init`
+  on every solve; [Warm Start](@ref "Warm Start") measures a case where it does not.
 - **ForwardDiff / AD compatibility** — no `Float64` casts; the entire solver stack
   is written in generic Julia arithmetic so thermodynamic parameters can be
   differentiated through the solver.

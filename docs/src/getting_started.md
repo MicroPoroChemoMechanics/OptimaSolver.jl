@@ -6,7 +6,7 @@ CurrentModule = OptimaSolver
 
 ## Installation
 
-OptimaSolver.jl requires Julia ≥ 1.10. Install it from the Julia package manager:
+OptimaSolver.jl requires Julia ≥ 1.12. Install it from the Julia package manager:
 
 ```julia
 julia> import Pkg; Pkg.add("OptimaSolver")
@@ -64,7 +64,7 @@ prob = OptimaProblem(A, b, G, ∇G!;
 result = solve(prob, OptimaOptions(tol=1e-12, verbose=false))
 
 println("Converged:  ", result.converged)    # true
-println("Iterations: ", result.iterations)   # typically 15–25
+println("Iterations: ", result.iterations)   # 32 at this tolerance
 println("n* = ", round.(result.n; digits=6)) # [0.665241, 0.244728, 0.090031]
 
 # Compare with analytical solution
