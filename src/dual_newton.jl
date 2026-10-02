@@ -270,9 +270,12 @@ by sweeps: `invert(c, ref, w, q, params)`, with `c` the `uᵢ − gᵢ` of the m
 (a vector over `members`, `-Inf` for a member whose component is absent from the
 budget), `ref` the amount of the reference, `w` their current log-amounts and
 `q`, `params` what `h` is given, returns the log-amounts at which every member
-but the reference meets `hᵢ = cᵢ`, or `nothing` when no composition does. The sweep below assumes `∂hᵢ/∂wᵢ = 1` and nothing else, and an activity
-model couples the solutes: through the ionic strength, the Debye–Hückel and
-B-dot models give `∂h/∂w` a part of rank one. Where that coupling is strong the
+but the reference meets `hᵢ = cᵢ`, or `nothing` when no composition does. A trial
+of the line search it answers `nothing` is passed over when the iterate it comes
+from had a composition, and swept as that iterate was when it had none. The sweep
+below assumes `∂hᵢ/∂wᵢ = 1` and nothing else, and an activity model couples the
+solutes: through the ionic strength, the Debye–Hückel and B-dot models give
+`∂h/∂w` a part of rank one. Where that coupling is strong the
 sweep cycles instead of converging, and where the model has no solution it
 cycles as well, so the two cannot be told apart. A model whose coefficients
 depend on the composition through the ionic strength alone reduces the
@@ -814,6 +817,7 @@ function _invert_phases!(
         dead = Set{Int}(), g = prob.g, q = prob.q0,
         resid::Union{Nothing, Base.RefValue{Float64}} = nothing, maxsweeps::Int = 200,
         max_fall::Float64 = 30.0, trial::Bool = false,
+        composed::Union{Nothing, AbstractVector{Bool}} = nothing,
     )
     u = -(transpose(prob.A) * y)
     worst = Inf
@@ -829,8 +833,15 @@ function _invert_phases!(
     # Whether each phase's own inversion is used. A point that is not a trial of
     # the line search (the iterate itself, a start) needs a composition to move
     # from whether or not its potentials hold one: where the inversion finds
-    # none there, the sweeps take over, as they did before it existed. A trial
-    # stops at once instead, which is where nearly all the inversions are.
+    # none there, the sweeps take over, as they did before it existed, and
+    # `composed[k]` records which of the two it was. A trial stops at once
+    # instead, which is where nearly all the inversions are, but only where the
+    # iterate had a composition: the trial has then left the potentials that
+    # hold one, and a shorter step comes back to them. From an iterate whose
+    # potentials hold none, every nearby trial holds none either, and stopping
+    # each of them stopped the solve at its first iterate: a paste loaded with
+    # sodium chloride under the limiting law, which the sweeps had carried from
+    # that same start to its answer. Its trials are swept, as the iterate was.
     use_invert = [prob.phases[k].invert !== nothing for k in eachindex(prob.phases)]
     # `h` is needed by the phases that are swept, and only by them.
     swept = any(k -> !use_invert[k], act_ph)
@@ -888,8 +899,9 @@ function _invert_phases!(
                 # carrier came back as given, every start judged to hold nothing.
                 c = [i in dead ? oftype(u[i] - g[i], -Inf) : u[i] - g[i] for i in ph.members]
                 wn = ph.invert(c, refs[a], W[k], q, prob.params)
+                trial || composed === nothing || (composed[k] = wn !== nothing)
                 if wn === nothing
-                    if trial
+                    if trial && (composed === nothing || composed[k])
                         runaway = true
                     else
                         use_invert[k] = false
@@ -1006,6 +1018,7 @@ function _outer_residual(
         dead = Set{Int}(), degenerate = Int[],
         resid::Union{Nothing, Base.RefValue{Float64}} = nothing,
         inner_maxit::Int = 200, max_fall::Float64 = 30.0, trial::Bool = false,
+        composed::Union{Nothing, AbstractVector{Bool}} = nothing,
     )
     m = size(prob.A, 1)
     nph = length(act_ph)
@@ -1020,7 +1033,7 @@ function _outer_residual(
 
     _invert_phases!(
         prob, W, y, refs, act_ph, active, xB, x_buf; dead = dead, g = g, q = q,
-        resid = resid, maxsweeps = inner_maxit, max_fall, trial,
+        resid = resid, maxsweeps = inner_maxit, max_fall, trial, composed,
     )
 
     hv = current_h(prob, x_buf, q)
@@ -1907,11 +1920,14 @@ function _dual_newton_attempt(
         inner_ok = false
 
         inner_resid = Ref(Inf)
+        # Which phases' own inversion found a composition at the iterate: what a
+        # trial that finds none is judged against (`_invert_phases!`).
+        composed = trues(length(prob.phases))
         for _ in 1:(opts.maxit)
             R = _outer_residual(
                 prob, v, W, act_ph, active, bv, x_buf;
                 dead, degenerate, resid = inner_resid, inner_maxit = opts.inner_maxit,
-                max_fall = opts.inner_fall_bound,
+                max_fall = opts.inner_fall_bound, composed,
             )
             res = maximum(abs, R)
             if opts.verbose
@@ -2046,7 +2062,17 @@ function _dual_newton_attempt(
             # refusing forty candidates to reach the same one. Measured on the
             # coupled hydration of a CEM I over three hours, that was 392 044
             # inner solves spent in the first pass for 189 steps accepted there.
-            current_converged = !opts.lenient_line_search || inner_resid[] <= opts.inner_tol
+            #
+            # Nor is it asked of an iterate whose potentials hold no composition
+            # for a phase that inverts itself, lenient or not: that phase was
+            # swept, and so are its trials (`composed`), none of which reports a
+            # converged inversion unless it holds a composition again. Asked
+            # anyway, the first pass refused forty swept trials, each swept to
+            # the stall rule, before the second accepted the first that
+            # decreased: 32 cement pastes then took 505 s instead of 349 s,
+            # seven of them two to three times longer.
+            current_converged = (!opts.lenient_line_search || inner_resid[] <= opts.inner_tol) &&
+                all(k -> composed[k], act_ph)
             # The decrease asked for is that of the worst row or, where that one
             # cannot decrease, Armijo's on `‖R‖²` with the worst row not growing.
             # The step is the least-squares one, a descent direction of `‖R‖²`
@@ -2082,6 +2108,7 @@ function _dual_newton_attempt(
                         prob, v_t, W_t, act_ph, active, bv, x_buf;
                         dead, degenerate, resid = cand_resid,
                         inner_maxit = opts.inner_maxit, max_fall = opts.inner_fall_bound, trial = true,
+                        composed,
                     )
                     if isinf(cand_resid[])
                         runaway_streak += 1
@@ -2109,7 +2136,9 @@ function _dual_newton_attempt(
                     end
                     α /= 2
                 end
-                (accepted || only_runaway) && break
+                # Where the first pass asked nothing of the inversion, the second
+                # would evaluate the same trials and judge them alike.
+                (accepted || only_runaway || !current_converged) && break
             end
             accepted || break
 

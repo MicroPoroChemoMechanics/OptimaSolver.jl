@@ -558,6 +558,15 @@ The iterate itself, and a start, need a composition to move from whether or not
 their potentials hold one: there the sweeps take over, as they did before the
 inversion existed, and a poor start still gets going.
 
+A trial is judged against the iterate it comes from. A trial without a
+composition has left the potentials that hold one only if its iterate held one,
+and a shorter step then comes back to them. From an iterate whose potentials hold
+none, no nearby trial holds one either: its trials are swept, as it was, and the
+iteration moves on the residual of the sweeps until the potentials hold a
+composition again. Passing those trials over stopped the solve at its first
+iterate. Under the limiting law, that is where the multipliers of the linear
+program over the pure phases put a cement paste loaded with sodium chloride.
+
 ### Degenerate components
 
 A row `k` with ``b_k = 0`` need not be degenerate. With ``x \ge 0``,
