@@ -1868,6 +1868,67 @@ function _swept_jacobian(prob, v, W_ref, act_ph, active, bv; dead, degenerate, i
     return ForwardDiff.jacobian(f, v)
 end
 
+# ── the balance, judged row by row ────────────────────────────────────────────
+#
+# A balance row is judged against what it holds, `Σⱼ |Aₖⱼ xⱼ| + Σₗ |Aqₖₗ qₗ|`,
+# and in moles once that exceeds a mole: `|rₖ| ≤ tol·min(scaleₖ, 1)`. A trace is
+# then held to its own amount, as PHREEQC and GEMS hold a mass balance to its
+# element total, and a large row to the absolute tolerance it always had, so no
+# answer is accepted that was refused before. Judged in moles alone, a trace of
+# 1e-9 mol could be 10 % wrong and pass.
+#
+# The scale never falls below a floor: `eps²` of the budget for a row that has
+# one, so that a row whose carriers have all vanished is refused, and `eps` of
+# the largest budget for a row whose budget is zero within rounding. The same
+# scales weight the rows of the Newton step.
+#
+# Only a row with a budget is judged relative to what it holds. A row whose
+# budget is zero within rounding has no total to be a fraction of (the electron
+# row of a redox pair, a coupled site family, the extents of a kinetic step), and
+# is judged in moles, as a degenerate row is. Judged against its floor, the
+# electron row of a cement paste, whose carriers held 8e-15 mol, read 1.24e-24
+# mol as 1.5e-10 of it, and held the Newton of a certified replay for 5033 of its
+# 6283 evaluations: three and a half times the time, for nothing.
+
+function _balance_scales(prob, x, q, b, degenerate)
+    m = size(prob.A, 1)
+    bscale = max(1.0, maximum(abs, b; init = 0.0))
+    scales = ones(m)
+    for k in 1:m
+        k in degenerate && continue
+        s = 0.0
+        for j in axes(prob.A, 2)
+            s += abs(prob.A[k, j] * _primal_value(x[j]))
+        end
+        for l in eachindex(q)
+            s += abs(prob.Aq[k, l] * _primal_value(q[l]))
+        end
+        floor_k = abs(b[k]) > eps() * bscale ? eps()^2 * abs(b[k]) : eps() * bscale
+        scales[k] = max(s, floor_k)
+    end
+    return scales
+end
+
+# The scale a balance row is judged on: what it holds, for a row with a
+# budget; one, in moles, for a row whose budget is zero within rounding.
+function _judged_scales(scales, b)
+    bscale = max(1.0, maximum(abs, b; init = 0.0))
+    return [abs(b[k]) > eps() * bscale ? scales[k] : 1.0 for k in eachindex(scales)]
+end
+
+# The worst row of `R`, its balance rows (from `off + 1`) divided by
+# `min(scale, 1)` and every other row as it is.
+function _judged_residual(R, scales, off)
+    worst = 0.0
+    for i in eachindex(R)
+        r = abs(_primal_value(R[i]))
+        k = i - off
+        (1 <= k <= length(scales)) && (r /= min(scales[k], 1.0))
+        worst = max(worst, r)
+    end
+    return worst
+end
+
 """
     _dual_newton_attempt(...) -> (; x, y, q, active_phases, active, converged)
 
@@ -1930,6 +1991,12 @@ function _dual_newton_attempt(
                 max_fall = opts.inner_fall_bound, composed,
             )
             res = maximum(abs, R)
+            # Read before the Jacobian reuses `x_buf`, and the weights of the step
+            # below: each balance row on the scale of what it holds.
+            scales = _balance_scales(
+                prob, x_buf, @view(v[(nph + m + na + 1):(nph + m + na + nq)]), bv, degenerate,
+            )
+            judged = _judged_residual(R, _judged_scales(scales, bv), nph)
             if opts.verbose
                 # Split by block: the three carry different units — log-activities
                 # for the phase and stationarity rows, moles for the balance — and
@@ -1937,18 +2004,18 @@ function _dual_newton_attempt(
                 rp = nph == 0 ? 0.0 : maximum(abs, @view R[1:nph])
                 rb = maximum(abs, @view R[(nph + 1):(nph + m)])
                 rs = na == 0 ? 0.0 : maximum(abs, @view R[(nph + m + 1):(nph + m + na)])
-                @info "dual-newton" res res_phase = rp res_balance = rb res_stat = rs nph na
+                @info "dual-newton" res judged res_phase = rp res_balance = rb res_stat = rs nph na
             end
-            if res <= opts.tol
+            if judged <= opts.tol
                 inner_ok = true
                 break
             end
 
             N = length(v)
             W_ref = [copy(w) for w in W]
-            # Each balance row on the scale of what it currently holds,
-            # `Σⱼ |Aₖⱼ xⱼ|`, for the factorization below; read before the Jacobian
-            # reuses `x_buf`. The rank of a pivoted QR is decided against its
+            # Each balance row weighted by the scale it is judged on, what it
+            # currently holds (`scales`, read above), for the factorization
+            # below. The rank of a pivoted QR is decided against its
             # largest pivot, and the row of a trace component carries the
             # derivatives of amounts as small as its carriers: a budget of 1e-9
             # mol whose carriers sat at 1e-16 gave its potential a column of
@@ -1964,19 +2031,8 @@ function _dual_newton_attempt(
             # species carries (a redox potential held by amounts of 1e-305) stays
             # as absent as it was.
             wR = ones(length(R))
-            let bscale = max(1.0, maximum(abs, bv)), qv = @view v[(nph + m + na + 1):(nph + m + na + nq)]
-                for k in 1:m
-                    k in degenerate && continue
-                    s = 0.0
-                    for j in axes(prob.A, 2)
-                        s += abs(prob.A[k, j] * x_buf[j])
-                    end
-                    for l in 1:nq
-                        s += abs(prob.Aq[k, l] * qv[l])
-                    end
-                    floor_k = abs(bv[k]) > eps() * bscale ? eps()^2 * abs(bv[k]) : eps() * bscale
-                    wR[nph + k] = 1.0 / max(s, floor_k)
-                end
+            for k in 1:m
+                wR[nph + k] = 1.0 / scales[k]
             end
             # Exact, by the implicit-function theorem over the inversion where it
             # has converged (`_outer_jacobian`), and by forward mode through its
@@ -2170,12 +2226,13 @@ function _dual_newton_attempt(
         # out. The measure below is the one the certificate applies — stationarity,
         # element balance, and the worst violation among the phases held absent —
         # so descending it descends the distance to a KKT point.
-        let res_outer = maximum(
-                abs, _outer_residual(
+        let res_outer = _judged_residual(
+                _outer_residual(
                     prob, v, W, act_ph, active, bv, x_buf;
                     dead, degenerate, inner_maxit = opts.inner_maxit,
                     max_fall = opts.inner_fall_bound,
                 ),
+                _judged_scales(_balance_scales(prob, x_buf, q, bv, degenerate), bv), nph,
             )
             viol = 0.0
             for i in prob.idx_bounded
@@ -2440,11 +2497,12 @@ function _dual_newton_attempt(
         y = v[(nph + 1):(nph + m)]
         xB = na == 0 ? Float64[] : v[(nph + m + 1):(nph + m + na)]
         q = nq == 0 ? Float64[] : v[(nph + m + na + 1):(nph + m + na + nq)]
-        converged = maximum(
-            abs, _outer_residual(
+        converged = _judged_residual(
+            _outer_residual(
                 prob, v, W, act_ph, active, bv, x_buf;
                 dead, degenerate, max_fall = opts.inner_fall_bound,
             ),
+            _judged_scales(_balance_scales(prob, x_buf, q, bv, degenerate), bv), nph,
         ) <= opts.tol && best_viol <= opts.si_tol
     end
 
@@ -2496,6 +2554,16 @@ and the check then reports a residual of 74 for a point solved to `5e-12`.
 Variables carrying a component whose right-hand side has vanished are excluded
 from both tests: they are zero by the CONSTRAINT, and the multiplier of a
 component nobody supplies is determined by nothing.
+
+# The balance
+
+Each row of `A x = b` that has a budget is judged against what it holds,
+`Σⱼ |Aₖⱼ xⱼ|`, and in moles once that exceeds a mole; a row whose budget is zero
+within rounding, and a degenerate one, in moles. `feasibility` is the worst
+`|rₖ| / min(scaleₖ, 1)`, the larger of `feasibility_abs` (moles) and
+`feasibility_rel` (relative, over the rows with a budget), and `optimal` asks it
+below `tol`. A trace is held to its own amount, and a large row to the tolerance
+in moles it always had.
 """
 function kkt_certificate(
         prob::DualNewtonProblem, x::AbstractVector, b::AbstractVector;
@@ -2584,19 +2652,28 @@ function kkt_certificate(
     # out at exactly `Δξ`.
     resid = prob.nq == 0 ? (prob.A * xv .- bv) :
         (prob.A * xv .+ prob.Aq * collect(q) .- bv)
-    # ABSOLUTE, deliberately, and not the row-scaled measure the solver's
-    # convergence schedule uses. The two answer different questions. A schedule
-    # needs to know whether a row is satisfied *relative to its own budget*, so
-    # that a small element is not hidden behind a large one. A certificate states
-    # how much matter the composition fails to account for, and that is a number
-    # of moles.
+    # Each row judged against what it holds, in moles above one mole: the
+    # measure the solver converges on (`_balance_scales`). Judged in moles alone,
+    # as until 0.7.8, a trace of 1e-9 mol could be 10 % wrong and certified.
     #
-    # Scaling it was tried and is wrong: the charge row of a dilute solution has
-    # `b = 0` and a flux of order 1e-6, so dividing by it turns a residual of
-    # 7.6e-7 mol — machine noise on a 55 mol system — into 0.76 and refuses every
-    # answer, the correct ones included.
-    feasibility = maximum(abs, resid)
-    feas_abs = feasibility
+    # Until 0.7.8 a comment here held that a relative measure refuses correct
+    # answers: the charge row of a dilute solution, `b = 0` and a flux of 1e-6,
+    # would turn 7.6e-7 mol of machine noise into 0.76. Measured on a dilute
+    # sodium chloride, the dual Newton leaves 3e-21 mol on a 1e-6 mol row,
+    # 3e-15 of it; a residual of 76 % of a row's flux is no rounding. The rows
+    # whose relative residual is large at a correct answer are those of a
+    # component nobody supplies, its carriers at the floor: degenerate rows,
+    # judged in moles as before.
+    scales = _balance_scales(prob, xv, q, bv, degenerate)
+    bscale = max(1.0, maximum(abs, bv; init = 0.0))
+    feas_abs = maximum(abs, resid; init = 0.0)
+    feas_rel = 0.0
+    for k in eachindex(resid)
+        # Relative only where the row has a total: see `_judged_scales`.
+        (k in degenerate || abs(bv[k]) <= eps() * bscale) && continue
+        feas_rel = max(feas_rel, abs(resid[k]) / scales[k])
+    end
+    feasibility = max(feas_abs, feas_rel)
 
     # The NONLINEAR residual of the parameter block. Leaving it out was a hole,
     # not an omission of detail: a kinetic step whose mineral is dropped from the
@@ -2718,7 +2795,7 @@ function kkt_certificate(
     return (;
         stationarity = stationarity, stationarity_abs = stat_raw,
         stationarity_scale = stat_scale, feasibility = feasibility,
-        feasibility_abs = feas_abs,
+        feasibility_abs = feas_abs, feasibility_rel = feas_rel,
         worst_violation = worst_all, worst_violation_bounded = worst,
         stationarity_floored = stationarity_floored, n_floored = length(floored),
         worst_violation_phase = worst_phase, absent_phases = absent_phases,
