@@ -789,9 +789,11 @@ on the same measure, and its rows are weighted by the same scales in the step.
 The scale is floored at ``\epsilon^2 |b_k|`` for a row that has a budget, so that
 a row whose carriers have all vanished is refused, and at
 ``\epsilon \max(1, \|b\|_\infty)`` for a row whose budget is zero within
-rounding. A degenerate row
-is judged in moles: a component whose budget is below ``10^{-12}`` of the largest
-is one nobody supplies, its carriers held at the floor. The certificate reports
+rounding. Only a row with a budget is judged relative to what it holds: a row
+whose budget is zero within rounding, such as the electron row of a redox pair,
+has no total to be a fraction of, and is judged in moles. So is a degenerate row:
+a component whose budget is below ``10^{-12}`` of the largest is one nobody
+supplies, its carriers held at the floor. The certificate reports
 `feasibility_abs` in moles and `feasibility_rel` relative to each row;
 `feasibility`, the larger of the two, is what it judges.
 

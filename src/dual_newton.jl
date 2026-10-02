@@ -1879,11 +1879,16 @@ end
 #
 # The scale never falls below a floor: `eps²` of the budget for a row that has
 # one, so that a row whose carriers have all vanished is refused, and `eps` of
-# the largest budget for a row whose budget is zero within rounding, which holds
-# carriers of both signs (a coupled site family, the extents of a kinetic step).
-# A degenerate row, whose component nobody supplies, has scale one: its residual
-# is that of its pinned multiplier, judged as it always was. The same scales
-# weight the rows of the Newton step.
+# the largest budget for a row whose budget is zero within rounding. The same
+# scales weight the rows of the Newton step.
+#
+# Only a row with a budget is judged relative to what it holds. A row whose
+# budget is zero within rounding has no total to be a fraction of (the electron
+# row of a redox pair, a coupled site family, the extents of a kinetic step), and
+# is judged in moles, as a degenerate row is. Judged against its floor, the
+# electron row of a cement paste, whose carriers held 8e-15 mol, read 1.24e-24
+# mol as 1.5e-10 of it, and held the Newton of a certified replay for 5033 of its
+# 6283 evaluations: three and a half times the time, for nothing.
 
 function _balance_scales(prob, x, q, b, degenerate)
     m = size(prob.A, 1)
@@ -1902,6 +1907,13 @@ function _balance_scales(prob, x, q, b, degenerate)
         scales[k] = max(s, floor_k)
     end
     return scales
+end
+
+# The scale a balance row is judged on: what it holds, for a row with a
+# budget; one, in moles, for a row whose budget is zero within rounding.
+function _judged_scales(scales, b)
+    bscale = max(1.0, maximum(abs, b; init = 0.0))
+    return [abs(b[k]) > eps() * bscale ? scales[k] : 1.0 for k in eachindex(scales)]
 end
 
 # The worst row of `R`, its balance rows (from `off + 1`) divided by
@@ -1984,7 +1996,7 @@ function _dual_newton_attempt(
             scales = _balance_scales(
                 prob, x_buf, @view(v[(nph + m + na + 1):(nph + m + na + nq)]), bv, degenerate,
             )
-            judged = _judged_residual(R, scales, nph)
+            judged = _judged_residual(R, _judged_scales(scales, bv), nph)
             if opts.verbose
                 # Split by block: the three carry different units — log-activities
                 # for the phase and stationarity rows, moles for the balance — and
@@ -2220,7 +2232,7 @@ function _dual_newton_attempt(
                     dead, degenerate, inner_maxit = opts.inner_maxit,
                     max_fall = opts.inner_fall_bound,
                 ),
-                _balance_scales(prob, x_buf, q, bv, degenerate), nph,
+                _judged_scales(_balance_scales(prob, x_buf, q, bv, degenerate), bv), nph,
             )
             viol = 0.0
             for i in prob.idx_bounded
@@ -2490,7 +2502,7 @@ function _dual_newton_attempt(
                 prob, v, W, act_ph, active, bv, x_buf;
                 dead, degenerate, max_fall = opts.inner_fall_bound,
             ),
-            _balance_scales(prob, x_buf, q, bv, degenerate), nph,
+            _judged_scales(_balance_scales(prob, x_buf, q, bv, degenerate), bv), nph,
         ) <= opts.tol && best_viol <= opts.si_tol
     end
 
@@ -2545,11 +2557,13 @@ component nobody supplies is determined by nothing.
 
 # The balance
 
-Each row of `A x = b` is judged against what it holds, `Σⱼ |Aₖⱼ xⱼ|`, and in
-moles once that exceeds a mole: `feasibility` is the worst `|rₖ| / min(scaleₖ, 1)`,
-the larger of `feasibility_abs` (moles) and `feasibility_rel` (relative to each
-row), and `optimal` asks it below `tol`. A trace is held to its own amount, and a
-large row to the tolerance in moles it always had.
+Each row of `A x = b` that has a budget is judged against what it holds,
+`Σⱼ |Aₖⱼ xⱼ|`, and in moles once that exceeds a mole; a row whose budget is zero
+within rounding, and a degenerate one, in moles. `feasibility` is the worst
+`|rₖ| / min(scaleₖ, 1)`, the larger of `feasibility_abs` (moles) and
+`feasibility_rel` (relative, over the rows with a budget), and `optimal` asks it
+below `tol`. A trace is held to its own amount, and a large row to the tolerance
+in moles it always had.
 """
 function kkt_certificate(
         prob::DualNewtonProblem, x::AbstractVector, b::AbstractVector;
@@ -2651,10 +2665,12 @@ function kkt_certificate(
     # component nobody supplies, its carriers at the floor: degenerate rows,
     # judged in moles as before.
     scales = _balance_scales(prob, xv, q, bv, degenerate)
+    bscale = max(1.0, maximum(abs, bv; init = 0.0))
     feas_abs = maximum(abs, resid; init = 0.0)
     feas_rel = 0.0
     for k in eachindex(resid)
-        k in degenerate && continue
+        # Relative only where the row has a total: see `_judged_scales`.
+        (k in degenerate || abs(bv[k]) <= eps() * bscale) && continue
         feas_rel = max(feas_rel, abs(resid[k]) / scales[k])
     end
     feasibility = max(feas_abs, feas_rel)
