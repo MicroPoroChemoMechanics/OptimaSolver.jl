@@ -1,5 +1,55 @@
 # Changelog
 
+## v0.8.0 — each balance row judged against what it holds
+
+Until 0.7.8 the dual Newton converged, and `kkt_certificate` certified, on the
+element balance in moles, against `1e-10`. A component of `1e-9` mol could be
+10 % wrong and certified, and one of `1e-11` mol in a one-mole system, started at
+a tenth of its budget, was declared converged at once, 90 % short. GEMS and
+PHREEQC judge a mass balance against the element total; so does this release.
+
+### Breaking changes
+
+- **The compatibility bound.** Below 1.0 a minor release is breaking for the
+  registry: a package bounding OptimaSolver at `"0.7"` does not accept 0.8 and
+  has to widen its bound.
+- **Convergence and certification are stricter.** A solve converges, and a
+  composition certifies, only when every balance row with a budget is met
+  relative to what it holds, below one mole. An answer accepted before can now
+  take further iterations, or be refused. `kkt_certificate`'s `feasibility` is
+  the measure judged, the larger of `feasibility_abs` (moles) and the new
+  `feasibility_rel`; until 0.7.8 it was the absolute figure.
+
+### Changed
+
+- **Each row is judged against what it holds.** With `s_k = Σⱼ |Aₖⱼ xⱼ| +
+  Σₗ |Aqₖₗ qₗ|`, a row is met when `|r_k| ≤ tol·min(s_k, 1 mol)`: relative below
+  one mole, in moles above it as before, so nothing refused is now accepted. The
+  scales are those the rows of the Newton step were already weighted by, now
+  computed once (`_balance_scales`). A row whose budget is zero within rounding,
+  such as the electron row of a redox pair, has no total to be a fraction of and
+  is judged in moles, as a degenerate row is: judged against its rounding floor,
+  the electron row of a cement paste, its carriers at 8e-15 mol, held the Newton
+  of a certified replay for 5033 of its 6283 evaluations.
+- The comment that kept the certificate absolute held that a relative measure
+  refuses correct answers, a charge row turning "7.6e-7 mol of machine noise"
+  into 0.76. Measured on a dilute sodium chloride, the dual Newton leaves 3e-21
+  mol on a 1e-6 mol row; the rows whose relative residual is large at a correct
+  answer are those of a component nobody supplies, degenerate and judged in
+  moles. The comment and its test are replaced by that measurement.
+
+Measured with ChemistryLab, on the same machine as 0.7.8: the 32 cement pastes of
+a thesis in 388 s instead of 349 s, every printed value unchanged and their
+balance residuals down from 1e-11 to 1e-15, the extra time on the one paste whose
+1e-9 mol of carbon was left 8e-6 off; the three-hour hydration of a CEM I paste
+in 5.1 s instead of 5.8 s, on an identical trajectory; its 28-day certified
+replay in 2.6 s instead of 2.5 s.
+
+### Fixed
+
+- The theory page described the interior point's feasibility error as left in
+  moles; it is scaled row by row (`row_scales`), as the code does.
+
 ## v0.7.8 — a trial of the line search judged against the iterate it comes from
 
 0.7.7 passed over every trial of the line search for which `invert` found no

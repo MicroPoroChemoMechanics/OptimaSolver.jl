@@ -1151,6 +1151,11 @@ end
     out = dual_newton_solve(prob, b, [1.0, 0.1, 1.0e-12])
     @test out.converged
     @test abs(out.x[3] - b[3]) <= 1.0e-10 * b[3]
+    # The verbose trace reports the measure judged beside the one in moles: at
+    # the start, 9e-12 mol, and 0.9 of the trace.
+    @test_logs (:info, "dual-newton") match_mode = :any dual_newton_solve(
+        prob, b, [1.0, 0.1, 1.0e-12]; opts = DualNewtonOptions(verbose = true),
+    )
 
     # The certificate judges each row the same way: in moles above one mole,
     # relative to what the row holds below it. A composition that accounts for
