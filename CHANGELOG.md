@@ -1,5 +1,45 @@
 # Changelog
 
+## v0.7.8 — a trial of the line search judged against the iterate it comes from
+
+0.7.7 passed over every trial of the line search for which `invert` found no
+composition, and twenty in a row ended the step. That is right where the iterate
+had one: the trial has left the potentials that hold a composition, and a
+shorter step comes back to them. It is wrong where the iterate had none, as at a
+start whose potentials hold no solution of the activity model: every nearby trial
+holds none either, so no step was taken and the solve stopped at its first
+iterate. Measured in ChemistryLab on its chloride-binding reference, a hydrated
+paste whose pore solution holds 2 % sodium chloride, under the limiting law:
+the start from the linear program over the pure phases holds no composition,
+and the paste was no longer certified by any route, where the sweeps of 0.7.6
+had carried that same start to its answer.
+
+### Changed
+
+- **A trial is judged against its iterate.** A trial whose `invert` returns
+  `nothing` is passed over when the iterate it comes from had a composition from
+  `invert`; when the iterate had none and was swept, the trial is swept as well,
+  and the iteration moves on the residual of the sweeps until the potentials
+  hold a composition again. An `invert` that never finds one leaves the phase to
+  the sweeps, iterate and trials alike: the solve is then that of a phase
+  without `invert`, where 0.7.7 stopped at the start.
+- **One pass of the line search where the first would ask the impossible.** The
+  first pass accepts only a trial whose inversion converged; from an iterate
+  whose potentials hold no composition, swept trials never report one. That
+  pass is then not asked for it, as `lenient_line_search` already did where the
+  iterate's own inversion had not converged, and the second pass, which would
+  evaluate the same trials and judge them alike, is not run. The same holds
+  under `lenient_line_search`, where the second pass repeated the first. Asked
+  anyway, the first pass refused forty trials, each swept to the stall rule:
+  32 cement pastes took 505 s instead of 349 s.
+
+Measured with ChemistryLab 0.29.0, every printed value unchanged: the chloride
+reference certifies its eight loadings again, in 0.9 s; the 32 cement pastes
+take 349 s, against 350 s with 0.7.7 and 1238 s with 0.7.3; the three-hour
+hydration of a CEM I paste takes 5.8 s instead of 6.2 s, on a trajectory
+identical to the last digit, and its 28-day certified replay 2.5 s instead of
+2.6 s.
+
 ## v0.7.7 — a phase that recovers its own solutes, and an inversion that says when it cannot
 
 The dual Newton recovers the solutes of the aqueous phase from the potentials
