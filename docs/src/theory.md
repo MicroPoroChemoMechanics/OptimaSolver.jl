@@ -302,8 +302,10 @@ feasibility rather than carried as a variable (Wächter & Biegler 2006, §3.5). 
 the same cement equilibrium it reads $5.8\times10^{-3}$ where the residual form
 read $4.5\times 10^{11}$ — fourteen orders of magnitude, on the same iterate.
 
-The feasibility error is **not** rescaled: $An - b$ is in moles and already
-means something absolute.
+The feasibility error is rescaled row by row ([`row_scales`](@ref)), each row by
+the larger of its budget and the amount passing through it: the rows of a
+conservation matrix do not share a scale, and the unscaled norm reports the
+largest budget and hides every smaller one.
 
 ### Convergence criterion
 
@@ -769,6 +771,29 @@ at `1e-16` whose stationarity value is `e^{-300}` misstates `h_i` by 263 units,
 and the check then reports a residual of 74 for a point solved to `5e-12`. And a
 variable carrying a **degenerate component** is excluded from both tests, for the
 reason above.
+
+**Each balance row is judged against what it holds.** With the residual
+``r_k = (A x - b)_k`` and the scale
+``s_k = \sum_j |A_{kj}\, x_j| + \sum_l |A^q_{kl}\, q_l|``, the balance is met when
+
+```math
+|r_k| \;\le\; \texttt{tol}\cdot \min(s_k,\, 1~\text{mol})
+```
+
+for every row: relative to the row below one mole, in moles above it. A trace is
+then held to its own amount, as PHREEQC and GEMS hold a mass balance to its
+element total, and a large row keeps the tolerance in moles it had before, so no
+answer is accepted that was refused. Judged in moles alone, as until 0.7.8, a
+trace of `1e-9` mol could be 10 % wrong and certified. The dual Newton converges
+on the same measure, and its rows are weighted by the same scales in the step.
+The scale is floored at ``\epsilon^2 |b_k|`` for a row that has a budget, so that
+a row whose carriers have all vanished is refused, and at
+``\epsilon \max(1, \|b\|_\infty)`` for a row whose budget is zero within
+rounding. A degenerate row
+is judged in moles: a component whose budget is below ``10^{-12}`` of the largest
+is one nobody supplies, its carriers held at the floor. The certificate reports
+`feasibility_abs` in moles and `feasibility_rel` relative to each row;
+`feasibility`, the larger of the two, is what it judges.
 
 ## The linear program over pure phases
 

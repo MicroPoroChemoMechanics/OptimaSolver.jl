@@ -739,12 +739,9 @@ end
     @test c.stationarity ≈ c.stationarity_abs / c.stationarity_scale rtol = 1.0e-12
     @test c.stationarity <= c.stationarity_abs
 
-    # Feasibility stays ABSOLUTE, deliberately: it states how much matter the
-    # composition fails to account for, and that is a number of moles. Scaling it
-    # row by row was tried and is wrong — the charge row of a dilute solution has
-    # a budget of zero and a flux of order 1e-6, so dividing by it turned 7.6e-7
-    # mol of machine noise into 0.76 and refused every answer.
-    @test c.feasibility == c.feasibility_abs
+    # The balance is judged row by row, in moles above one mole and relative to
+    # what the row holds below it: the larger of the two measures.
+    @test c.feasibility == max(c.feasibility_abs, c.feasibility_rel)
 
 end
 
@@ -1133,6 +1130,44 @@ end
         @test out.converged
         @test abs(out.x[2] - 1.0e-9) <= DualNewtonOptions().tol
     end
+end
+
+@testset "each balance row is judged against what it holds" begin
+    # A solvent, a solute and a trace, each carrying a component of its own, so
+    # that any composition is stationary and the balance alone is judged. The
+    # start holds the trace a tenth of its budget: 9e-12 mol short, below an
+    # absolute tolerance of 1e-10 mol, and wrong by 90 %. A solve judged in
+    # moles stopped there at once; a mass balance judged relative to the total
+    # it holds, as PHREEQC and GEMS judge it, brings the trace back. (A budget
+    # below 1e-12 of the largest is a component nobody supplies, its carriers
+    # held at the floor: `degenerate_components`.)
+    h(x, _) = [0.0, log(x[2] / x[1]), log(x[3] / x[1])]
+    prob = DualNewtonProblem(
+        Float64[1 0 0; 0 1 0; 0 0 1], zeros(3), h;
+        phases = [SolutionPhase([1, 2, 3], 1; always_present = true)], idx_bounded = Int[],
+    )
+    b = [1.0, 0.1, 1.0e-11]
+    @test isempty(degenerate_components(prob.A, b))
+    out = dual_newton_solve(prob, b, [1.0, 0.1, 1.0e-12])
+    @test out.converged
+    @test abs(out.x[3] - b[3]) <= 1.0e-10 * b[3]
+
+    # The certificate judges each row the same way: in moles above one mole,
+    # relative to what the row holds below it. A composition that accounts for
+    # the trace to 10 % is refused, though it is 1e-12 mol off.
+    x = copy(out.x)
+    x[3] *= 0.9
+    c = kkt_certificate(prob, x, b)
+    @test c.feasibility_abs < 1.0e-11
+    @test c.feasibility_rel ≈ 0.1 / 0.9 rtol = 1.0e-9
+    @test c.feasibility == max(c.feasibility_abs, c.feasibility_rel)
+    @test !c.optimal
+    @test kkt_certificate(prob, out.x, b).optimal
+    # Large rows keep their absolute tolerance: a solvent 1e-9 mol off is
+    # refused, though that is 2e-11 of it.
+    y = copy(out.x)
+    y[1] += 1.0e-9
+    @test !kkt_certificate(prob, y, b).optimal
 end
 
 @testset "the trial composition comes back with the verdict" begin
