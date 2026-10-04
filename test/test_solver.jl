@@ -92,3 +92,15 @@
     @test norm(A2 * result4.n .- b2) < 1.0e-8
     @test all(result4.n .> 0)
 end
+
+@testset "the best iterate replaces the last only when materially better" begin
+    # `solve!` asks this at its two exits. Materially: a KKT error below a tenth
+    # of the last one's, strictly.
+    n_best, y_best = [3.0, 4.0], [0.7]
+    n, y = [1.0, 2.0], [0.5]
+    μ, restored = OptimaSolver._restore_best!(n, y, 1.0e-6, n_best, y_best, 1.0e-4, 0.09, 1.0)
+    @test restored && μ == 1.0e-4 && n == n_best && y == y_best
+    n, y = [1.0, 2.0], [0.5]
+    μ, restored = OptimaSolver._restore_best!(n, y, 1.0e-6, n_best, y_best, 1.0e-4, 0.1, 1.0)
+    @test !restored && μ == 1.0e-6 && n == [1.0, 2.0] && y == [0.5]
+end

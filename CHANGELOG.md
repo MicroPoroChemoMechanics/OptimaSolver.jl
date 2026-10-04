@@ -12,7 +12,9 @@
   the capture. On 32 cement pastes solved by ChemistryLab the answers are the
   same to every printed digit and the time is unchanged (297 s against 294 s):
   none of them was on a hot path, and nothing calls for a release on their
-  account.
+  account. The two exits of `solve!` that hand back the best iterate of a
+  barrier level when it is materially better now ask one function,
+  `_restore_best!`, tested on its own.
 
 ### Documentation
 

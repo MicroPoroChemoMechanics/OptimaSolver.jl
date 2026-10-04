@@ -303,11 +303,7 @@ function solve!(
                 # and finished at 2.3, four orders worse — not to second-guess a
                 # healthy solve, where best and last differ by rounding and
                 # swapping them costs the caller the last few digits it earned.
-                if err_best[] < T(0.1) * kkt.error
-                    n .= n_best
-                    y .= y_best
-                    μ = μ_best[]
-                end
+                μ, _ = _restore_best!(n, y, μ, n_best, y_best, μ_best[], err_best[], kkt.error)
                 state.n .= n
                 state.y .= y
                 state.μ = μ
@@ -341,10 +337,8 @@ function solve!(
     # materially better — see the note at the max-iteration exit above.
     eval_gradient!(grad, prob, n)
     kkt = kkt_residual(prob, n, y, grad, μ)
-    if err_best[] < T(0.1) * kkt.error
-        n .= n_best
-        y .= y_best
-        μ = μ_best[]
+    μ, restored = _restore_best!(n, y, μ, n_best, y_best, μ_best[], err_best[], kkt.error)
+    if restored
         eval_gradient!(grad, prob, n)
         kkt = kkt_residual(prob, n, y, grad, μ)
     end
@@ -357,6 +351,19 @@ function solve!(
     state.μ = μ
     log_final(state, opts)
     return state
+end
+
+# The best iterate of a barrier level replaces the last one when it is MATERIALLY
+# better, its KKT error below a tenth of the last one's: see the note at the
+# max-iteration exit of `solve!`. Writes it into `n` and `y` when it does, and
+# returns the barrier parameter to go on with, the best iterate's then, and
+# whether it did. One function for the two exits that ask, so that they cannot
+# come to disagree on what "materially" means.
+function _restore_best!(n, y, μ, n_best, y_best, μ_best, err_best, err)
+    err_best < oftype(err, 0.1) * err || return μ, false
+    n .= n_best
+    y .= y_best
+    return μ_best, true
 end
 
 # ── Public solve interface ────────────────────────────────────────────────────
