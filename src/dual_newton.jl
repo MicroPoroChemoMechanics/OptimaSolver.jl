@@ -757,8 +757,10 @@ function _newton_phase_composition(
     st = state(z)
     converged = false
     for _ in 1:maxit
-        free = [a for a in 1:K if !st.out[a]]
-        if isempty(free) || maximum(a -> abs(st.r[a]), free) <= tol
+        # Without a closure over `st`, which the iteration reassigns and Julia
+        # would then box.
+        free = findall(!, st.out)
+        if isempty(free) || maximum(abs, view(st.r, free)) <= tol
             converged = true
             break
         end
@@ -876,13 +878,16 @@ function _invert_phases!(
                 # potentials DO determine, always, is the composition: the
                 # fractions are the softmax of `u − g − lnγ`, and the phase's
                 # total is the outer unknown. Nothing here can overflow.
-                N = refs[a]
-                d = _mole_fraction_exponents(prob, ph, u, hv, x_buf, N, dead, g)
+                # `Nf`, not `N`: the branch above binds `N` too, its
+                # comprehension captures it, and a captured binding assigned
+                # twice is boxed.
+                Nf = refs[a]
+                d = _mole_fraction_exponents(prob, ph, u, hv, x_buf, Nf, dead, g)
                 M = maximum(_primal_value, d)
                 isfinite(M) || continue          # every member of the phase is dead
                 lZ = M + log(sum(exp(dj - M) for dj in d))
                 for (j, _) in enumerate(ph.members)
-                    w = clamp(log(N) + d[j] - lZ, -700.0, 700.0)
+                    w = clamp(log(Nf) + d[j] - lZ, -700.0, 700.0)
                     worst = max(worst, abs(_primal_value(w - W[k][j])))
                     W[k][j] = w
                 end
@@ -1198,8 +1203,11 @@ function phase_tangent_trial(
         end
         M = maximum(d)
         isfinite(M) || return (-Inf, Float64[])
-        lnZ = M + log(sum(exp(dj - M) for dj in d))
-        newfrac = [exp(dj - lnZ) for dj in d]
+        # The comprehension reads a binding of the iteration, not `lnZ`, which
+        # it reassigns and Julia would then box.
+        lz = M + log(sum(exp(dj - M) for dj in d))
+        lnZ = lz
+        newfrac = [exp(dj - lz) for dj in d]
         Δ = maximum(abs, newfrac .- frac)
         frac = newfrac
         Δ < tol && break

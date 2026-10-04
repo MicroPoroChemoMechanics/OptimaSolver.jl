@@ -101,8 +101,8 @@ function solve!(
     # has no way to know.
     n_best = copy(n)
     y_best = copy(y)
-    err_best = T(Inf)
-    μ_best = μ
+    err_best = Ref(T(Inf))
+    μ_best = Ref(μ)
 
     # Lexicographic, feasibility first.
     #
@@ -112,18 +112,22 @@ function solve!(
     # and the balance is a hard constraint, not something to trade. Measured on an
     # LC³ budget the returned point carried `‖An − b‖∞ = 2.6e-4` where the
     # iteration had been holding 1e-15 throughout.
-    feas_best = T(Inf)
-    opt_best = T(Inf)
+    #
+    # Held in references: `_keep_best!` below writes them, and a binding a closure
+    # reassigns is boxed, with every later use of it, `μ` included, dispatched at
+    # run time.
+    feas_best = Ref(T(Inf))
+    opt_best = Ref(T(Inf))
 
     function _keep_best!(kkt, μ_now)
-        feas_ok = kkt.error_feas <= max(feas_best, T(opts.tol))
-        if feas_ok && kkt.error_opt < opt_best
-            feas_best = T(kkt.error_feas)
-            opt_best = T(kkt.error_opt)
-            err_best = T(kkt.error)
+        feas_ok = kkt.error_feas <= max(feas_best[], T(opts.tol))
+        if feas_ok && kkt.error_opt < opt_best[]
+            feas_best[] = T(kkt.error_feas)
+            opt_best[] = T(kkt.error_opt)
+            err_best[] = T(kkt.error)
             n_best .= n
             y_best .= y
-            μ_best = μ_now
+            μ_best[] = μ_now
         end
         return nothing
     end
@@ -153,11 +157,11 @@ function solve!(
         # and the dual solve that warm-started from it admitted portlandite as a
         # phase and diverged.
         best_err = T(Inf)
-        feas_best = T(Inf)
-        opt_best = T(Inf)
+        feas_best[] = T(Inf)
+        opt_best[] = T(Inf)
         n_best .= n
         y_best .= y
-        μ_best = μ
+        μ_best[] = μ
         stalled = 0
 
         # ── Inner loop: Newton iterations for fixed μ ─────────────────────────
@@ -265,7 +269,9 @@ function solve!(
             α, n_new, y_new, f_new = line_search(
                 prob, n, y, dn, dy, f_val, grad, μ, opts;
                 filter = filter, α_max = α_max,
-                kkt_merit = (nn, yy) -> _kkt_merit(prob, nn, yy, g_trial, μ),
+                kkt_merit = let μc = μ
+                    (nn, yy) -> _kkt_merit(prob, nn, yy, g_trial, μc)
+                end,
             )
 
             # Bookkeeping: only add to filter during infeasible phase
@@ -297,11 +303,7 @@ function solve!(
                 # and finished at 2.3, four orders worse — not to second-guess a
                 # healthy solve, where best and last differ by rounding and
                 # swapping them costs the caller the last few digits it earned.
-                if err_best < T(0.1) * kkt.error
-                    n .= n_best
-                    y .= y_best
-                    μ = μ_best
-                end
+                μ, _ = _restore_best!(n, y, μ, n_best, y_best, μ_best[], err_best[], kkt.error)
                 state.n .= n
                 state.y .= y
                 state.μ = μ
@@ -335,10 +337,8 @@ function solve!(
     # materially better — see the note at the max-iteration exit above.
     eval_gradient!(grad, prob, n)
     kkt = kkt_residual(prob, n, y, grad, μ)
-    if err_best < T(0.1) * kkt.error
-        n .= n_best
-        y .= y_best
-        μ = μ_best
+    μ, restored = _restore_best!(n, y, μ, n_best, y_best, μ_best[], err_best[], kkt.error)
+    if restored
         eval_gradient!(grad, prob, n)
         kkt = kkt_residual(prob, n, y, grad, μ)
     end
@@ -351,6 +351,19 @@ function solve!(
     state.μ = μ
     log_final(state, opts)
     return state
+end
+
+# The best iterate of a barrier level replaces the last one when it is MATERIALLY
+# better, its KKT error below a tenth of the last one's: see the note at the
+# max-iteration exit of `solve!`. Writes it into `n` and `y` when it does, and
+# returns the barrier parameter to go on with, the best iterate's then, and
+# whether it did. One function for the two exits that ask, so that they cannot
+# come to disagree on what "materially" means.
+function _restore_best!(n, y, μ, n_best, y_best, μ_best, err_best, err)
+    err_best < oftype(err, 0.1) * err || return μ, false
+    n .= n_best
+    y .= y_best
+    return μ_best, true
 end
 
 # ── Public solve interface ────────────────────────────────────────────────────
