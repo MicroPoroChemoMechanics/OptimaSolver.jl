@@ -2,6 +2,18 @@
 
 ## Unreleased
 
+### Internal
+
+- Five functions held a variable that a closure captured and that the function
+  also reassigned, which Julia stores in a `Core.Box` and reads through run-time
+  dispatch: the best values of the interior point's `solve!` and the barrier
+  parameter of its merit function, the bound check of `line_search`, and three
+  loops of the phase compositions of the dual Newton. They are written without
+  the capture. On 32 cement pastes solved by ChemistryLab the answers are the
+  same to every printed digit and the time is unchanged (297 s against 294 s):
+  none of them was on a hot path, and nothing calls for a release on their
+  account.
+
 ### Documentation
 
 - Getting Started asked for Julia ≥ 1.10; the package requires 1.12.

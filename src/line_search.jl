@@ -154,8 +154,9 @@ function line_search(
         n_new = n .+ α .* dn
         y_new = y .+ α .* dy
 
-        # Enforce positivity
-        if any(i -> n_new[i] <= prob.lb[i], eachindex(n_new))
+        # Enforce positivity. A loop of its own, not a closure over `n_new`,
+        # which this function reassigns and Julia would then box.
+        if _at_or_below(n_new, prob.lb)
             α *= β
             continue
         end
@@ -232,4 +233,12 @@ function _kkt_merit(prob, n, y, g, μ)
     s = n .- prob.lb
     gL = g .+ prob.A' * y
     return sqrt(sum(abs2, s .* gL .- μ) + sum(abs2, prob.A * n .- prob.b))
+end
+
+# Whether any amount of `n` is at or below its bound in `lb`.
+function _at_or_below(n, lb)
+    @inbounds for i in eachindex(n)
+        n[i] <= lb[i] && return true
+    end
+    return false
 end
