@@ -2,6 +2,27 @@
 
 ## Unreleased
 
+### Fixed
+
+- **A bounded member barely unstable was left inside its phase, and the
+  answer refused.** A member of a sublattice phase that owns no species on any
+  site (`SolutionPhase(...; bounded_members)`) keeps a finite activity as it
+  vanishes, so its own derivative is nearly zero there: the Newton step of the
+  phase composition could not carry it to the floor, and a member that should be
+  absent stopped at 1e-16 to 1e-28 mol. Between the floor of the iteration and
+  that of `kkt_certificate`, it was then judged as a present member, by the
+  equality, and refused with a stationarity proportional to its instability,
+  while the solver reported convergence. Only a member unstable by a wide margin
+  happened to fall below the certificate's floor. The composition now sets such
+  a member at the floor when it asks for less and would still, by the slope of
+  its activity, at the floor, and holds it there when the exact residual agrees:
+  its condition is then the inequality, which it meets. A member present at a
+  fraction that counts has a slope that makes the test fail and is left to the
+  Newton step. Measured on the C-A-S-H syntheses of L'Hôpital et al. (2016) with
+  the gel of Myers et al. (2014), whose member 5CA is bounded: 20 of 34 certified
+  before, 34 after, in 77 s instead of 186; the 20 that certified before give the
+  same compositions. Phases without bounded members are not affected.
+
 ### Internal
 
 - Five functions held a variable that a closure captured and that the function

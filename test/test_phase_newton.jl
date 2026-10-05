@@ -111,6 +111,31 @@ using LinearAlgebra
         @test c.worst_violation > 1
     end
 
+    @testset "a bounded member barely unstable leaves the phase exactly" begin
+        # With P and R at one half each, the multipliers make Q's condition
+        # g_Q ≥ 0: for a small positive g_Q it is absent by that margin. Left to
+        # the Newton step it stopped at 1e-16 to 1e-22, above the floor of the
+        # certificate, which then judged it as a present member and refused it,
+        # by a stationarity proportional to g_Q.
+        for gq in (5.0, 0.5, 0.05, 0.005), x0 in ([0.4, 0.2, 0.4], [0.45, 0.1, 0.45])
+            g = [0.0, gq, 0.0]
+            prob = DualNewtonProblem(A, g, h; phases = phase(newton = true, bounded_members = [2]))
+            r = dual_newton_solve(prob, b, x0)
+            @test r.converged
+            @test r.x[2] < 1.0e-300
+            @test r.x ≈ [0.5, 0.0, 0.5] atol = 1.0e-12
+            @test kkt_certificate(prob, r.x, b).optimal
+        end
+        # Barely stable, it stays, at the minimum of the energy along the one
+        # direction the balance leaves free.
+        g = [0.0, -0.05, 0.0]
+        prob = DualNewtonProblem(A, g, h; phases = phase(newton = true, bounded_members = [2]))
+        r = dual_newton_solve(prob, b, [0.4, 0.2, 0.4])
+        @test r.converged && kkt_certificate(prob, r.x, b).optimal
+        t = argmin_t(g)
+        @test r.x ≈ [0.5 + t, -2t, 0.5 + t] rtol = 1.0e-7
+    end
+
     @testset "what the keywords refuse" begin
         @test_throws ArgumentError SolutionPhase([1, 2], 1; newton = true)
         @test_throws ArgumentError SolutionPhase([1, 2], 1; mole_fraction = true, bounded_members = [3])
