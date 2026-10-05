@@ -1,6 +1,11 @@
 # Changelog
 
-## Unreleased
+## v0.8.1 — a barely unstable bounded member held at the floor
+
+A patch release: one defect fixed, internal rewrites, and documentation
+corrected. On the answers measured again, the suite of this package, the tests
+of ChemistryLab that use a sublattice phase and the syntheses below that
+certified on 0.8.0, nothing else changes.
 
 ### Fixed
 
