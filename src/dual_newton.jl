@@ -708,6 +708,12 @@ allows. It is held there and left out of the system, which is what the
 substitution does too: its fraction is `exp(W_FLOOR)`, zero to the precision
 of everything it enters.
 
+A bounded member (`bounded_members`) whose residual is positive, and would
+still be by the slope of its activity at the floor, is set there, and held if
+it still asks for less: that is its condition of absence, the inequality. Its
+activity stays finite as it vanishes, so its own derivative is nearly zero there
+and the Newton step cannot carry it down.
+
 `f0` is the start, over `ph.members`; dead members get a zero fraction.
 """
 function _newton_phase_composition(
@@ -755,6 +761,8 @@ function _newton_phase_composition(
         return (; hz, L, r, out, φ)
     end
     st = state(z)
+    # The bounded members among the live ones, by position in `z`.
+    bnd = [a for (a, j) in enumerate(live) if j in ph.bounded_members]
     converged = false
     for _ in 1:maxit
         # Without a closure over `st`, which the iteration reassigns and Julia
@@ -765,6 +773,28 @@ function _newton_phase_composition(
             break
         end
         H = ForwardDiff.jacobian(hfun, z)
+        # A bounded member asking for less that would still ask for less at the
+        # floor, by the slope its activity has here, is absent: it is set there
+        # and held if the exact residual agrees. Left to the Newton step, whose
+        # length its nearly flat activity limits, a member of the gel of Myers
+        # et al. barely unstable in a C-A-S-H stopped at 1e-17 to 1e-28 mol,
+        # between the floor of this iteration and that of the certificate, which
+        # then judged it by the equality of a present member and refused it. A
+        # member present at a fraction that counts has a slope that makes the
+        # test fail, and is left to the step.
+        snapped = false
+        for a in bnd
+            (st.out[a] || st.r[a] <= 0) && continue
+            _primal_value(st.r[a]) - _primal_value(H[a, a]) * (_primal_value(z[a]) - W_FLOOR) > 0 || continue
+            zt = copy(z)
+            zt[a] = W_FLOOR
+            zt .-= _logsumexp(zt)
+            stt = state(zt)
+            if stt.r[a] > 0
+                z, st, snapped = zt, stt, true
+            end
+        end
+        snapped && continue
         nf = length(free)
         B = zeros(eltype(H), nf + 1, nf + 1)
         B[1:nf, 1:nf] .= @view H[free, free]
