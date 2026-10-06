@@ -1,5 +1,15 @@
 # Changelog
 
+## Unreleased
+
+### Documentation
+
+- The docstring of `dual_newton_solve` described the admission of a mixing
+  phase by the ideal sum `Σᵢ exp(uᵢ − gᵢ) − 1`, which the search stopped using
+  in 0.6.2. It now describes the measure applied, the one of `kkt_certificate`:
+  the log-sum-exp of `uᵢ − gᵢ − ln γᵢ` over the live members at a trial
+  composition.
+
 ## v0.8.1 — a barely unstable bounded member held at the floor
 
 A patch release: one defect fixed, internal rewrites, and documentation
