@@ -1521,9 +1521,12 @@ proof of **global** optimality.
 Over the **bound-constrained** variables, on the sign of `uᵢ − (gᵢ + hᵢ)`: a pure
 phase is present exactly when that index vanishes, absent when it is negative.
 
-Over the **mixing phases**, on Michelsen's tangent-plane measure
-`Σᵢ exp(uᵢ − gᵢ) − 1`: a solution phase forms when a trial composition of it lies
-below the tangent plane of the current state. That test is what a mixing phase
+Over the **mixing phases**, on Michelsen's tangent-plane measure, the one the
+certificate applies ([`kkt_certificate`](@ref)): the log-sum-exp of
+`uᵢ − gᵢ − ln γᵢ` over the live members of the phase at a trial composition of
+it, a member whose component is absent from the budget left out. A solution
+phase forms when that measure is positive, when a trial composition lies below
+the tangent plane of the current state. That test is what a mixing phase
 requires, since its members are never exactly absent while it exists and it has
 no single saturation index.
 
