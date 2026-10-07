@@ -1,6 +1,26 @@
 # Changelog
 
-## Unreleased
+## v0.8.2 — a pinned mixing phase seeded at its own total
+
+A patch release: one defect fixed, and a docstring corrected. Only the phases
+declared `always_present = true` with `mole_fraction = true` are affected; in
+ChemistryLab these are the surface site families.
+
+### Fixed
+
+- **A mixing phase pinned by a conservation row at a small total was not
+  reached.** The total of a mole-fraction phase was seeded at no less than
+  `PHASE_ADMISSION_SEED`, 1e-6 mol, as for a phase being admitted. A phase that
+  is always present because a row fixes its total, a surface site family, then
+  started far above its budget when the budget was small, and since a step
+  changes the logarithm of the total by at most one the search stopped short of
+  it. Measured in ChemistryLab on a sorbent in a portlandite solution: 4e-9 mol
+  of sites for a budget of 1e-9, and the answer refused by the certificate;
+  correct from 1e-8 mol of sites up. Such a phase now starts from its own total.
+  A new test sets a free site and a complex sharing a budget from 1 down to
+  1e-10 against the closed form; without the change the cases 1e-9 and 1e-10
+  fail. The suite of this package and the surface tests of ChemistryLab pass
+  unchanged.
 
 ### Documentation
 
