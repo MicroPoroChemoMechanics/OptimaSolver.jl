@@ -1592,10 +1592,23 @@ function dual_newton_solve(
     # `refs[a]` is the reference member's amount for a phase with a solvent, and
     # the phase TOTAL for a mole-fraction phase — in both cases the quantity whose
     # logarithm the outer system carries.
+    #
+    # A mole-fraction phase that is always present starts from its own total: it
+    # is present because a conservation row holds it, a surface site family whose
+    # row fixes its total. Lifted to `PHASE_ADMISSION_SEED` like a phase being
+    # admitted, the total of a family of 1e-9 mol started a thousand times too
+    # high, the step changes `ln N` by at most one, and the search stopped with
+    # 4e-9 mol of sites for a budget of 1e-9 (ChemistryLab, a sorbent in a
+    # portlandite solution; correct from 1e-8 mol of sites up).
     refs = Float64[
-        let ph = prob.phases[k]
-            ph.mole_fraction ? max(sum(n0[i] for i in ph.members), PHASE_ADMISSION_SEED) :
+        let ph = prob.phases[k], total = sum(n0[i] for i in ph.members)
+            if !ph.mole_fraction
                 max(n0[ph.members[ph.j_ref]], PHASE_ADMISSION_SEED)
+            elseif ph.always_present
+                max(total, floatmin(Float64))
+            else
+                max(total, PHASE_ADMISSION_SEED)
+            end
         end for k in act_ph
     ]
 
