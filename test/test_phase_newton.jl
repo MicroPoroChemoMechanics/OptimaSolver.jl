@@ -141,3 +141,29 @@ using LinearAlgebra
         @test_throws ArgumentError SolutionPhase([1, 2], 1; mole_fraction = true, bounded_members = [3])
     end
 end
+
+@testset "a present phase pinned by its own row at a trace total" begin
+    # A surface site family: a free site S and a complex C share a budget N
+    # (row 1), C taking one X from a pure species (row 2). Ideal mixing on the
+    # sites, so C/S = K whatever N: S = N/(1 + K), C = N K/(1 + K). The phase is
+    # always present, its total pinned by row 1, and its total was seeded at no
+    # less than 1e-6: at N = 1e-9 the search did not come back down to it.
+    A = Float64[1 1 0; 0 1 1]
+    K = 4.0
+    g = [0.0, -log(K), 0.0]
+    hs(x, _) = [
+        log(max(x[1], 1.0e-300) / max(x[1] + x[2], 1.0e-300)),
+        log(max(x[2], 1.0e-300) / max(x[1] + x[2], 1.0e-300)),
+        0.0,
+    ]
+    sitephase = [SolutionPhase([1, 2], 1; always_present = true, mole_fraction = true)]
+    for N in (1.0, 1.0e-6, 1.0e-9, 1.0e-10)
+        prob = DualNewtonProblem(A, g, hs; phases = sitephase, idx_bounded = [3])
+        b = [N, 1.0]
+        r = dual_newton_solve(prob, b, [N, 0.0, 1.0])
+        @test r.converged
+        @test r.x[1] ≈ N / (1 + K) rtol = 1.0e-8
+        @test r.x[2] ≈ N * K / (1 + K) rtol = 1.0e-8
+        @test kkt_certificate(prob, r.x, b).optimal
+    end
+end
