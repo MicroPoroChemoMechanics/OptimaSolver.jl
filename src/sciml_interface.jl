@@ -193,10 +193,18 @@ function SciMLBase.solve(
     # solves where the caller has nothing better to offer. It is used only when
     # the problem has the same size and `u0` carries no interior information —
     # i.e. every variable still sits at its lower bound.
+    #
+    # Nor does it cross number types. A solve on dual numbers differentiates the
+    # iterations that reach its answer, so it must take them: started from a
+    # converged answer, it can stop at once and return the partials the start
+    # carried — none for a plain answer, another seed's for a dual one. And a
+    # plain solve cannot start from a dual answer at all. Such a solve starts
+    # cold, as it does with `warm_start = false`.
     if !isnothing(prev)
         same_size = length(prev.n) == length(u0)
         caller_supplied_guess = any(u0 .> lb .* 100)
-        (same_size && !caller_supplied_guess) || (prev = nothing)
+        same_kind = prev isa OptimaResult{T} && !(T <: ForwardDiff.Dual)
+        (same_size && same_kind && !caller_supplied_guess) || (prev = nothing)
     end
 
     if isnothing(prev)
@@ -222,6 +230,33 @@ function SciMLBase.solve(
     end
     y_start = isnothing(prev) ? nothing : prev.y
 
+    result = _scaled_solve(alg.options, f_obj, g!, A, b, lb, ub, p, u_start, y_start, T)
+    result = _relinearized(result, opt_prob, alg.options, f_obj, g!, A, b, lb, ub, p, T)
+
+    # Cache for next call — only cache converged solutions; a non-converged
+    # result would give a bad warm-start that cascades into subsequent failures.
+    # When the cache is not updated, the next call falls back to opt_prob.u0.
+    # An answer on dual numbers is not cached either: no later solve may start
+    # from it (see the warm start above).
+    if result.converged && !(T <: ForwardDiff.Dual)
+        alg._cache[] = result
+    end
+
+    # ── Pack into SciML solution ─────────────────────────────────────────────
+    retcode = result.converged ? SciMLBase.ReturnCode.Success : SciMLBase.ReturnCode.MaxIters
+    cache = SciMLBase.DefaultOptimizationCache(opt_prob.f, opt_prob.p)
+    return SciMLBase.build_solution(
+        cache, alg, result.n, f_obj(result.n, p);
+        retcode = retcode,
+        original = result,
+    )
+end
+
+# ── One solve, in variables scaled by the start ──────────────────────────────
+
+# The problem `A n = b` solved from `u_start` (and `y_start`, or nothing) in the
+# variables `ñ = n / s`, `s` the start, and the answer brought back to `n`.
+function _scaled_solve(opts::OptimaOptions, f_obj, g!, A, b, lb, ub, p, u_start, y_start, ::Type{T}) where {T}
     # ── Variable scaling ─────────────────────────────────────────────────────
     # Ipopt scales each variable by its initial value so all normalized
     # variables are O(1) at the starting point.  This is critical when
@@ -254,12 +289,12 @@ function SciMLBase.solve(
     prob_s = OptimaProblem(A_s, b, f_s, g_s!; lb = lb_s, ub = ub_s, p = p)
 
     # ── Solve ────────────────────────────────────────────────────────────────
-    result_s = solve(prob_s, alg.options; u0 = u0_s, y0 = y_start)
+    result_s = solve(prob_s, opts; u0 = u0_s, y0 = y_start)
 
     # ── Unscale result ───────────────────────────────────────────────────────
     # n = s ⊙ ñ;  y is invariant under column scaling (see above)
     n_out = result_s.n .* s
-    result = OptimaResult{T}(
+    return OptimaResult{T}(
         n_out,
         result_s.y,
         result_s.iterations,
@@ -268,22 +303,77 @@ function SciMLBase.solve(
         result_s.error_feas,
         result_s.error_feas_abs,
     )
+end
 
-    # Cache for next call — only cache converged solutions; a non-converged
-    # result would give a bad warm-start that cascades into subsequent failures.
-    # When the cache is not updated, the next call falls back to opt_prob.u0.
-    if result.converged
-        alg._cache[] = result
+# ── Constraints that are not affine ──────────────────────────────────────────
+
+# Above this relative difference between the caller's residual and that of its
+# linearization, at the answer, the constraint is not affine there. An affine
+# residual and its linearization differ by rounding alone, some multiples of
+# `eps` relative to the sizes of `A`, `n` and `b`.
+const AFFINE_RTOL = 1.0e-10
+
+# How many times a non-affine constraint is linearized again at the answer.
+const MAX_RELINEARIZATIONS = 50
+
+"""
+    _relinearized(result, opt_prob, opts, f_obj, g!, A, b, lb, ub, p, T) -> OptimaResult
+
+The answer of the problem the caller posed, when its constraint is not affine.
+
+This solver handles `A n = b`. A constraint passed as a residual is linearized at
+the start (`_extract_constraints`), and for an affine residual that IS the
+constraint. A residual that is not affine, `A exp(x) − b` for an equilibrium
+parameterized by the logarithms of its amounts, is replaced by its tangent at
+the start, and the answer to that problem violates the caller's constraint as
+soon as it lies away from the start.
+
+So the caller's residual is evaluated at the answer. If it agrees with that of
+the linearization, the constraint is affine there and the answer stands: an
+affine problem is solved exactly as before, at the cost of one more evaluation
+of its residual. If it does not, and the residual is not met, the constraint is
+linearized again at the answer and the problem solved again from it. At the
+fixed point the linearization is the tangent at the answer itself, whose
+Jacobian is that of the true constraint, so the answer meets the KKT conditions
+of the problem the caller posed. The rounds stop when the residual is met, when a
+round no longer halves it, or after `MAX_RELINEARIZATIONS`; unless it is met, the
+result says it has not converged rather than returning `Success` on a point that
+violates the caller's constraint.
+
+Constraints carried by `p` as `A` and `b` are affine by construction and left as
+they are.
+"""
+function _relinearized(result::OptimaResult{T}, opt_prob, opts::OptimaOptions, f_obj, g!, A, b, lb, ub, p, ::Type{T}) where {T}
+    cons = opt_prob.f.cons
+    (cons === nothing || (p isa NamedTuple && haskey(p, :A) && haskey(p, :b))) && return result
+    r = zeros(T, size(A, 1))
+    iterations = result.iterations
+    # Affinity is decided once, on the first answer, which lies away from the
+    # start the constraint was linearized at. Asked again later, it would be
+    # fooled by an answer that barely moved from the previous linearization.
+    cons(r, result.n, p)
+    size_of = one(T) + maximum(abs, A) * maximum(abs, result.n) + maximum(abs, b)
+    maximum(abs, r .- (A * result.n .- b)) <= AFFINE_RTOL * size_of && return result
+    previous = T(Inf)
+    for round in 0:MAX_RELINEARIZATIONS
+        round == 0 || cons(r, result.n, p)
+        residual = maximum(abs, r)
+        met = residual <= opts.tol * max(one(T), maximum(abs, b))
+        # Stopped as well once a round no longer halves the residual: the
+        # linearized problems are then not solved accurately enough for the
+        # sequence to go further, and more rounds only cost.
+        stalled = residual > previous / 2
+        (met || stalled || round == MAX_RELINEARIZATIONS) && return OptimaResult{T}(
+            result.n, result.y, iterations, met && result.converged,
+            result.error_opt, result.error_feas, result.error_feas_abs,
+        )
+        previous = residual
+        A, b = _extract_constraints(opt_prob, result.n, p)
+        u_start = _lift_cold_start(copy(result.n), A, b, lb)
+        result = _scaled_solve(opts, f_obj, g!, A, b, lb, ub, p, u_start, result.y, T)
+        iterations += result.iterations
     end
-
-    # ── Pack into SciML solution ─────────────────────────────────────────────
-    retcode = result.converged ? SciMLBase.ReturnCode.Success : SciMLBase.ReturnCode.MaxIters
-    cache = SciMLBase.DefaultOptimizationCache(opt_prob.f, opt_prob.p)
-    return SciMLBase.build_solution(
-        cache, alg, result.n, f_obj(result.n, p);
-        retcode = retcode,
-        original = result,
-    )
+    return result
 end
 
 # ── Cold-start lifting helper ─────────────────────────────────────────────────
@@ -386,10 +476,9 @@ function _extract_constraints(opt_prob, u0::AbstractVector{T}, p) where {T}
 
     # Path 3: differentiate the constraint function at `u0`, by forward mode.
     # `cons` is documented as `A u - b`, and for an affine residual its Jacobian
-    # IS `A`, exactly; a nonlinear residual (a log-parameterized equilibrium sends
-    # `A exp(x) - b`) gets its local Jacobian, exact as well. Until 0.7.4 this was
-    # a difference quotient taken at two scales, whose small-step branch left `A`
-    # wrong by ~1e-9 relative.
+    # IS `A`, exactly. A nonlinear residual (a log-parameterized equilibrium sends
+    # `A exp(x) - b`) gets its tangent at `u0`, which is a constraint only near
+    # `u0`: `_relinearized` takes it again at the answer until the two agree.
     ns = length(u0)
     m = (opt_prob.lcons !== nothing && length(opt_prob.lcons) > 0) ?
         length(opt_prob.lcons) : ns

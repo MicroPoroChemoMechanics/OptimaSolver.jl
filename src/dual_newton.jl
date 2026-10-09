@@ -319,7 +319,10 @@ function SolutionPhase(
     )
     return SolutionPhase(
         collect(Int, members), j_ref, always_present, mole_fraction,
-        Vector{Vector{Float64}}(collect(collect(float.(s)) for s in split_starts)),
+        # Starting points of a search, which decides on values: a binodal
+        # computed from a model being differentiated arrives as dual numbers,
+        # and only their values are a place to start from.
+        Vector{Float64}[Float64[_primal_value(x) for x in s] for s in split_starts],
         newton, bm, local_h, invert,
     )
 end
@@ -654,7 +657,7 @@ function _mole_fraction_exponents(prob, ph, u, hv, x_buf, N, dead, g = prob.g)
         xi = x_buf[i]
         # `lnγ` is read at the current composition; identically zero for ideal
         # mixing, so the loop below converges in one pass there.
-        lnγ = (xi > 0 && N > 0) ? hv[i] - log(xi / N) : 0.0
+        lnγ = (xi > 0 && N > 0) ? hv[i] - log(xi / N) : zero(eltype(d))
         d[j] = u[i] - g[i] - lnγ
     end
     return d
@@ -682,7 +685,7 @@ _primal_value(x::ForwardDiff.Dual) = _primal_value(ForwardDiff.value(x))
 
 function _logsumexp(d)
     M = maximum(d)
-    isfinite(M) || return -Inf
+    isfinite(M) || return oftype(M, -Inf)
     return M + log(sum(exp(dj - M) for dj in d))
 end
 
@@ -1165,7 +1168,7 @@ amount of the phase is stable.
 """
 function phase_tangent_trial(
         prob::DualNewtonProblem, k::Int, u::AbstractVector, x::AbstractVector;
-        maxit::Int = 50, tol::Float64 = 1.0e-12, total::Float64 = 1.0e-6,
+        maxit::Int = 50, tol::Union{Nothing, Float64} = nothing, total::Float64 = 1.0e-6,
         g = prob.g, q = prob.q0, start = nothing, dead = Set{Int}(),
     )
     ph = prob.phases[k]
@@ -1187,7 +1190,11 @@ function phase_tangent_trial(
     # the start; this function was written without it.
     live = [j for j in 1:nm if !(ph.members[j] in dead)]
     length(live) < 1 && return (-Inf, Float64[])
-    xt = Vector{Float64}(x)
+    # A verdict, taken on values like every decision of the search: the
+    # composition, the multipliers and `h` may carry dual numbers (the
+    # certificate of a problem whose `h` captures the data being
+    # differentiated), and only their values are measured.
+    xt = Float64[_primal_value(v) for v in x]
     # The successive substitution below converges to the stationary point of the
     # tangent-plane distance NEAREST its start, so which start is used decides
     # which one is found. A uniform start is the natural probe for a phase held
@@ -1210,9 +1217,11 @@ function phase_tangent_trial(
         sf > 0 ? f ./ sf : f
     end
     if ph.newton
-        c = [u[i] - g[i] for i in ph.members]
-        f, L, _ = _newton_phase_composition(prob, ph, c, xt, frac, total, q, dead; maxit = maxit)
-        return (L, f)
+        c = Float64[_primal_value(u[i] - g[i]) for i in ph.members]
+        f, L, _ = tol === nothing ?
+            _newton_phase_composition(prob, ph, c, xt, frac, total, q, dead; maxit = maxit) :
+            _newton_phase_composition(prob, ph, c, xt, frac, total, q, dead; maxit = maxit, tol = tol)
+        return (_primal_value(L), Float64[_primal_value(v) for v in f])
     end
     lnZ = -Inf
     d = Vector{Float64}(undef, nm)
@@ -1228,8 +1237,8 @@ function phase_tangent_trial(
             end
             # `hᵢ` is `ln aᵢ = ln(xᵢ/N) + lnγᵢ`, so `lnγ` is what remains once the
             # ideal part is removed.
-            lnγ = xt[i] > 0 ? hv[i] - log(xt[i] / total) : 0.0
-            d[j] = u[i] - g[i] - lnγ
+            lnγ = xt[i] > 0 ? _primal_value(hv[i]) - log(xt[i] / total) : 0.0
+            d[j] = _primal_value(u[i] - g[i]) - lnγ
         end
         M = maximum(d)
         isfinite(M) || return (-Inf, Float64[])
@@ -1240,7 +1249,7 @@ function phase_tangent_trial(
         newfrac = [exp(dj - lz) for dj in d]
         Δ = maximum(abs, newfrac .- frac)
         frac = newfrac
-        Δ < tol && break
+        Δ < something(tol, 1.0e-12) && break
     end
     return (lnZ, frac)
 end
@@ -1290,7 +1299,7 @@ split.
 """
 function phase_split_trial(
         prob::DualNewtonProblem, k::Int, u::AbstractVector, x::AbstractVector;
-        maxit::Int = 50, tol::Float64 = 1.0e-12, total::Float64 = 1.0e-6,
+        maxit::Int = 50, tol::Union{Nothing, Float64} = nothing, total::Float64 = 1.0e-6,
         g = prob.g, q = prob.q0, corner::Float64 = 0.98, dead = Set{Int}(),
         starts = (),
     )
@@ -1352,7 +1361,7 @@ function phase_split_trial(
     end
     for st in Iterators.flatten((ph.split_starts, starts))
         length(st) == nm || continue
-        push!(trials, collect(float.(st)))
+        push!(trials, Float64[_primal_value(v) for v in st])
     end
 
     for frac in trials
@@ -1506,6 +1515,19 @@ function _element_potential_start(
     return y
 end
 
+# A callback returning dual numbers it captures: they cannot be stripped from
+# here, so say so rather than fail on the first buffer of the solve.
+function _refuse_captured_duals(name, v)
+    eltype(v) <: ForwardDiff.Dual && throw(
+        ArgumentError(
+            "`$name` returns dual numbers it captures: pass the data being " *
+                "differentiated through `params`, or solve on the values and lift the " *
+                "answer with `dual_newton_tangent(...; primal)`.",
+        ),
+    )
+    return nothing
+end
+
 """
     dual_newton_solve(prob, b, x0; opts) -> (; x, y, q, active_phases, active, converged)
 
@@ -1545,14 +1567,13 @@ function dual_newton_solve(
     (_is_dual_data(b) || _is_dual_data(prob.A) || _is_dual_data(prob.g) || _is_dual_data(prob.params)) &&
         return _dual_newton_solve_ad(prob, b, x0; opts)
     # Duals captured by the callbacks themselves cannot be stripped from here:
-    # say so, rather than fail on the first buffer of the solve.
-    eltype(current_h(prob, x0, prob.q0)) <: ForwardDiff.Dual && throw(
-        ArgumentError(
-            "`h` returns dual numbers it captures: pass the data being " *
-                "differentiated through `params`, or solve on the values and lift the " *
-                "answer with `dual_newton_tangent(...; primal)`.",
-        ),
-    )
+    # say so, rather than fail on the first buffer of the solve. `h` and, when
+    # the problem has unknown parameters, `gq`, `cq` and `hq` alike.
+    _refuse_captured_duals("h", current_h(prob, x0, prob.q0))
+    if prob.nq > 0
+        prob.gq === nothing || _refuse_captured_duals("gq", prob.gq(prob.q0, prob.params))
+        _refuse_captured_duals("cq", prob.cq(x0, prob.q0, prob.params))
+    end
     bv = Vector{Float64}(b)
     n0 = Vector{Float64}(x0)
     m = size(prob.A, 1)
@@ -1815,7 +1836,7 @@ function _implicit_system(prob, z, unk, W, act_ph, active, bv; dead, degenerate)
     g = nq == 0 ? prob.g : current_g(prob, q)
     hv = current_h(prob, x, q)
     u = -(transpose(prob.A) * y)
-    cqv = nq == 0 ? Float64[] : prob.cq(x, q, prob.params)
+    cqv = nq == 0 ? Tz[] : prob.cq(x, q, prob.params)
     # The element type of the system: that of the unknowns, or of the data when
     # it carries the duals of a caller differentiating the answer, the
     # constraint's equations included (a prescribed target they capture).
@@ -2554,7 +2575,7 @@ function _dual_newton_attempt(
         converged = _judged_residual(
             _outer_residual(
                 prob, v, W, act_ph, active, bv, x_buf;
-                dead, degenerate, max_fall = opts.inner_fall_bound,
+                dead, degenerate, inner_maxit = opts.inner_maxit, max_fall = opts.inner_fall_bound,
             ),
             _judged_scales(_balance_scales(prob, x_buf, q, bv, degenerate), bv), nph,
         ) <= opts.tol && best_viol <= opts.si_tol
@@ -2562,7 +2583,8 @@ function _dual_newton_attempt(
 
     _invert_phases!(
         prob, W, y, refs, act_ph, active, xB, x_buf;
-        dead = dead, g = current_g(prob, q), q = q, max_fall = opts.inner_fall_bound,
+        dead = dead, g = current_g(prob, q), q = q, maxsweeps = opts.inner_maxit,
+        max_fall = opts.inner_fall_bound,
     )
     x = copy(x_buf)
     for (j, i) in enumerate(active)

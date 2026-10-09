@@ -423,7 +423,9 @@ Build the initial `OptimaState` from keyword arguments or sensible defaults.
 function _make_initial_state(prob::OptimaProblem{T}, opts::OptimaOptions, u0, y0) where {T}
     m = prob.m
 
-    if u0 isa OptimaResult
+    # The result of a previous solve, or its state, as the documentation of
+    # `OptimaState` offers: until 0.8.2 a state was silently ignored here.
+    if u0 isa Union{OptimaResult, OptimaState}
         n0 = copy(u0.n)
         y0_vec = copy(u0.y)
     elseif u0 isa AbstractVector

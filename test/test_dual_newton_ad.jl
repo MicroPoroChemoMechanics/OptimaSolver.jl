@@ -111,3 +111,54 @@
         @test OptimaSolver._fmt_sci(ForwardDiff.Dual(1.23456, 7.0)) == "1.23"
     end
 end
+
+@testset "a verdict on values, whatever the callbacks carry" begin
+    # The two-phase problem of "the certificate tests a mixing phase held
+    # absent", its `h` capturing a dual shift of the carrier's activity. The
+    # certificate is taken on values: until 0.8.2 the tangent-plane measure of the
+    # absent phase wrote the dual into a plain buffer and raised.
+    A = Float64[1 1 0; 0 0 1]
+    g = [0.0, 0.0, 0.0]
+    hshift(c) = (x, _) -> begin
+        N = max(x[2] + x[3], 1.0e-300)
+        [log(max(x[1], 1.0e-300)) + c, log(max(x[2], 1.0e-300) / N), log(max(x[3], 1.0e-300) / N)]
+    end
+    phases = [SolutionPhase([1], 1; always_present = true), SolutionPhase([2, 3], 1; mole_fraction = true)]
+    plain = DualNewtonProblem(A, g, hshift(0.0); phases = phases)
+    dual = DualNewtonProblem(A, g, hshift(ForwardDiff.Dual(0.0, 1.0)); phases = phases)
+    x_absent = [1.0, 0.0, 0.0]
+    u = -(transpose(A) * [0.0, -5.0])
+    @test phase_tangent_measure(dual, 2, u, x_absent) == phase_tangent_measure(plain, 2, u, x_absent)
+    @test phase_tangent_measure(plain, 2, ForwardDiff.Dual.(u, 1.0), x_absent) ==
+        phase_tangent_measure(plain, 2, u, x_absent)
+    cd, cp = kkt_certificate(dual, x_absent, [1.0, 0.0]), kkt_certificate(plain, x_absent, [1.0, 0.0])
+    @test cd.absent_phases == cp.absent_phases
+    @test cd.worst_violation == cp.worst_violation
+    @test cd.optimal == cp.optimal
+
+    # Starts of the split search computed from a model being differentiated: a
+    # place to start from, taken by value. Until 0.8.2 the phase refused them.
+    sp = SolutionPhase([2, 3], 1; mole_fraction = true, split_starts = [ForwardDiff.Dual.([0.3, 0.7], 1.0)])
+    @test sp.split_starts == [[0.3, 0.7]]
+    pstart = DualNewtonProblem(A, g, hshift(0.0); phases = [phases[1], sp])
+    @test phase_split_trial(pstart, 2, u, [0.5, 0.2, 0.3]; starts = (ForwardDiff.Dual.([0.6, 0.4], 2.0),)) ==
+        phase_split_trial(pstart, 2, u, [0.5, 0.2, 0.3]; starts = ([0.6, 0.4],))
+end
+
+@testset "duals captured by gq or cq are named, as those of h are" begin
+    # They cannot be stripped by the solve. Until 0.8.2 they failed on the first
+    # plain buffer with a `MethodError` that named nothing; now they are refused
+    # by name, with the two routes that work.
+    A = Float64[1 1]
+    h(x, _) = log.(max.(x, 1.0e-300))
+    mk(gq, cq) = DualNewtonProblem(
+        A, [0.0, 0.0], h; phases = [SolutionPhase([1, 2], 2; always_present = true)], gq, cq, q0 = [0.1],
+    )
+    d = ForwardDiff.Dual(0.6, 1.0)
+    @test_throws "`cq` returns dual numbers" dual_newton_solve(
+        mk((q, _) -> [0.0, q[1]], (x, q, _) -> [x[1] - d]), [1.0], [0.5, 0.5],
+    )
+    @test_throws "`gq` returns dual numbers" dual_newton_solve(
+        mk((q, _) -> [0.0, q[1] + d], (x, q, _) -> [x[1] - 0.6]), [1.0], [0.5, 0.5],
+    )
+end

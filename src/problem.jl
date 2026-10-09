@@ -202,8 +202,9 @@ end
 Mutable solver state — primal variables `n`, dual variables `y` (Lagrange
 multipliers for A n = b), and the barrier parameter `μ`.
 
-Warm-starting: pass the converged state from a previous solve as `u0` to
-`solve`; the solver will initialize (n, y) from it.
+Warm-starting: pass the converged state of a previous solve — this state, or
+the `OptimaResult` that `solve` returns — as `u0` to `solve`; the solver
+initializes (n, y) from it.
 """
 mutable struct OptimaState{T <: Real}
     n::Vector{T}       # primal: mole amounts (ns,)
