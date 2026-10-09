@@ -610,7 +610,9 @@ end
   - `lenient_line_search`: when `true`, the first pass of the line search asks the
     candidate for a converged inner solve only where the current point has one.
   - `lp_fallback`: when no start converges, try once more from the vertex of the
-    linear program (`true` by default; see [`dual_newton_solve`](@ref)).
+    linear program (see [`dual_newton_solve`](@ref)). Off by default: a caller
+    that runs its own search over starts, the linear program among them, would
+    see a different start certify first.
 
 The last two change the path of the search, not its answer's conditions, and
 are off by default. They are for a caller that solves many neighboring problems
@@ -951,7 +953,7 @@ function _invert_phases!(
                 isfinite(M) || continue          # every member of the phase is dead
                 lZ = M + log(sum(exp(dj - M) for dj in d))
                 for (j, _) in enumerate(ph.members)
-                    w = clamp(log(Nf) + d[j] - lZ, -700.0, 700.0)
+                    w = clamp(log(Nf) + d[j] - lZ, W_FLOOR, 700.0)
                     worst = max(worst, abs(_primal_value(w - W[k][j])))
                     W[k][j] = w
                 end
@@ -1653,7 +1655,7 @@ function dual_newton_solve(
     # phase keeps its last state, so readmitting it costs nothing.
     W = [Float64[log(max(n0[i], 1.0e-30)) for i in ph.members] for ph in prob.phases]
     for (k, ph) in pairs(prob.phases), (j, i) in pairs(ph.members)
-        i in dead && (W[k][j] = -700.0)
+        i in dead && (W[k][j] = W_FLOOR)
     end
 
     # A phase starts active if it is always present or if the guess holds it — and
@@ -2644,17 +2646,7 @@ function _dual_newton_attempt(
             push!(refs, PHASE_ADMISSION_SEED)
             # A mole-fraction phase also spends one unit of stationarity capacity.
             if !_active_set_supports_a_solution(prob, active, act_ph)
-                order = let xB = xB
-                    sort(eachindex(active); by = j -> xB[j])
-                end
-                for j in order
-                    trial = active[setdiff(eachindex(active), [j])]
-                    if _active_set_supports_a_solution(prob, trial, act_ph)
-                        active = trial
-                        xB = xB[setdiff(eachindex(xB), [j])]
-                        break
-                    end
-                end
+                active, xB = _exchange_incumbent(prob, active, xB, act_ph, eachindex(active))
             end
             if !_active_set_supports_a_solution(prob, active, act_ph)
                 pop!(act_ph)

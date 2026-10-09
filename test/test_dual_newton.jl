@@ -1386,13 +1386,14 @@ end
 
     stuck = dual_newton_solve(prob, b, wrong; opts = DualNewtonOptions(max_active_updates = 1, lp_fallback = false))
     @test !stuck.converged
-    res = dual_newton_solve(prob, b, wrong; opts = DualNewtonOptions(max_active_updates = 1))
+    @test !dual_newton_solve(prob, b, wrong; opts = DualNewtonOptions(max_active_updates = 1)).converged
+    res = dual_newton_solve(prob, b, wrong; opts = DualNewtonOptions(max_active_updates = 1, lp_fallback = true))
     @test res.converged
     @test kkt_certificate(prob, res.x, b).optimal
     @test res.x[6] == 0.0 && res.x[4] > 0.3 && res.x[5] > 0.5
 
     # The fallback is run without a fallback of its own, the other options kept.
-    o = DualNewtonOptions(tol = 1.0e-9, inner_fall_bound = Inf, verbose = true)
+    o = DualNewtonOptions(tol = 1.0e-9, inner_fall_bound = Inf, lp_fallback = true, verbose = true)
     o2 = OptimaSolver._without_lp_fallback(o)
     @test !o2.lp_fallback
     @test all(getfield(o2, k) == getfield(o, k) for k in fieldnames(DualNewtonOptions) if k !== :lp_fallback)
@@ -1404,7 +1405,7 @@ end
     # the whole stationarity capacity of the three components; the solid
     # solution is supersaturated, and admitting it spends one unit more, so an
     # incumbent has to leave — the smallest first, until the set supports a
-    # solution again. The answer holds X and the solid solution.
+    # solution again. The answer holds Ca and the solid solution.
     A = Float64[1 0 0 0 0 1 0 0; 0 1 0 1 0 1 1 1; 0 0 1 0 1 0 1 1]
     h(x, _) = begin
         N = max(x[7] + x[8], 1.0e-300)
@@ -1415,12 +1416,12 @@ end
         ]
     end
     prob = DualNewtonProblem(
-        A, [0.0, 5.5, 3.0, -0.15, -2.4, -1.65, -4.35, -4.1], h;
+        A, [0.0, 3.9, 5.3, -2.4, -1.5, -0.45, -2.9, -5.6], h;
         phases = [SolutionPhase([1, 2, 3], 1; always_present = true), SolutionPhase([7, 8], 1; mole_fraction = true)],
         idx_bounded = [4, 5, 6],
     )
-    b = [55.0, 0.5, 0.8]
-    res = dual_newton_solve(prob, b, [55.0, 1.0e-3, 1.0e-3, 0.77, 0.35, 0.04, 1.0e-12, 1.0e-12])
+    b = [55.0, 0.85, 0.66]
+    res = dual_newton_solve(prob, b, [55.0, 1.0e-3, 1.0e-3, 0.03, 0.49, 0.92, 1.0e-12, 1.0e-12])
     @test res.converged
     @test kkt_certificate(prob, res.x, b).optimal
     @test res.active_phases == [1, 2] && res.active == [5]
