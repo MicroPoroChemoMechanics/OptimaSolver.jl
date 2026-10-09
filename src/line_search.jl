@@ -45,13 +45,17 @@ function add_to_filter!(f::LineSearchFilter{T}, θ::T, φ::T) where {T}
 end
 
 """
-    line_search(prob, n, y, dn, dy, f_val, grad_f, μ, opts; filter) -> (α, n_new, y_new, f_new)
+    line_search(prob, n, y, dn, dy, f_val, grad_f, μ, opts; filter, α_max = 1.0,
+                kkt_merit = nothing) -> (α, n_new, y_new, f_new)
 
 Backtracking line search with filter acceptance.
 
-Starting from α = α_max (from fraction-to-boundary), tries α, β*α, β²*α, …
-until the new point (n + α dn, y + α dy) is accepted by the filter or the
-Armijo condition on feasibility is satisfied.
+Starting from `α = α_max` (from fraction-to-boundary), tries α, β*α, β²*α, …
+until the new point (n + α dn, y + α dy) is accepted: while infeasible, by the
+filter together with a drop of the violation or Armijo on the barrier objective;
+once feasible, by Armijo on the barrier objective alone, or — where that
+objective no longer resolves the decrease asked for — by `kkt_merit(n, y)`, the
+residual of the optimality conditions, when it is given.
 
 Returns the accepted step size α and the new iterates.
 """

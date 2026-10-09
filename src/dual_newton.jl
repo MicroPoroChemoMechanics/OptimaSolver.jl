@@ -209,7 +209,9 @@ struct SolutionPhase
 end
 
 """
-    SolutionPhase(members, j_ref; always_present=false, mole_fraction=false)
+    SolutionPhase(members, j_ref; always_present = false, mole_fraction = false,
+                  split_starts = Vector{Float64}[], newton = false,
+                  bounded_members = Int[], local_h = nothing, invert = nothing)
 
 One mixing phase: the variable indices it holds, which of them is the reference,
 whether it may leave, whether EVERY member's activity is a mole fraction, and
@@ -328,7 +330,10 @@ function SolutionPhase(
 end
 
 """
-    DualNewtonProblem(A, g, h; phases, idx_bounded, params)
+    DualNewtonProblem(A, g, h; phases, idx_bounded = Int[], params = nothing,
+                      gq = nothing, cq = nothing, hq = nothing, q0 = Float64[],
+                      qscale = Float64[], Aq, always_active = Int[],
+                      conservation_rows = 1:size(A, 1))
 
 A convex program in the form solved by [`dual_newton_solve`](@ref):
 
@@ -352,6 +357,15 @@ A convex program in the form solved by [`dual_newton_solve`](@ref):
     the composition — a pure phase, of unit activity — so they are either at a
     stationarity of their own or at zero, and an active set decides which.
   - `params`: passed through to `h`.
+  - `q0`, `gq`, `cq`, `hq`, `Aq`: unknown parameters solved for together with
+    the composition — a prescribed property (a pH, a temperature) or a reaction
+    extent. `q0` is their starting guess, `cq(x, q, params)` their residual
+    equations (one per parameter), `gq(q, params)` the standard part of the
+    gradient at `q` when it depends on them, `hq(x, q, params)` the state-
+    dependent part when it does, and `Aq` (`m × length(q0)`) puts them in the
+    linear rows, which then read `A x + Aq q = b`.
+  - `qscale`: accepted for compatibility and checked; the Jacobian is exact and
+    reads no scale.
   - `conservation_rows`: which rows of `A x + Aq q = b` the degeneracy criterion
     of [`degenerate_components`](@ref) may be applied to. Defaults to all of them,
     which is right when every row conserves an element or the charge.
@@ -628,22 +642,6 @@ end
 
 # ── inner level: invert the stationarity of the log variables ─────────────────
 
-"""
-    _invert_phases!(prob, W, y, refs, act_ph, active, xB, x_buf; dead) -> x_buf
-
-Recover the members of every ACTIVE mixing phase from their own stationarity,
-`hᵢ(x) = uᵢ − gᵢ`, at fixed multipliers and fixed phase references.
-
-For a variable whose `hᵢ` behaves like `ln xᵢ` plus a slowly varying part — which
-is what a logarithm of a mole fraction is — `∂hᵢ/∂wᵢ = 1`, so `w += r` is an
-exact Newton step; the coupling through the phase total and the activity
-coefficients is what makes the loop iterative rather than one-shot.
-
-The floor is `exp(-700)`: a variable whose stationarity demands `hᵢ = −200` can
-never reach it against a floor of `−80`, its residual stays at 120 for ever, and
-the loop can never report convergence — which then makes the OUTER Jacobian
-meaningless.
-"""
 # Composition of a mole-fraction phase from the potentials alone.
 #
 # `x_i = N · softmax(u_i − g_i − lnγ_i)` and the phase is consistent when
@@ -850,6 +848,22 @@ function _fill_x!(x_buf, prob, W, refs, act_ph, active, xB)
     return x_buf
 end
 
+"""
+    _invert_phases!(prob, W, y, refs, act_ph, active, xB, x_buf; dead) -> x_buf
+
+Recover the members of every ACTIVE mixing phase from their own stationarity,
+`hᵢ(x) = uᵢ − gᵢ`, at fixed multipliers and fixed phase references.
+
+For a variable whose `hᵢ` behaves like `ln xᵢ` plus a slowly varying part — which
+is what a logarithm of a mole fraction is — `∂hᵢ/∂wᵢ = 1`, so `w += r` is an
+exact Newton step; the coupling through the phase total and the activity
+coefficients is what makes the loop iterative rather than one-shot.
+
+The floor is `exp(-700)` (`W_FLOOR`) and not higher: a variable whose
+stationarity demands `hᵢ = −200` could never reach a floor of `−80`, its residual
+would stay at 120 for ever, and the loop could never report convergence — which
+would then make the OUTER Jacobian meaningless.
+"""
 function _invert_phases!(
         prob, W, y, refs, act_ph, active, xB, x_buf;
         dead = Set{Int}(), g = prob.g, q = prob.q0,
@@ -1134,16 +1148,15 @@ end
 # The admission measure of an absent mixing phase: Michelsen's, the one the
 # certificate applies (`kkt_certificate`).
 #
-# Until 0.6.2 the search admitted phases on an ideal sum, `Σᵢ exp(uᵢ − gᵢ) − 1`,
-# with `lnγ = 0` and every member counted. The two disagree where it matters.
-# For a non-ideal phase (a Redlich-Kister binary) the ideal test and the
-# certificate can reach opposite verdicts on the same phase, so the search could
-# hold absent what the certificate then called supersaturated, or the reverse. And a DEAD member — one
-# whose component is absent from the budget, its potential pinned at the
-# sentinel `DEGENERATE_POTENTIAL` — enters the ideal sum as `exp(50)`, so a phase
-# with any dead member looked supersaturated whatever the chemistry: the
-# `CSHQ` of a binder without potassium, for one. `phase_tangent_trial` has
-# excluded dead members since it was written; the search now uses it.
+# The search admits a phase on the measure the certificate applies, not on the
+# ideal sum `Σᵢ exp(uᵢ − gᵢ) − 1` with `lnγ = 0` and every member counted. The two
+# disagree where it matters. For a non-ideal phase (a Redlich-Kister binary) the
+# ideal test and the certificate can reach opposite verdicts on the same phase,
+# so the search would hold absent what the certificate then calls supersaturated,
+# or the reverse. And a DEAD member — one whose component is absent from the
+# budget, its potential pinned at the sentinel `DEGENERATE_POTENTIAL` — would make
+# any phase holding it look supersaturated whatever the chemistry: the `CSHQ` of a
+# binder without potassium, for one. `phase_tangent_trial` excludes dead members.
 _admission_measure(prob, k, u, x_buf, q, dead) =
     phase_tangent_measure(prob, k, u, x_buf; g = current_g(prob, q), q = q, dead = dead)
 
@@ -1156,12 +1169,25 @@ function _admission_measure!(memo, prob, k, u, x_buf, q, dead)
 end
 
 """
-    phase_tangent_measure(prob, k, u, x; maxit = 50, tol = 1e-12, total = 1e-6)
+    phase_tangent_trial(prob, k, u, x; maxit = 50, tol = nothing, total = 1e-6,
+                        g = prob.g, q = prob.q0, start = nothing, dead = Set{Int}())
+        -> (measure, fractions)
 
 Michelsen's tangent-plane measure for mixing phase `k` at the multipliers `u` and
-composition `x`: the log-sum-exp of `uᵢ − gᵢ − lnγᵢ` over the phase's members,
-with the trial composition refined against the phase's OWN activity model by
-successive substitution.
+composition `x`, with the trial composition that attains it: the log-sum-exp of
+`uᵢ − gᵢ − lnγᵢ` over the phase's members, the trial composition refined against
+the phase's OWN activity model — by successive substitution, or by Newton's method
+for a phase declared `newton = true` ([`SolutionPhase`](@ref)).
+
+`fractions` are mole fractions over the phase's members. `g` and `q` are the
+standard part of the gradient and the unknown parameters `h` is evaluated at;
+`start` the trial composition to begin from (uniform over the live members by
+default); `dead` the members whose component is absent from the budget, which
+take no part. `tol` is the stopping tolerance on the fractions, by default that
+of each iteration: `1e-12` for the substitution, `1e-13` for Newton's method.
+
+A verdict, taken on values: dual numbers carried by `u`, `x` or what `h`
+returns are dropped, and both results are `Float64`.
 
 Positive means a trial composition of the phase lies below the tangent plane, so
 the phase can form and a composition without it is not optimal. Zero means the
@@ -1307,6 +1333,15 @@ when there is one.
 
 Returns `(-Inf, Float64[])` for a phase of fewer than two members, which cannot
 split.
+
+# Keywords
+
+`maxit`, `tol`, `total`, `g`, `q` and `dead` are those of
+[`phase_tangent_trial`](@ref), run from every start. `corner` is the fraction of
+the dominant member at each corner start (`0.98`: a corner of the simplex is
+itself a fixed point of the substitution). `starts` adds trial compositions to the
+corners and to the phase's own `split_starts`, as mole fractions over its members;
+dual numbers among them are taken by value.
 """
 function phase_split_trial(
         prob::DualNewtonProblem, k::Int, u::AbstractVector, x::AbstractVector;
@@ -1399,7 +1434,7 @@ phase_split_measure(args...; kwargs...) = first(phase_split_trial(args...; kwarg
 # ── the solve ─────────────────────────────────────────────────────────────────
 
 """
-    simplex_start(A, g, b; floor = 0.0, maxit = 0) -> Union{Nothing, Vector{Float64}}
+    simplex_start(A, g, b; floor = 0.0, maxit = 0) -> Union{Nothing, Vector}
 
 A feasible composition to start from: the vertex of the mass balance that the
 linear program `minimize gᵀx subject to A x = b, x ≥ 0` lands on, as
@@ -1540,7 +1575,7 @@ function _refuse_captured_duals(name, v)
 end
 
 """
-    dual_newton_solve(prob, b, x0; opts) -> (; x, y, q, active_phases, active, converged)
+    dual_newton_solve(prob, b, x0; opts) -> (; x, y, q, active_phases, active, converged, kkt_error)
 
 Solve `prob` for the right-hand side `b`, starting from `x0`.
 
@@ -2638,12 +2673,23 @@ function _dual_newton_attempt(
 end
 
 """
-    kkt_certificate(prob, x, b; floor = 1e-25) -> (; stationarity, feasibility,
-                                                    worst_violation, n_interior,
-                                                    n_forced_zero, optimal)
+    kkt_certificate(prob, x, b; floor = 1e-25, tol = 1e-10, si_tol = 1e-8, q = prob.q0)
+        -> NamedTuple
 
 Check the KKT conditions at `x`, independently of how it was obtained. For a
 convex problem they are sufficient, so `optimal = true` is a **proof**.
+
+`tol` is the threshold of the stationarity and balance tests, `si_tol` that of the
+saturation and tangent-plane tests, and `q` the unknown parameters `x` was solved
+with, when the problem has some.
+
+The result holds `optimal` and what it was decided on: `stationarity` (scaled;
+`stationarity_abs` unscaled, `stationarity_scale` the scale),
+`stationarity_floored` and `n_floored`, `feasibility` (`feasibility_abs`,
+`feasibility_rel`), `worst_violation` (the largest of `worst_violation_bounded`,
+`worst_violation_phase` and `worst_violation_split`), `absent_phases`,
+`split_phases` and `split_trials` (the trial composition of each phase that
+wants to split), `n_interior`, `n_forced_zero` and `param_residual`.
 
 # What is checked, and on which variables
 
@@ -2899,8 +2945,9 @@ function kkt_certificate(
         # would name a phase on 1e-12 of numerical noise.
         if m > si_tol
             push!(split_phases, k)
-            # Keyed by SPECIES INDEX, so that a caller needs no table mapping
-            # the solver's phase list back to its own.
+            # Keyed by the phase's position in `prob.phases`, and carrying the
+            # indices of its members, so that a caller needs no table mapping
+            # the solver's phase list back to its own species.
             isempty(trial) ||
                 (split_trials[k] = (members = collect(ph.members), x = trial))
         end

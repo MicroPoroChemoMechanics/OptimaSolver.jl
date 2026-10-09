@@ -27,7 +27,9 @@ end
 
 Return indices of stable (`js`) and unstable (`ju`) variables.
 
-A variable is stable if (nᵢ - lbᵢ) > tol_stable * max_slack.
+A variable is stable if `nᵢ − lbᵢ > tol_stable · max_slack`, or if its
+stationarity residual points away from the bound (`exᵢ < 0`); it is unstable
+when it is near its bound and `exᵢ ≥ 0`.
 """
 function classify_variables(
         n::AbstractVector,

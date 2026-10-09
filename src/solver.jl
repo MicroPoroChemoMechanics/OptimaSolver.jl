@@ -11,7 +11,8 @@
 #   2. Outer loop over barrier parameter μ:
 #      a. Inner loop (Newton iterations):
 #         i.   Evaluate KKT residual F(n, y; μ)
-#         ii.  Check inner convergence (error < 10*tol or error < μ)
+#         ii.  Check convergence (error at μ = 0 below tol) and inner
+#              convergence (error below max(tol, barrier_eps_factor·μ), or a stall)
 #         iii. Compute Hessian diagonal h
 #         iv.  Compute Newton step (dn, dy) via Schur complement
 #         v.   Fraction-to-boundary α_max; optionally reduce for unstable vars
@@ -212,8 +213,8 @@ function solve!(
             # For mixed solid/aqueous problems, pure solids have ∂²G/∂nᵢ² = 0
             # (constant activity); using 1/nᵢ there inflates the Hessian ~10⁵×,
             # making the Newton step negligible and causing linear (not quadratic)
-            # convergence. The FD option computes the true diagonal via one
-            # gradient evaluation per species.
+            # convergence. `use_fd_hessian` computes the true diagonal by
+            # forward-mode differentiation of the gradient.
             # The caller may hand over the exact diagonal through the parameters,
             # the way `A` and `b` are handed over. Both fallbacks below are only
             # approximations of `∂²f/∂nᵢ²`, and on a chemical system the error is
@@ -377,13 +378,15 @@ Solve the Gibbs minimization problem `prob` and return an `OptimaResult`.
 
 # Arguments
 - `prob`:  `OptimaProblem`
-- `opts`:  `OptimaOptions` (keyword; defaults to `OptimaOptions()`)
-- `u0`:    initial guess for n (keyword; defaults to b/m spread)
+- `opts`:  `OptimaOptions` (positional; defaults to `OptimaOptions()`)
+- `u0`:    initial guess for n (keyword; by default `_default_initial_n`: each
+           row's budget spread over the species of that row in proportion to
+           their coefficients, the largest share kept, and at least 1e-3)
 - `y0`:    initial guess for y (keyword; defaults to zeros)
 
 # Warm-start
-Pass a previous `OptimaResult` as `u0 = prev_result` and the solver will
-initialize from `prev_result.n` and `prev_result.y`.
+Pass a previous `OptimaResult` (or `OptimaState`) as `u0 = prev` and the solver
+initializes from `prev.n` and `prev.y`.
 """
 function solve(
         prob::OptimaProblem{T},
@@ -447,8 +450,9 @@ end
 """
     _default_initial_n(prob) -> Vector
 
-Simple initial guess: nᵢ = bⱼ / ∑ Aⱼₖ for the first element row that
-involves each species, scaled so An ≈ b roughly.
+Simple initial guess: each row's budget spread over the species with a positive
+coefficient in it, `bⱼ Aⱼᵢ / Σₖ |Aⱼₖ|`, every species taking the largest share
+any row gives it and at least `1e-3`, so that `A n ≈ b` roughly.
 """
 function _default_initial_n(prob::OptimaProblem{T}) where {T}
     n0 = fill(T(1.0e-3), prob.ns)
@@ -544,15 +548,21 @@ end
 """
     _initialise_feasible!(n, prob, can; maxit=100, tol=1e-12)
 
-Make `n` satisfy `A n = b` with `n ≥ lb`, exactly if possible.
+Make `n` satisfy `A n = b` with `n ≥ lb`, exactly if possible. Four routes are
+tried in turn, each only when the previous one has not reached the affine set:
 
-The basic/non-basic split is used first, which is how Optima does it and is the
-only route that gives EXACT feasibility: hold the non-basic variables where they
-are and solve `B n_b = b − N n_n` for the basic ones. `B` is square and
-factorized already, so this is one triangular solve, and the residual it leaves
-is machine precision rather than an iteration's worth. It works because the basis
-is chosen by priority weight — the abundant species — so the budget it is asked to
-absorb is small against what it holds.
+1. **Least disturbance**: the minimum-norm correction towards `A n = b`, clamped
+   to the bounds, iterated from the caller's point. A warm start is already close,
+   and this keeps the correlation between neighboring solves that rebuilding the
+   point would destroy.
+2. **The basic/non-basic split**, which is how Optima does it and gives EXACT
+   feasibility: hold the non-basic variables where they are and solve
+   `B n_b = b − N n_n` for the basic ones. `B` is factorized already, so this is
+   one triangular solve. Kept only if every basic amount stays above its bound.
+3. **Non-negative least squares** on the slacks, exact as well when the budget is
+   attainable.
+4. **Alternating projections** onto `{A n = b}` and `{n ≥ lb}`, slower and only
+   approximate, as the last resort.
 
 Why exactness matters, and not marginally. The filter line search only bypasses
 its filter when the current point is feasible; while it is not, acceptance needs
@@ -564,12 +574,6 @@ descent direction at all. Measured on an LC³ equilibrium, the start carried
 solve reported `MaxIters` on the point it started from. Once the start is
 feasible the null-space step keeps `A dn = 0`, so feasibility is preserved for the
 rest of the solve and never competes with optimality for the same step length.
-
-If a basic amount comes out below its bound the split is abandoned and the point
-is projected by alternating projections onto `{A n = b}` and `{n ≥ lb}`. Both sets
-are convex and their intersection is non-empty whenever the budget is attainable,
-so the alternation converges; it is slower and only approximate, which is why it
-is the fallback and not the method.
 """
 function _initialise_feasible!(
         n::AbstractVector{T}, prob::OptimaProblem{T}, can::Canonicalizer{T};

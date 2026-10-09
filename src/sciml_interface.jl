@@ -27,9 +27,16 @@ algorithm for Gibbs-energy minimization.
 
 # Constructors
 ```julia
-OptimaOptimizer(; tol=1e-10, max_iter=300, warm_start=true, verbose=false)
+OptimaOptimizer(; tol = 1e-10, max_iter = 300, warm_start = true,
+                barrier_init = 1e-4, barrier_min = 1e-14, barrier_decay = 0.2,
+                barrier_eps_factor = 1.0, barrier_stall_iters = 8,
+                ls_alpha = 1e-4, ls_beta = 0.5, ls_max_iter = 40, verbose = false,
+                use_fd_hessian = true, nullspace_step = true)
 OptimaOptimizer(opts::OptimaOptions)
 ```
+
+The keywords are the fields of [`OptimaOptions`](@ref), with one default that
+differs: `use_fd_hessian = true` here.
 
 # Fields
 - `options`: `OptimaOptions` with all algorithm hyperparameters
@@ -104,7 +111,9 @@ with the OptimaSolver primal-dual method.
 The `OptimizationProblem` is expected to carry:
 - `f.f`:       objective `(u, p) -> scalar`
 - `f.grad`:    in-place gradient `(g, u, p) -> nothing`  (or `nothing`)
-- `prob.cons`: equality constraints `(res, u, p) -> nothing`  (A u = b encoded as residual)
+- `f.cons`:    equality constraints `(res, u, p) -> nothing`  (A u = b encoded as
+               residual; a residual that is not affine is linearized again at
+               the answer until it is met, see `_relinearized`)
 - `prob.lcons`, `prob.ucons`: lower/upper constraint bounds (should be equal for equality)
 - `prob.lb`:   lower bounds on u
 - `prob.u0`:   initial guess
@@ -397,7 +406,8 @@ Fix: for each absent species (`n ≤ 100·lb`) that the element balance allows t
 be nonzero (some row `j` has `A[j,i] > 0` and `b[j] > 0`), set it to a rough
 element-balance estimate, then project back onto `A n = b`.
 
-Warm-start paths are not affected (converged solutions have all species nonzero).
+A warm start goes through the same lift, which touches only the species still at
+their bound: a converged answer holds every species above it.
 """
 function _lift_cold_start(u::Vector{T}, A::Matrix{T}, b::Vector{T}, lb::Vector{T}) where {T}
     ns = length(u)
@@ -453,9 +463,11 @@ end
 Extract the linear constraint matrix A and RHS b from a SciML
 `OptimizationProblem`.
 
-Two paths:
+Three paths:
 1. `p` is a NamedTuple with fields `A` and `b` → use directly (Optima-native).
-2. Otherwise, differentiate the constraint function at `u0` (forward mode) to get A, b.
+2. No constraint function either → an `ArgumentError`: there is nothing to solve.
+3. Otherwise, differentiate the constraint function at `u0` (forward mode) to get
+   `A` and `b`, its linearization at `u0`.
 """
 function _extract_constraints(opt_prob, u0::AbstractVector{T}, p) where {T}
     # Path 1: parameters carry A and b explicitly

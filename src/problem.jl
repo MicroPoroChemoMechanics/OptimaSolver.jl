@@ -134,17 +134,24 @@ Solver hyperparameters.
 - `warm_start`:    reuse previous (n, y) as initial guess (default true)
 - `barrier_init`:  initial log-barrier weight μ₀ (default 1e-4)
 - `barrier_min`:   minimum barrier weight (default 1e-14)
-- `barrier_decay`: barrier reduction factor per outer iteration (default 0.1)
+- `barrier_decay`: barrier reduction factor per outer iteration (default 0.2)
+- `barrier_eps_factor`: how far above μ the barrier subproblem may be left
+                   before μ is reduced (default 1)
+- `barrier_stall_iters`: inner iterations without a relative improvement of
+                   1e-3 after which μ is reduced anyway (default 8)
 - `ls_alpha`:      Armijo sufficient-decrease parameter (default 1e-4)
 - `ls_beta`:       backtracking contraction factor (default 0.5)
 - `ls_max_iter`:   maximum backtracking steps (default 40)
 - `verbose`:          print iteration log (default false)
 - `use_fd_hessian`:   compute the Hessian diagonal exactly, by forward-mode
-                      differentiation of ∇f (a difference quotient until 0.7.4),
-                      instead of the ideal-solution approximation 1/nᵢ
-                      (default false). Enable for problems with pure solid or
-                      gas species where the true ∂²f/∂nᵢ² = 0, otherwise the
-                      approximation 1/nᵢ causes extremely slow convergence.
+                      differentiation of ∇f, instead of the ideal-solution
+                      approximation 1/nᵢ (default false). Enable for problems
+                      with pure solid or gas species where the true
+                      ∂²f/∂nᵢ² = 0, otherwise the approximation 1/nᵢ causes
+                      extremely slow convergence. (The name is historical: no
+                      difference quotient is taken.)
+- `nullspace_step`:   compute the Newton step in the null space of `A`, so that
+                      feasibility once reached is kept (default true)
 
 !!! warning "`use_fd_hessian` defaults differently here and on `OptimaOptimizer`"
     This struct defaults it to `false`; the `OptimaOptimizer(; …)` keyword
