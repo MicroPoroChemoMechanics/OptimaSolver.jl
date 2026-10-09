@@ -6,7 +6,7 @@
 # Core data structures: OptimaProblem, OptimaState, OptimaResult, OptimaOptions
 
 """
-    OptimaProblem{T, F, G}
+    OptimaProblem{T, F, G, P}
 
 Gibbs-energy minimization problem in the form:
 
@@ -23,7 +23,7 @@ Gibbs-energy minimization problem in the form:
 - `m`:  number of conservation equations
 - `lb`: lower bounds on n (default: fill(ε, ns))
 - `ub`: upper bounds on n (default: fill(Inf, ns))
-- `p`:  parameter tuple passed through to f and g!
+- `p`:  parameter tuple passed through to f and g!, of the concrete type `P`
 
 # Element type
 
@@ -34,7 +34,7 @@ the constraint data alone it would stay `Float64`, so the solver's gradient
 buffer would be a `Vector{Float64}` and the user's `g!` would fail trying to
 write a `Dual` into it.
 """
-struct OptimaProblem{T <: Real, F <: Function, G <: Function}
+struct OptimaProblem{T <: Real, F <: Function, G <: Function, P}
     A::Matrix{T}
     b::Vector{T}
     f::F
@@ -43,7 +43,7 @@ struct OptimaProblem{T <: Real, F <: Function, G <: Function}
     m::Int
     lb::Vector{T}
     ub::Vector{T}
-    p::Any
+    p::P
 end
 
 """
@@ -110,7 +110,7 @@ function OptimaProblem(
         )
     )
     @assert length(lb) == ns && length(ub) == ns "bounds must have length $ns"
-    return OptimaProblem{T, F, G}(
+    return OptimaProblem{T, F, G, typeof(p)}(
         convert(Matrix{T}, A),
         convert(Vector{T}, b),
         f, g!,

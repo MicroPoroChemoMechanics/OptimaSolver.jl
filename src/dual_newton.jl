@@ -382,13 +382,16 @@ never exactly absent while the phase exists. The active set for a mixing phase i
 therefore over the PHASE, and the criterion is a tangent-plane test rather than a
 sign of a saturation index.
 """
-struct DualNewtonProblem{T <: Real, H, G, C, HQ}
+struct DualNewtonProblem{T <: Real, H, G, C, HQ, P}
     A::Matrix{T}
     g::Vector{T}
     h::H
     phases::Vector{SolutionPhase}
     idx_bounded::Vector{Int}
-    params::Any
+    # Concrete, so that every `h(x, params)` of the sweeps is a static call
+    # whose result has a known type: held as `Any`, it made each one dynamic
+    # and the vector it returns of no inferable type.
+    params::P
     # ── the q block: prescribed properties, solved for simultaneously ────────
     nq::Int              # number of unknown parameters (0 for a plain T, P solve)
     gq::G                # gq(q, params) -> Vector, the standard part at those q
@@ -1143,6 +1146,14 @@ end
 # excluded dead members since it was written; the search now uses it.
 _admission_measure(prob, k, u, x_buf, q, dead) =
     phase_tangent_measure(prob, k, u, x_buf; g = current_g(prob, q), q = q, dead = dead)
+
+# The same, kept in `memo[k]` for the rest of an active-set round, within which
+# the multipliers, the composition and the parameters it is measured at do not
+# change.
+function _admission_measure!(memo, prob, k, u, x_buf, q, dead)
+    isnan(memo[k]) && (memo[k] = _admission_measure(prob, k, u, x_buf, q, dead))
+    return memo[k]
+end
 
 """
     phase_tangent_measure(prob, k, u, x; maxit = 50, tol = 1e-12, total = 1e-6)
@@ -2013,6 +2024,10 @@ starting point by [`dual_newton_solve`](@ref).
 function _dual_newton_attempt(
         prob, bv, y_init, W0, act_ph0, refs0, active0, xB0, x_buf, dead, degenerate, m, opts,
     )
+    # The sets, amounts and parameters below are rebound as the search moves, and
+    # a comprehension or a closure that captured them directly would box them —
+    # every later use dispatched at run time. Each one is therefore handed over
+    # through a `let`, which captures a binding that is never reassigned.
     y = copy(y_init)
     W = [copy(w) for w in W0]
     act_ph = copy(act_ph0)
@@ -2048,6 +2063,10 @@ function _dual_newton_attempt(
     # last one tried.
     best_res = Inf
     best_state = nothing
+    # The tangent-plane measure of each absent phase within a round, `NaN` until
+    # asked for: three steps of a round ask for it at the same multipliers and
+    # composition, and each evaluation runs up to `maxit` substitution sweeps.
+    admission = fill(NaN, length(prob.phases))
 
     for _ in 1:(opts.max_active_updates)
         nph = length(act_ph)
@@ -2276,13 +2295,17 @@ function _dual_newton_attempt(
             xB = na == 0 ? Float64[] : v[(nph + m + 1):(nph + m + na)]
             # A pinned variable may legitimately pass through small values, so the
             # early break looks only at the ones an active set actually decides.
-            let free = [j for j in 1:na if !(active[j] in prob.always_active)]
+            let free = let active = active
+                    [j for j in 1:na if !(active[j] in prob.always_active)]
+                end
                 !isempty(free) && minimum(@view xB[free]) < opts.si_tol && break
             end
             nph > 0 && minimum(@view v[1:nph]) < log(opts.si_tol) && break
         end
 
-        refs = [exp(v[a]) for a in 1:nph]
+        refs = let v = v
+            [exp(v[a]) for a in 1:nph]
+        end
         y = v[(nph + 1):(nph + m)]
         xB = na == 0 ? Float64[] : v[(nph + m + 1):(nph + m + na)]
         q = nq == 0 ? Float64[] : v[(nph + m + na + 1):(nph + m + na + nq)]
@@ -2290,6 +2313,7 @@ function _dual_newton_attempt(
         u = -(transpose(prob.A) * y)
         hv = current_h(prob, x_buf, q)
         si = u .- (current_g(prob, q) .+ hv)
+        fill!(admission, NaN)
 
         # Record this set if it is the best seen, measured by the KKT error of the
         # WHOLE problem — not by the residual of the subproblem this set defines.
@@ -2317,7 +2341,7 @@ function _dual_newton_attempt(
             for k in eachindex(prob.phases)
                 k in act_ph && continue
                 all(i in dead for i in prob.phases[k].members) && continue
-                viol = max(viol, _admission_measure(prob, k, u, x_buf, q, dead))
+                viol = max(viol, _admission_measure!(admission, prob, k, u, x_buf, q, dead))
             end
             kkt_err = max(res_outer, viol)
             opts.verbose && @info "active-set round" kkt_err res_outer viol nph na inner_ok
@@ -2349,14 +2373,16 @@ function _dual_newton_attempt(
         # Newton is still working, `sᵢ` on an active variable is a transient, not a
         # violation, and dropping on it removes phases that were on their way to
         # stationarity.
-        drop = [
-            j for j in eachindex(xB)
-                if !(active[j] in prob.always_active) &&
-                (
-                    xB[j] < opts.si_tol ||
-                    (inner_ok && si[active[j]] < -max(opts.si_tol, opts.tol))
-                )
-        ]
+        drop = let active = active, xB = xB, inner_ok = inner_ok
+            [
+                j for j in eachindex(xB)
+                    if !(active[j] in prob.always_active) &&
+                    (
+                        xB[j] < opts.si_tol ||
+                        (inner_ok && si[active[j]] < -max(opts.si_tol, opts.tol))
+                    )
+            ]
+        end
 
         # An admission that does not converge used to be undone by rejecting the
         # entrant for good. That reads the failure backwards.
@@ -2392,12 +2418,10 @@ function _dual_newton_attempt(
         # is the most violated candidate, the leaving rule the most violated
         # incumbent — and `seen` still bounds the search.
         if !inner_ok && isempty(drop) && last_added == 0 && !isempty(active)
-            releasable = [
-                j for j in eachindex(active)
-                    if !(active[j] in prob.always_active)
-            ]
-            worst = isempty(releasable) ? 0 :
-                releasable[argmax([abs(si[active[j]]) for j in releasable])]
+            releasable, worst = let active = active
+                r = [j for j in eachindex(active) if !(active[j] in prob.always_active)]
+                r, isempty(r) ? 0 : r[argmax([abs(si[active[j]]) for j in r])]
+            end
             if worst != 0 && abs(si[active[worst]]) > opts.tol
                 push!(rejected, active[worst])
                 active = active[setdiff(eachindex(active), [worst])]
@@ -2421,23 +2445,27 @@ function _dual_newton_attempt(
         # assemblage permanently.
         (isempty(drop) && isempty(drop_ph_prev)) || empty!(rejected)
 
-        cand = [
-            i for i in prob.idx_bounded
-                if !(i in active) && !(i in dead) && !(i in rejected) && si[i] > opts.si_tol
-        ]
+        cand = let active = active
+            [
+                i for i in prob.idx_bounded
+                    if !(i in active) && !(i in dead) && !(i in rejected) && si[i] > opts.si_tol
+            ]
+        end
 
         # What was vetoed is still measured. A rejected variable that remains
         # supersaturated is a violated KKT condition, and the run must not be
         # reported as converged just because the candidate list was filtered.
-        veto_violation = any(
-            i -> !(i in active) && !(i in dead) && si[i] > opts.si_tol, rejected,
-        )
+        veto_violation = let active = active
+            any(i -> !(i in active) && !(i in dead) && si[i] > opts.si_tol, rejected)
+        end
 
         # ── mixing phases ──
-        drop_ph = [
-            a for (a, k) in enumerate(act_ph)
-                if !prob.phases[k].always_present && refs[a] < opts.si_tol
-        ]
+        drop_ph = let refs = refs
+            [
+                a for (a, k) in enumerate(act_ph)
+                    if !prob.phases[k].always_present && refs[a] < opts.si_tol
+            ]
+        end
         # Where the Newton stalled with nothing leaving, the most undersaturated
         # phase is the incumbent to release, as the bounded variable carrying the
         # residual is above: on an active set breaking the phase rule, the
@@ -2461,11 +2489,13 @@ function _dual_newton_attempt(
             filter!(t -> t[2] < -max(opts.si_tol, opts.tol), under)
             isempty(under) || push!(drop_ph, first(under[argmin([t[2] for t in under])]))
         end
-        cand_ph = [
-            k for k in eachindex(prob.phases)
-                if !(k in act_ph) && !all(i in dead for i in prob.phases[k].members) &&
-                _admission_measure(prob, k, u, x_buf, q, dead) > opts.si_tol
-        ]
+        cand_ph = let act_ph = act_ph, q = q
+            [
+                k for k in eachindex(prob.phases)
+                    if !(k in act_ph) && !all(i in dead for i in prob.phases[k].members) &&
+                    _admission_measure!(admission, prob, k, u, x_buf, q, dead) > opts.si_tol
+            ]
+        end
 
         if isempty(drop) && isempty(cand) && isempty(drop_ph) && isempty(cand_ph)
             converged = inner_ok && !veto_violation
@@ -2502,7 +2532,10 @@ function _dual_newton_attempt(
             # conditions, since otherwise no `y` exists. Termination is unaffected:
             # `seen` records the active sets visited and there are finitely many.
             if !_active_set_supports_a_solution(prob, active, act_ph)
-                for j in sort(1:(length(active) - 1); by = j -> xB[j])
+                order = let xB = xB
+                    sort(1:(length(active) - 1); by = j -> xB[j])
+                end
+                for j in order
                     trial = active[setdiff(eachindex(active), [j])]
                     if _active_set_supports_a_solution(prob, trial, act_ph)
                         active = trial
@@ -2525,12 +2558,17 @@ function _dual_newton_attempt(
             end
         end
         if !isempty(cand_ph)
-            k_best = cand_ph[argmax([_admission_measure(prob, k, u, x_buf, q, dead) for k in cand_ph])]
+            k_best = let q = q
+                cand_ph[argmax([_admission_measure!(admission, prob, k, u, x_buf, q, dead) for k in cand_ph])]
+            end
             push!(act_ph, k_best)
             push!(refs, PHASE_ADMISSION_SEED)
             # A mole-fraction phase also spends one unit of stationarity capacity.
             if !_active_set_supports_a_solution(prob, active, act_ph)
-                for j in sort(eachindex(active); by = j -> xB[j])
+                order = let xB = xB
+                    sort(eachindex(active); by = j -> xB[j])
+                end
+                for j in order
                     trial = active[setdiff(eachindex(active), [j])]
                     if _active_set_supports_a_solution(prob, trial, act_ph)
                         active = trial
@@ -2568,7 +2606,9 @@ function _dual_newton_attempt(
         act_ph, active, v, W, best_viol = best_state
         nph = length(act_ph)
         na = length(active)
-        refs = [exp(v[a]) for a in 1:nph]
+        refs = let v = v
+            [exp(v[a]) for a in 1:nph]
+        end
         y = v[(nph + 1):(nph + m)]
         xB = na == 0 ? Float64[] : v[(nph + m + 1):(nph + m + na)]
         q = nq == 0 ? Float64[] : v[(nph + m + na + 1):(nph + m + na + nq)]

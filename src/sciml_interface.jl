@@ -34,10 +34,14 @@ OptimaOptimizer(opts::OptimaOptions)
 # Fields
 - `options`: `OptimaOptions` with all algorithm hyperparameters
 - `_cache`:  `Ref{Union{Nothing, OptimaResult}}` — previous solution for warm-start
+
+The cache makes an optimizer a stateful object: two tasks solving through the
+same one would each start from whatever the other cached last. Give each task
+its own optimizer.
 """
 struct OptimaOptimizer <: SciMLBase.AbstractOptimizationAlgorithm
     options::OptimaOptions
-    _cache::Ref{Union{Nothing, OptimaResult}}
+    _cache::Base.RefValue{Union{Nothing, OptimaResult}}
 end
 
 function OptimaOptimizer(;

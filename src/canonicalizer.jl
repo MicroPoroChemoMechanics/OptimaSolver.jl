@@ -37,7 +37,7 @@ struct Canonicalizer{T <: Real}
     jb::Vector{Int}       # basic variable indices
     jn::Vector{Int}       # non-basic variable indices
     B::Matrix{T}          # A[:, jb]
-    BLU::Any              # lu(B)
+    BLU::LinearAlgebra.LU{T, Matrix{T}, Vector{Int}}   # lu(B)
     R::Matrix{T}          # B⁻¹ N
     ns::Int
     m::Int

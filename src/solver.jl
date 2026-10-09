@@ -119,6 +119,11 @@ function solve!(
     feas_best = Ref(T(Inf))
     opt_best = Ref(T(Inf))
 
+    # The factorization of `A Aᵀ` the null-space projection below needs: `A` is
+    # fixed for the solve, so it is factorized once, the first time a clipped
+    # step asks for it.
+    aat_qr = nothing
+
     function _keep_best!(kkt, μ_now)
         feas_ok = kkt.error_feas <= max(feas_best[], T(opts.tol))
         if feas_ok && kkt.error_opt < opt_best[]
@@ -256,11 +261,8 @@ function solve!(
             if opts.nullspace_step
                 r_dn = prob.A * dn
                 if maximum(abs, r_dn) > eps(T) * max(one(T), maximum(abs, dn))
-                    dn .-= can.A' * (
-                        LinearAlgebra.qr(
-                            can.A * can.A', LinearAlgebra.ColumnNorm(),
-                        ) \ r_dn
-                    )
+                    aat_qr === nothing && (aat_qr = LinearAlgebra.qr(can.A * can.A', LinearAlgebra.ColumnNorm()))
+                    dn .-= can.A' * (aat_qr \ r_dn)
                 end
             end
 
@@ -596,10 +598,14 @@ function _initialise_feasible!(
     @inbounds for i in axes(AAT0, 1)
         AAT0[i, i] += dmax * T(1.0e-14)
     end
+    # Factorized once: `AAT0 \ ew` factorizes it again at every call. What `\`
+    # does with a square matrix is kept exactly — a triangular one solved as it
+    # stands, any other by its LU — so that the iterates do not move by a bit.
+    AAT0_fact = (LinearAlgebra.istril(AAT0) || LinearAlgebra.istriu(AAT0)) ? AAT0 : LinearAlgebra.lu(AAT0)
     for _ in 1:50
         ew = prob.A * n .- prob.b
         maximum(abs, ew) <= tol && return n
-        n .-= prob.A' * (AAT0 \ ew)
+        n .-= prob.A' * (AAT0_fact \ ew)
         @inbounds for i in eachindex(n)
             n[i] = max(n[i], prob.lb[i] + eps(T))
         end
