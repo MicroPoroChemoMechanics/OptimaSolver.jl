@@ -646,7 +646,7 @@ Base.@kwdef struct DualNewtonOptions
     inner_maxit::Int = 200
     inner_fall_bound::Float64 = 30.0
     lenient_line_search::Bool = false
-    lp_fallback::Bool = true
+    lp_fallback::Bool = false
     verbose::Bool = false
 end
 
@@ -932,7 +932,7 @@ function _invert_phases!(
                 f0 = [exp(W[k][j]) / N for j in eachindex(ph.members)]
                 f, _, _ = _newton_phase_composition(prob, ph, c, x_buf, f0, N, q, dead)
                 for j in eachindex(ph.members)
-                    w = f[j] > 0 ? clamp(log(N) + log(f[j]), -700.0, 700.0) : -700.0
+                    w = f[j] > 0 ? clamp(log(N) + log(f[j]), W_FLOOR, 700.0) : W_FLOOR
                     worst = max(worst, abs(_primal_value(w - W[k][j])))
                     W[k][j] = w
                 end
@@ -1600,10 +1600,10 @@ the intended use is to hand it the answer of an interior-point solve. Verify the
 result with [`kkt_certificate`](@ref); for a convex problem that certificate is a
 proof of **global** optimality.
 
-When no start converges and the problem has no unknown parameters, the solve is
-tried once more from the vertex of the linear program over the pure phases
-([`lp_start`](@ref)), unless `opts.lp_fallback` is `false`: a neighborhood in the
-wrong assemblage can hold the search, the vertex is in the right one.
+With `opts.lp_fallback`, when no start converges and the problem has no unknown
+parameters, the solve is tried once more from the vertex of the linear program
+over the pure phases ([`lp_start`](@ref)): a neighborhood in the wrong assemblage
+can hold the search, the vertex is in the right one.
 
 # Two active sets
 
@@ -1846,7 +1846,8 @@ function dual_newton_solve(
     # amounts it leaves at zero must sit below anything the search would read as
     # present (from 1e-9 the same case fails again). Only a solve that did not
     # converge pays for this, and a problem with unknown parameters is left
-    # alone: the program knows nothing of `Aq`.
+    # alone: the program knows nothing of `Aq`. Off by default (see
+    # `DualNewtonOptions`).
     if opts.lp_fallback && prob.nq == 0
         lp = lp_start(prob, bv)
         if lp.status === :optimal
@@ -2096,6 +2097,261 @@ function _judged_residual(R, scales, off)
     return worst
 end
 
+# A basis exchange: the first incumbent among the positions `candidates`, in
+# order of increasing amount, whose removal lets the active set support a
+# solution, removed from `active` and from its amounts `xB`. Both are returned
+# unchanged when no removal does.
+function _exchange_incumbent(prob, active, xB, act_ph, candidates)
+    order = sort(candidates; by = j -> xB[j])
+    without(v, j) = v[setdiff(eachindex(v), [j])]
+    k = findfirst(j -> _active_set_supports_a_solution(prob, without(active, j), act_ph), order)
+    return k === nothing ? (active, xB) : (without(active, order[k]), without(xB, order[k]))
+end
+
+"""
+    _newton_on_active_set!(W, prob, v, xB, act_ph, active, bv, x_buf, dead, degenerate, m, opts)
+        -> (v, inner_ok)
+
+The Newton iteration of the outer system on one active set, from `v`: the
+residual weighted row by row, the exact Jacobian where the inner inversion
+has converged (the swept one elsewhere), the step capped, and the two-pass
+line search. `W`, the log-compositions of the phases, is updated in place.
+Returns the last accepted `v` and whether the residual met `opts.tol`.
+"""
+function _newton_on_active_set!(W, prob, v, xB, act_ph, active, bv, x_buf, dead, degenerate, m, opts)
+    nph = length(act_ph)
+    na = length(active)
+    nq = prob.nq
+    inner_ok = false
+    inner_resid = Ref(Inf)
+    # Which phases' own inversion found a composition at the iterate: what a
+    # trial that finds none is judged against (`_invert_phases!`).
+    composed = trues(length(prob.phases))
+    for _ in 1:(opts.maxit)
+        R = _outer_residual(
+            prob, v, W, act_ph, active, bv, x_buf;
+            dead, degenerate, resid = inner_resid, inner_maxit = opts.inner_maxit,
+            max_fall = opts.inner_fall_bound, composed,
+        )
+        res = maximum(abs, R)
+        # Read before the Jacobian reuses `x_buf`, and the weights of the step
+        # below: each balance row on the scale of what it holds.
+        scales = _balance_scales(
+            prob, x_buf, @view(v[(nph + m + na + 1):(nph + m + na + nq)]), bv, degenerate,
+        )
+        judged = _judged_residual(R, _judged_scales(scales, bv), nph)
+        if opts.verbose
+            # Split by block: the three carry different units — log-activities
+            # for the phase and stationarity rows, moles for the balance — and
+            # a single maximum says nothing about which of them is stuck.
+            rp = nph == 0 ? 0.0 : maximum(abs, @view R[1:nph])
+            rb = maximum(abs, @view R[(nph + 1):(nph + m)])
+            rs = na == 0 ? 0.0 : maximum(abs, @view R[(nph + m + 1):(nph + m + na)])
+            @info "dual-newton" res judged res_phase = rp res_balance = rb res_stat = rs nph na
+        end
+        if judged <= opts.tol
+            inner_ok = true
+            break
+        end
+
+        N = length(v)
+        W_ref = [copy(w) for w in W]
+        # Each balance row weighted by the scale it is judged on, what it
+        # currently holds (`scales`, read above), for the factorization
+        # below. The rank of a pivoted QR is decided against its
+        # largest pivot, and the row of a trace component carries the
+        # derivatives of amounts as small as its carriers: a budget of 1e-9
+        # mol whose carriers sat at 1e-16 gave its potential a column of
+        # 1e-16 beside entries of order a hundred, below the rank threshold,
+        # so the step left that potential where it was and the Newton stopped
+        # with the row unmet. On a square system the weights do not change
+        # the step; they change which directions count as there.
+        #
+        # The floor tells the two kinds of small row apart. A row with a
+        # budget is resolved down to carriers `eps²` of it, which also keeps
+        # the weighted residual finite. A row whose budget is zero within
+        # rounding keeps the floor of that rounding, so that a direction no
+        # species carries (a redox potential held by amounts of 1e-305) stays
+        # as absent as it was.
+        wR = ones(length(R))
+        for k in 1:m
+            wR[nph + k] = 1.0 / scales[k]
+        end
+        # Exact, by the implicit-function theorem over the inversion where it
+        # has converged (`_outer_jacobian`), and by forward mode through its
+        # sweeps where it has not (`_swept_jacobian`): in both cases the
+        # derivative of the residual the line search then evaluates. Until
+        # 0.7.4 it was one inner inversion per finite-difference column.
+        J = inner_resid[] <= opts.inner_tol ?
+            _outer_jacobian(prob, v, W, act_ph, active, bv; dead, degenerate) :
+            _swept_jacobian(
+                prob, v, W_ref, act_ph, active, bv; dead, degenerate,
+                inner_maxit = opts.inner_maxit, max_fall = opts.inner_fall_bound,
+            )
+        all(isfinite, J) || break
+
+        δ = qr(wR .* J, ColumnNorm()) \ (-(wR .* R))
+
+        α = 1.0
+        for a in 1:nph
+            abs(δ[a]) > 1.0 && (α = min(α, 1.0 / abs(δ[a])))
+        end
+        # The potential of a species, `−Aᵀy`, moves by no more per step than
+        # the inner inversion lets a log-amount rise in one sweep. The
+        # balance of a component is a sum of exponentials of its potential,
+        # and from below its budget the linearization overshoots by the
+        # ratio of the two: carriers twenty-one orders of magnitude short ask
+        # for a step of 1e21 in a potential that has to move by forty-eight,
+        # which no backtracking down to 2⁻⁴⁰ brings within reach, and the
+        # Newton stopped there with that balance unmet.
+        dmax = 0.0
+        for j in axes(prob.A, 2)
+            j in dead && continue
+            dj = 0.0
+            for k in 1:m
+                dj += prob.A[k, j] * δ[nph + k]
+            end
+            dmax = max(dmax, abs(dj))
+        end
+        dmax > W_MAX_RISE && (α = min(α, W_MAX_RISE / dmax))
+        for j in 1:na
+            dj = δ[nph + m + j]
+            if dj < 0 && xB[j] + α * dj < 0
+                α = min(α, -0.9 * xB[j] / dj)
+            end
+        end
+
+        # A step is accepted on two conditions, not one.
+        #
+        # The decrease is the obvious one. The second is that the candidate's
+        # INNER solve converged, and it is what makes the test mean anything:
+        # the inner fixed point is warm-started, so until it has converged its
+        # answer — and hence `R_t` — depends on the warm start it was handed.
+        # Accepting such a step compares a residual the next iteration will
+        # not reproduce, and it does not reproduce it: measured on a CEM I
+        # with eight solid solutions, an accepted "descent" step was followed
+        # by a residual of 4.2e17 where the step itself had reported 60.5, and
+        # the active-set round recorded that 4.2e17 as the state's KKT error.
+        # With the gate below the same problem certifies to 1.1e-14, and stops
+        # depending on the last bit of its own input.
+        accepted = false
+        cand_resid = Ref(Inf)
+        α0 = α
+        # Two passes, and the order is the whole point.
+        #
+        # The first asks for a step that both decreases the residual and whose
+        # inner solve converged; the second drops the second condition. An
+        # inner solve that has not converged leaves `W` still moving, so the
+        # `R_t` it reports is not the residual the next iteration will measure
+        # at the same `v` — measured on a CEM I with eight solid solutions, an
+        # accepted step reporting 60.5 was followed by 4.2e17. Preferring a
+        # converged candidate removes that, and the problem stops depending on
+        # the last bit of its own input.
+        #
+        # The second pass is not a concession: an inner iteration whose `h`
+        # does not depend on the composition has nothing to solve and can
+        # never report convergence, and on such a problem the first pass would
+        # refuse every step and the solve would stall at its starting point.
+        #
+        # With `lenient_line_search`, the first pass is not asked for what
+        # the current point does not have. Where the inner solve has not
+        # converged at `v` itself, shortening the step does not make it
+        # converge at `v + αδ`: the first pass then accepts what the second
+        # would, the first step that decreases the residual, instead of
+        # refusing forty candidates to reach the same one. Measured on the
+        # coupled hydration of a CEM I over three hours, that was 392 044
+        # inner solves spent in the first pass for 189 steps accepted there.
+        #
+        # Nor is it asked of an iterate whose potentials hold no composition
+        # for a phase that inverts itself, lenient or not: that phase was
+        # swept, and so are its trials (`composed`), none of which reports a
+        # converged inversion unless it holds a composition again. Asked
+        # anyway, the first pass refused forty swept trials, each swept to
+        # the stall rule, before the second accepted the first that
+        # decreased: 32 cement pastes then took 505 s instead of 349 s,
+        # seven of them two to three times longer.
+        current_converged = (!opts.lenient_line_search || inner_resid[] <= opts.inner_tol) &&
+            all(k -> composed[k], act_ph)
+        # The decrease asked for is that of the worst row or, where that one
+        # cannot decrease, Armijo's on `‖R‖²` with the worst row not growing.
+        # The step is the least-squares one, a descent direction of `‖R‖²`
+        # and not always of `max|Rᵢ|`: on an active set holding more
+        # stationarity conditions than there are multipliers, the rows it
+        # cannot satisfy stay where they are, and a test on the worst row
+        # alone refuses the step that restores the element balance. Until
+        # 0.7.4 the noise of a difference quotient let such a step through.
+        #
+        # The slope of `‖R‖²` along the least-squares step is `−2‖Jδ‖²`,
+        # the part of the residual the linearization can remove, so that is
+        # what the decrease is measured against. Below the tolerance it
+        # predicts no change worth a step: the iterate is then the
+        # least-squares point of this active set.
+        # In the metric the step was taken in, the balance rows weighted.
+        φ = sum(abs2, wR .* R)
+        pred = sum(abs2, wR .* (J * δ))
+        for strict in (true, false)
+            α = α0
+            # Trials whose multipliers hold no composition (an inversion that
+            # ran away, `_invert_phases!`) say nothing of the residual. A pass
+            # that met only those leaves the other pass nothing to meet either,
+            # the inversion not depending on the pass; and twenty in a row,
+            # the step cut by a million, end the pass. Measured under the
+            # limiting law past its range, nine trials in ten were such, and
+            # each pass ran its forty.
+            only_runaway = true
+            runaway_streak = 0
+            for _ in 1:40
+                v_t = v .+ α .* δ
+                W_t = [copy(w) for w in W_ref]
+                R_t = _outer_residual(
+                    prob, v_t, W_t, act_ph, active, bv, x_buf;
+                    dead, degenerate, resid = cand_resid,
+                    inner_maxit = opts.inner_maxit, max_fall = opts.inner_fall_bound, trial = true,
+                    composed,
+                )
+                if isinf(cand_resid[])
+                    runaway_streak += 1
+                    runaway_streak >= 20 && break
+                    α /= 2
+                    continue
+                end
+                only_runaway = false
+                runaway_streak = 0
+                mx = maximum(abs, R_t)
+                decrease = mx < res || (
+                    pred > opts.tol^2 && mx <= res * (1 + 1.0e-12) &&
+                        sum(abs2, wR .* R_t) <= φ - 2.0e-4 * α * pred
+                )
+                ok = decrease &&
+                    (!strict || !current_converged || cand_resid[] <= opts.inner_tol)
+                if ok
+                    v = v_t
+                    for kk in eachindex(W)
+                        W[kk] .= W_t[kk]
+                    end
+                    inner_resid[] = cand_resid[]
+                    accepted = true
+                    break
+                end
+                α /= 2
+            end
+            # Where the first pass asked nothing of the inversion, the second
+            # would evaluate the same trials and judge them alike.
+            (accepted || only_runaway || !current_converged) && break
+        end
+        accepted || break
+
+        xB = na == 0 ? Float64[] : v[(nph + m + 1):(nph + m + na)]
+        # A pinned variable may legitimately pass through small values, so the
+        # early break looks only at the ones an active set actually decides.
+        let free = [j for j in 1:na if !(active[j] in prob.always_active)]
+            !isempty(free) && minimum(@view xB[free]) < opts.si_tol && break
+        end
+        nph > 0 && minimum(@view v[1:nph]) < log(opts.si_tol) && break
+    end
+    return v, inner_ok
+end
+
 """
     _dual_newton_attempt(...) -> (; x, y, q, active_phases, active, converged)
 
@@ -2153,236 +2409,9 @@ function _dual_newton_attempt(
         nph = length(act_ph)
         na = length(active)
         v = vcat([log(r) for r in refs], y, xB, q)
-        inner_ok = false
-
-        inner_resid = Ref(Inf)
-        # Which phases' own inversion found a composition at the iterate: what a
-        # trial that finds none is judged against (`_invert_phases!`).
-        composed = trues(length(prob.phases))
-        for _ in 1:(opts.maxit)
-            R = _outer_residual(
-                prob, v, W, act_ph, active, bv, x_buf;
-                dead, degenerate, resid = inner_resid, inner_maxit = opts.inner_maxit,
-                max_fall = opts.inner_fall_bound, composed,
-            )
-            res = maximum(abs, R)
-            # Read before the Jacobian reuses `x_buf`, and the weights of the step
-            # below: each balance row on the scale of what it holds.
-            scales = _balance_scales(
-                prob, x_buf, @view(v[(nph + m + na + 1):(nph + m + na + nq)]), bv, degenerate,
-            )
-            judged = _judged_residual(R, _judged_scales(scales, bv), nph)
-            if opts.verbose
-                # Split by block: the three carry different units — log-activities
-                # for the phase and stationarity rows, moles for the balance — and
-                # a single maximum says nothing about which of them is stuck.
-                rp = nph == 0 ? 0.0 : maximum(abs, @view R[1:nph])
-                rb = maximum(abs, @view R[(nph + 1):(nph + m)])
-                rs = na == 0 ? 0.0 : maximum(abs, @view R[(nph + m + 1):(nph + m + na)])
-                @info "dual-newton" res judged res_phase = rp res_balance = rb res_stat = rs nph na
-            end
-            if judged <= opts.tol
-                inner_ok = true
-                break
-            end
-
-            N = length(v)
-            W_ref = [copy(w) for w in W]
-            # Each balance row weighted by the scale it is judged on, what it
-            # currently holds (`scales`, read above), for the factorization
-            # below. The rank of a pivoted QR is decided against its
-            # largest pivot, and the row of a trace component carries the
-            # derivatives of amounts as small as its carriers: a budget of 1e-9
-            # mol whose carriers sat at 1e-16 gave its potential a column of
-            # 1e-16 beside entries of order a hundred, below the rank threshold,
-            # so the step left that potential where it was and the Newton stopped
-            # with the row unmet. On a square system the weights do not change
-            # the step; they change which directions count as there.
-            #
-            # The floor tells the two kinds of small row apart. A row with a
-            # budget is resolved down to carriers `eps²` of it, which also keeps
-            # the weighted residual finite. A row whose budget is zero within
-            # rounding keeps the floor of that rounding, so that a direction no
-            # species carries (a redox potential held by amounts of 1e-305) stays
-            # as absent as it was.
-            wR = ones(length(R))
-            for k in 1:m
-                wR[nph + k] = 1.0 / scales[k]
-            end
-            # Exact, by the implicit-function theorem over the inversion where it
-            # has converged (`_outer_jacobian`), and by forward mode through its
-            # sweeps where it has not (`_swept_jacobian`): in both cases the
-            # derivative of the residual the line search then evaluates. Until
-            # 0.7.4 it was one inner inversion per finite-difference column.
-            J = inner_resid[] <= opts.inner_tol ?
-                _outer_jacobian(prob, v, W, act_ph, active, bv; dead, degenerate) :
-                _swept_jacobian(
-                    prob, v, W_ref, act_ph, active, bv; dead, degenerate,
-                    inner_maxit = opts.inner_maxit, max_fall = opts.inner_fall_bound,
-                )
-            all(isfinite, J) || break
-
-            δ = qr(wR .* J, ColumnNorm()) \ (-(wR .* R))
-
-            α = 1.0
-            for a in 1:nph
-                abs(δ[a]) > 1.0 && (α = min(α, 1.0 / abs(δ[a])))
-            end
-            # The potential of a species, `−Aᵀy`, moves by no more per step than
-            # the inner inversion lets a log-amount rise in one sweep. The
-            # balance of a component is a sum of exponentials of its potential,
-            # and from below its budget the linearization overshoots by the
-            # ratio of the two: carriers twenty-one orders of magnitude short ask
-            # for a step of 1e21 in a potential that has to move by forty-eight,
-            # which no backtracking down to 2⁻⁴⁰ brings within reach, and the
-            # Newton stopped there with that balance unmet.
-            dmax = 0.0
-            for j in axes(prob.A, 2)
-                j in dead && continue
-                dj = 0.0
-                for k in 1:m
-                    dj += prob.A[k, j] * δ[nph + k]
-                end
-                dmax = max(dmax, abs(dj))
-            end
-            dmax > W_MAX_RISE && (α = min(α, W_MAX_RISE / dmax))
-            for j in 1:na
-                dj = δ[nph + m + j]
-                if dj < 0 && xB[j] + α * dj < 0
-                    α = min(α, -0.9 * xB[j] / dj)
-                end
-            end
-
-            # A step is accepted on two conditions, not one.
-            #
-            # The decrease is the obvious one. The second is that the candidate's
-            # INNER solve converged, and it is what makes the test mean anything:
-            # the inner fixed point is warm-started, so until it has converged its
-            # answer — and hence `R_t` — depends on the warm start it was handed.
-            # Accepting such a step compares a residual the next iteration will
-            # not reproduce, and it does not reproduce it: measured on a CEM I
-            # with eight solid solutions, an accepted "descent" step was followed
-            # by a residual of 4.2e17 where the step itself had reported 60.5, and
-            # the active-set round recorded that 4.2e17 as the state's KKT error.
-            # With the gate below the same problem certifies to 1.1e-14, and stops
-            # depending on the last bit of its own input.
-            accepted = false
-            cand_resid = Ref(Inf)
-            α0 = α
-            # Two passes, and the order is the whole point.
-            #
-            # The first asks for a step that both decreases the residual and whose
-            # inner solve converged; the second drops the second condition. An
-            # inner solve that has not converged leaves `W` still moving, so the
-            # `R_t` it reports is not the residual the next iteration will measure
-            # at the same `v` — measured on a CEM I with eight solid solutions, an
-            # accepted step reporting 60.5 was followed by 4.2e17. Preferring a
-            # converged candidate removes that, and the problem stops depending on
-            # the last bit of its own input.
-            #
-            # The second pass is not a concession: an inner iteration whose `h`
-            # does not depend on the composition has nothing to solve and can
-            # never report convergence, and on such a problem the first pass would
-            # refuse every step and the solve would stall at its starting point.
-            #
-            # With `lenient_line_search`, the first pass is not asked for what
-            # the current point does not have. Where the inner solve has not
-            # converged at `v` itself, shortening the step does not make it
-            # converge at `v + αδ`: the first pass then accepts what the second
-            # would, the first step that decreases the residual, instead of
-            # refusing forty candidates to reach the same one. Measured on the
-            # coupled hydration of a CEM I over three hours, that was 392 044
-            # inner solves spent in the first pass for 189 steps accepted there.
-            #
-            # Nor is it asked of an iterate whose potentials hold no composition
-            # for a phase that inverts itself, lenient or not: that phase was
-            # swept, and so are its trials (`composed`), none of which reports a
-            # converged inversion unless it holds a composition again. Asked
-            # anyway, the first pass refused forty swept trials, each swept to
-            # the stall rule, before the second accepted the first that
-            # decreased: 32 cement pastes then took 505 s instead of 349 s,
-            # seven of them two to three times longer.
-            current_converged = (!opts.lenient_line_search || inner_resid[] <= opts.inner_tol) &&
-                all(k -> composed[k], act_ph)
-            # The decrease asked for is that of the worst row or, where that one
-            # cannot decrease, Armijo's on `‖R‖²` with the worst row not growing.
-            # The step is the least-squares one, a descent direction of `‖R‖²`
-            # and not always of `max|Rᵢ|`: on an active set holding more
-            # stationarity conditions than there are multipliers, the rows it
-            # cannot satisfy stay where they are, and a test on the worst row
-            # alone refuses the step that restores the element balance. Until
-            # 0.7.4 the noise of a difference quotient let such a step through.
-            #
-            # The slope of `‖R‖²` along the least-squares step is `−2‖Jδ‖²`,
-            # the part of the residual the linearization can remove, so that is
-            # what the decrease is measured against. Below the tolerance it
-            # predicts no change worth a step: the iterate is then the
-            # least-squares point of this active set.
-            # In the metric the step was taken in, the balance rows weighted.
-            φ = sum(abs2, wR .* R)
-            pred = sum(abs2, wR .* (J * δ))
-            for strict in (true, false)
-                α = α0
-                # Trials whose multipliers hold no composition (an inversion that
-                # ran away, `_invert_phases!`) say nothing of the residual. A pass
-                # that met only those leaves the other pass nothing to meet either,
-                # the inversion not depending on the pass; and twenty in a row,
-                # the step cut by a million, end the pass. Measured under the
-                # limiting law past its range, nine trials in ten were such, and
-                # each pass ran its forty.
-                only_runaway = true
-                runaway_streak = 0
-                for _ in 1:40
-                    v_t = v .+ α .* δ
-                    W_t = [copy(w) for w in W_ref]
-                    R_t = _outer_residual(
-                        prob, v_t, W_t, act_ph, active, bv, x_buf;
-                        dead, degenerate, resid = cand_resid,
-                        inner_maxit = opts.inner_maxit, max_fall = opts.inner_fall_bound, trial = true,
-                        composed,
-                    )
-                    if isinf(cand_resid[])
-                        runaway_streak += 1
-                        runaway_streak >= 20 && break
-                        α /= 2
-                        continue
-                    end
-                    only_runaway = false
-                    runaway_streak = 0
-                    mx = maximum(abs, R_t)
-                    decrease = mx < res || (
-                        pred > opts.tol^2 && mx <= res * (1 + 1.0e-12) &&
-                            sum(abs2, wR .* R_t) <= φ - 2.0e-4 * α * pred
-                    )
-                    ok = decrease &&
-                        (!strict || !current_converged || cand_resid[] <= opts.inner_tol)
-                    if ok
-                        v = v_t
-                        for kk in eachindex(W)
-                            W[kk] .= W_t[kk]
-                        end
-                        inner_resid[] = cand_resid[]
-                        accepted = true
-                        break
-                    end
-                    α /= 2
-                end
-                # Where the first pass asked nothing of the inversion, the second
-                # would evaluate the same trials and judge them alike.
-                (accepted || only_runaway || !current_converged) && break
-            end
-            accepted || break
-
-            xB = na == 0 ? Float64[] : v[(nph + m + 1):(nph + m + na)]
-            # A pinned variable may legitimately pass through small values, so the
-            # early break looks only at the ones an active set actually decides.
-            let free = let active = active
-                    [j for j in 1:na if !(active[j] in prob.always_active)]
-                end
-                !isempty(free) && minimum(@view xB[free]) < opts.si_tol && break
-            end
-            nph > 0 && minimum(@view v[1:nph]) < log(opts.si_tol) && break
-        end
+        v, inner_ok = _newton_on_active_set!(
+            W, prob, v, xB, act_ph, active, bv, x_buf, dead, degenerate, m, opts,
+        )
 
         refs = let v = v
             [exp(v[a]) for a in 1:nph]
@@ -2613,17 +2642,7 @@ function _dual_newton_attempt(
             # conditions, since otherwise no `y` exists. Termination is unaffected:
             # `seen` records the active sets visited and there are finitely many.
             if !_active_set_supports_a_solution(prob, active, act_ph)
-                order = let xB = xB
-                    sort(1:(length(active) - 1); by = j -> xB[j])
-                end
-                for j in order
-                    trial = active[setdiff(eachindex(active), [j])]
-                    if _active_set_supports_a_solution(prob, trial, act_ph)
-                        active = trial
-                        xB = xB[setdiff(eachindex(xB), [j])]
-                        break
-                    end
-                end
+                active, xB = _exchange_incumbent(prob, active, xB, act_ph, 1:(length(active) - 1))
             end
             # If nothing worked the entrant itself goes back out: the set it would
             # make is unsolvable whatever leaves.
