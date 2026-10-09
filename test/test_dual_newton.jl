@@ -1363,6 +1363,41 @@ end
     end
 end
 
+@testset "a start in the wrong assemblage falls back on the linear program" begin
+    # Water and two solutes, three pure solids competing for two components:
+    # Ca, CaX and X. The answer holds Ca and CaX; the start holds Ca and X,
+    # the wrong pair. With one change of the active set allowed, no start of
+    # the search can reach the answer; the vertex of the linear program holds
+    # the right pair, and from it the search converges in the round it starts
+    # with. (On a cement the same holds with the default budget of changes: a
+    # start in the previous assemblage stalls where the entrant's admission
+    # makes the inner inversion fail; see `dual_newton_solve`.)
+    A = Float64[1 0 0 0 0 0; 0 1 0 1 1 0; 0 0 1 0 1 1]
+    g = [0.0, 5.0, 5.0, -2.0, -6.0, -1.0]
+    h(x, _) = [
+        log(x[1] / (x[1] + x[2] + x[3])), log(max(x[2], 1.0e-300) / x[1]),
+        log(max(x[3], 1.0e-300) / x[1]), 0.0, 0.0, 0.0,
+    ]
+    prob = DualNewtonProblem(
+        A, g, h; phases = [SolutionPhase([1, 2, 3], 1; always_present = true)], idx_bounded = [4, 5, 6],
+    )
+    b = [55.0, 1.0, 0.6]
+    wrong = [55.0, 1.0e-3, 1.0e-3, 1.0, 1.0e-12, 0.6]
+
+    stuck = dual_newton_solve(prob, b, wrong; opts = DualNewtonOptions(max_active_updates = 1, lp_fallback = false))
+    @test !stuck.converged
+    res = dual_newton_solve(prob, b, wrong; opts = DualNewtonOptions(max_active_updates = 1))
+    @test res.converged
+    @test kkt_certificate(prob, res.x, b).optimal
+    @test res.x[6] == 0.0 && res.x[4] > 0.3 && res.x[5] > 0.5
+
+    # The fallback is run without a fallback of its own, the other options kept.
+    o = DualNewtonOptions(tol = 1.0e-9, inner_fall_bound = Inf, verbose = true)
+    o2 = OptimaSolver._without_lp_fallback(o)
+    @test !o2.lp_fallback
+    @test all(getfield(o2, k) == getfield(o, k) for k in fieldnames(DualNewtonOptions) if k !== :lp_fallback)
+end
+
 @testset "a phase admitted on a full active set sends an incumbent out" begin
     # Water and two solutes, three pure solids (Ca, X, CaW) and a binary solid
     # solution of composition CaX. The start holds the three solids, which use

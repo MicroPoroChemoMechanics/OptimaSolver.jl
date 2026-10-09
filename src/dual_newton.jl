@@ -52,6 +52,10 @@ const DEGENERATE_POTENTIAL = 500.0
 # far above any physical molality and exists only to keep a diverging iterate
 # finite. Both are ACTIVE BOUNDS, not tolerances: see `_invert_phases!`.
 const W_FLOOR = -700.0
+
+# The floor of the vertex of the linear program as a start (`lp_fallback` of
+# `DualNewtonOptions`): what the vertex leaves at zero starts there.
+const LP_FALLBACK_FLOOR = 1.0e-16
 const W_CEIL = 20.0
 
 # Sweeps without a new smallest step after which `_invert_phases!` stops.
@@ -591,7 +595,8 @@ end
 
 """
     DualNewtonOptions(; tol, maxit, max_active_updates, si_tol, inner_tol,
-                      inner_maxit, inner_fall_bound, lenient_line_search, verbose)
+                      inner_maxit, inner_fall_bound, lenient_line_search,
+                      lp_fallback, verbose)
 
   - `tol`: tolerance on the KKT residual.
   - `maxit`: Newton iterations per active set.
@@ -604,6 +609,8 @@ end
     what its potential asks at once.
   - `lenient_line_search`: when `true`, the first pass of the line search asks the
     candidate for a converged inner solve only where the current point has one.
+  - `lp_fallback`: when no start converges, try once more from the vertex of the
+    linear program (`true` by default; see [`dual_newton_solve`](@ref)).
 
 The last two change the path of the search, not its answer's conditions, and
 are off by default. They are for a caller that solves many neighboring problems
@@ -637,8 +644,15 @@ Base.@kwdef struct DualNewtonOptions
     inner_maxit::Int = 200
     inner_fall_bound::Float64 = 30.0
     lenient_line_search::Bool = false
+    lp_fallback::Bool = true
     verbose::Bool = false
 end
+
+# The same options with the fallback on the linear program turned off: the
+# options of the solve that fallback runs, which must not fall back again.
+_without_lp_fallback(o::DualNewtonOptions) = DualNewtonOptions(;
+    (k => getfield(o, k) for k in fieldnames(DualNewtonOptions) if k !== :lp_fallback)..., lp_fallback = false,
+)
 
 # ── inner level: invert the stationarity of the log variables ─────────────────
 
@@ -1584,6 +1598,11 @@ the intended use is to hand it the answer of an interior-point solve. Verify the
 result with [`kkt_certificate`](@ref); for a convex problem that certificate is a
 proof of **global** optimality.
 
+When no start converges and the problem has no unknown parameters, the solve is
+tried once more from the vertex of the linear program over the pure phases
+([`lp_start`](@ref)), unless `opts.lp_fallback` is `false`: a neighborhood in the
+wrong assemblage can hold the search, the vertex is in the right one.
+
 # Two active sets
 
 Over the **bound-constrained** variables, on the sign of `uᵢ − (gᵢ + hᵢ)`: a pure
@@ -1810,6 +1829,31 @@ function dual_newton_solve(
             best = out
         end
         out.converged && break
+    end
+    best.converged && return best
+
+    # No start converged: once more from the vertex of the linear program over
+    # the pure phases. A start that carries the wrong assemblage can hold the
+    # search there: from it, the phase that should enter is admitted, the inner
+    # inversion fails at once, the entrant is rejected, and the one that should
+    # leave never does. Measured on a Portland paste at the instant hydrogarnet
+    # gives way to monosulfate (Lerch and Ford's cement c13, 4.2 h at 23.9 °C):
+    # from the partition of the instant before, every start ends at a KKT error
+    # of 1.5e-4 or worse; from the vertex, which holds the new assemblage, the
+    # solve certifies at once. The vertex is floored at `LP_FALLBACK_FLOOR`: the
+    # amounts it leaves at zero must sit below anything the search would read as
+    # present (from 1e-9 the same case fails again). Only a solve that did not
+    # converge pays for this, and a problem with unknown parameters is left
+    # alone: the program knows nothing of `Aq`.
+    if opts.lp_fallback && prob.nq == 0
+        lp = lp_start(prob, bv)
+        if lp.status === :optimal
+            opts.verbose && @info "dual-newton: no start converged; from the vertex of the linear program"
+            again = dual_newton_solve(
+                prob, bv, max.(lp.x, LP_FALLBACK_FLOOR); opts = _without_lp_fallback(opts),
+            )
+            (again.converged || again.kkt_error < best.kkt_error) && return again
+        end
     end
     return best
 end
