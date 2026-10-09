@@ -1362,3 +1362,32 @@ end
         @test dot(gr, xs) <= dot(gr, x0) + 1.0e-8
     end
 end
+
+@testset "a phase admitted on a full active set sends an incumbent out" begin
+    # Water and two solutes, three pure solids (Ca, X, CaW) and a binary solid
+    # solution of composition CaX. The start holds the three solids, which use
+    # the whole stationarity capacity of the three components; the solid
+    # solution is supersaturated, and admitting it spends one unit more, so an
+    # incumbent has to leave — the smallest first, until the set supports a
+    # solution again. The answer holds X and the solid solution.
+    A = Float64[1 0 0 0 0 1 0 0; 0 1 0 1 0 1 1 1; 0 0 1 0 1 0 1 1]
+    h(x, _) = begin
+        N = max(x[7] + x[8], 1.0e-300)
+        [
+            log(x[1] / (x[1] + x[2] + x[3])), log(max(x[2], 1.0e-300) / x[1]),
+            log(max(x[3], 1.0e-300) / x[1]), 0.0, 0.0, 0.0,
+            log(max(x[7], 1.0e-300) / N), log(max(x[8], 1.0e-300) / N),
+        ]
+    end
+    prob = DualNewtonProblem(
+        A, [0.0, 5.5, 3.0, -0.15, -2.4, -1.65, -4.35, -4.1], h;
+        phases = [SolutionPhase([1, 2, 3], 1; always_present = true), SolutionPhase([7, 8], 1; mole_fraction = true)],
+        idx_bounded = [4, 5, 6],
+    )
+    b = [55.0, 0.5, 0.8]
+    res = dual_newton_solve(prob, b, [55.0, 1.0e-3, 1.0e-3, 0.77, 0.35, 0.04, 1.0e-12, 1.0e-12])
+    @test res.converged
+    @test kkt_certificate(prob, res.x, b).optimal
+    @test res.active_phases == [1, 2] && res.active == [5]
+    @test res.x[7] + res.x[8] > 0.4
+end

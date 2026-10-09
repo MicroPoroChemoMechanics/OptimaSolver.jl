@@ -368,25 +368,27 @@ function _relinearized(result::OptimaResult{T}, opt_prob, opts::OptimaOptions, f
     size_of = one(T) + maximum(abs, A) * maximum(abs, result.n) + maximum(abs, b)
     maximum(abs, r .- (A * result.n .- b)) <= AFFINE_RTOL * size_of && return result
     previous = T(Inf)
-    for round in 0:MAX_RELINEARIZATIONS
-        round == 0 || cons(r, result.n, p)
-        residual = maximum(abs, r)
-        met = residual <= opts.tol * max(one(T), maximum(abs, b))
-        # Stopped as well once a round no longer halves the residual: the
-        # linearized problems are then not solved accurately enough for the
-        # sequence to go further, and more rounds only cost.
-        stalled = residual > previous / 2
-        (met || stalled || round == MAX_RELINEARIZATIONS) && return OptimaResult{T}(
-            result.n, result.y, iterations, met && result.converged,
-            result.error_opt, result.error_feas, result.error_feas_abs,
-        )
+    round = 0
+    residual = maximum(abs, r)
+    met = residual <= opts.tol * max(one(T), maximum(abs, b))
+    # Stopped once the residual is met, and as well once a round no longer
+    # halves it: the linearized problems are then not solved accurately enough
+    # for the sequence to go further, and more rounds only cost.
+    while !(met || residual > previous / 2 || round == MAX_RELINEARIZATIONS)
         previous = residual
+        round += 1
         A, b = _extract_constraints(opt_prob, result.n, p)
         u_start = _lift_cold_start(copy(result.n), A, b, lb)
         result = _scaled_solve(opts, f_obj, g!, A, b, lb, ub, p, u_start, result.y, T)
         iterations += result.iterations
+        cons(r, result.n, p)
+        residual = maximum(abs, r)
+        met = residual <= opts.tol * max(one(T), maximum(abs, b))
     end
-    return result
+    return OptimaResult{T}(
+        result.n, result.y, iterations, met && result.converged,
+        result.error_opt, result.error_feas, result.error_feas_abs,
+    )
 end
 
 # ── Cold-start lifting helper ─────────────────────────────────────────────────
