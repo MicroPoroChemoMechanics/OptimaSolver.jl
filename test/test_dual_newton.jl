@@ -1424,6 +1424,6 @@ end
     res = dual_newton_solve(prob, b, [55.0, 1.0e-3, 1.0e-3, 0.03, 0.49, 0.92, 1.0e-12, 1.0e-12])
     @test res.converged
     @test kkt_certificate(prob, res.x, b).optimal
-    @test res.active_phases == [1, 2] && res.active == [5]
-    @test res.x[7] + res.x[8] > 0.4
+    @test res.active_phases == [1, 2] && res.active == [4]
+    @test res.x[7] + res.x[8] > 0.6
 end
