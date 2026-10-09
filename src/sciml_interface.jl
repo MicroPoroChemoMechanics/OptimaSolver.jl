@@ -371,6 +371,11 @@ function _relinearized(result::OptimaResult{T}, opt_prob, opts::OptimaOptions, f
     round = 0
     residual = maximum(abs, r)
     met = residual <= opts.tol * max(one(T), maximum(abs, b))
+    # The answer is the round whose residual is the smallest, not the last: the
+    # sequence is Newton's method on the constraint, and from a poor start a
+    # round can land farther from it than the one before (by 199 then 2e25 on the
+    # logarithms of a Davies solution, where the first answer was the usable one).
+    best, best_residual, best_met = result, residual, met
     # Stopped once the residual is met, and as well once a round no longer
     # halves it: the linearized problems are then not solved accurately enough
     # for the sequence to go further, and more rounds only cost.
@@ -384,10 +389,11 @@ function _relinearized(result::OptimaResult{T}, opt_prob, opts::OptimaOptions, f
         cons(r, result.n, p)
         residual = maximum(abs, r)
         met = residual <= opts.tol * max(one(T), maximum(abs, b))
+        residual < best_residual && ((best, best_residual, best_met) = (result, residual, met))
     end
     return OptimaResult{T}(
-        result.n, result.y, iterations, met && result.converged,
-        result.error_opt, result.error_feas, result.error_feas_abs,
+        best.n, best.y, iterations, best_met && best.converged,
+        best.error_opt, best.error_feas, best.error_feas_abs,
     )
 end
 

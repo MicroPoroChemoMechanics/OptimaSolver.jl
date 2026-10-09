@@ -317,6 +317,21 @@
         s1 = SciMLBase.solve(plin, OptimaOptimizer(; tol = 1.0e-12, warm_start = false))
         @test SciMLBase.successful_retcode(s1)
         @test calls[] == 3
+
+        # A round that lands farther from the constraint is not the answer. The
+        # rounds are Newton's method on `atan(u₁ − 5) = 0`, which diverges from a
+        # start two units from the root: the first answer, `u₁ = 7 − 5 atan 2`,
+        # misses the constraint by 1.30, the second by 1.50. The answer is the
+        # first, and it is not reported a success; the last was returned.
+        Ga(u, _) = (u[2] - 1.0)^2
+        consa!(res, u, _) = (res[1] = atan(u[1] - 5.0); nothing)
+        fa = SciMLBase.OptimizationFunction(Ga; cons = consa!)
+        pa = SciMLBase.OptimizationProblem(
+            fa, [7.0, 1.0], nothing; lb = fill(1.0e-16, 2), ub = fill(Inf, 2), lcons = [0.0], ucons = [0.0],
+        )
+        sa = SciMLBase.solve(pa, OptimaOptimizer(; tol = 1.0e-12, warm_start = false))
+        @test !SciMLBase.successful_retcode(sa)
+        @test sa.u[1] ≈ 7.0 - 5 * atan(2.0) rtol = 1.0e-8
     end
     @testset "a derivative of a derivative, through the parameters" begin
         # The answer carries the derivatives of the iterations that reach it;

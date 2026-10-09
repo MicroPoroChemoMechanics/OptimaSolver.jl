@@ -33,8 +33,11 @@ ChemistryLab and on the benchmark, every amount is identical to the bit to
   `u0`; for `A·exp(x) − b`, a log-parameterized equilibrium, it then returned
   `Success` on a point that violated the constraint (by 3.8e-3 on a toy problem,
   the amounts 2 % off). The constraint is now linearized again at each answer
-  while that halves its residual, and the result reports `Success` only when the
-  caller's constraint is met. An affine constraint is solved as before.
+  while that halves its residual, the answer returned is the one whose residual
+  is the smallest (a round can land farther from the constraint than the one
+  before: Newton's method on the constraint diverges from a poor start), and the
+  result reports `Success` only when the caller's constraint is met. An affine
+  constraint is solved as before.
 - **Verdicts raised on dual numbers.** `phase_tangent_trial` and
   `phase_split_trial` wrote what an `h` capturing dual numbers returns, or dual
   multipliers, into plain buffers; they now measure on values, as
