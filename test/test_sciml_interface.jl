@@ -318,4 +318,19 @@
         @test SciMLBase.successful_retcode(s1)
         @test calls[] == 3
     end
+    @testset "a derivative of a derivative, through the parameters" begin
+        # The answer carries the derivatives of the iterations that reach it;
+        # nested, the second derivative of the softmax: n₁ = softmax(−μ⁰)₁ has
+        # d²n₁/dμ₁² = n₁(1 − n₁)(1 − 2n₁).
+        f = SciMLBase.OptimizationFunction(G; grad = ∇G!)
+        first_amount(m1) = SciMLBase.solve(
+            SciMLBase.OptimizationProblem(
+                f, copy(lb), (μ⁰ = [m1, μ⁰[2], μ⁰[3]], A = A, b = b); lb = lb, ub = fill(Inf, 3)
+            ),
+            OptimaOptimizer(; tol = 1.0e-12, warm_start = false),
+        ).u[1]
+        n1 = n_analytic[1]
+        d2 = ForwardDiff.derivative(m -> ForwardDiff.derivative(first_amount, m), μ⁰[1])
+        @test d2 ≈ n1 * (1 - n1) * (1 - 2n1) rtol = 1.0e-5
+    end
 end
