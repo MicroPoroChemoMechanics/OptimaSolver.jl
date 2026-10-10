@@ -885,6 +885,13 @@ function _dead_variables(A::AbstractMatrix, degenerate)
     return _DeadSet(mask, count(mask))
 end
 
+# The potentials `u = −Aᵀy` of the multipliers `y`, the product negated in place.
+function _potentials(A, y)
+    u = transpose(A) * y
+    u .= .-u
+    return u
+end
+
 """
     _invert_phases!(prob, W, y, refs, act_ph, active, xB, x_buf; dead) -> x_buf
 
@@ -908,7 +915,7 @@ function _invert_phases!(
         max_fall::Float64 = 30.0, trial::Bool = false,
         composed::Union{Nothing, AbstractVector{Bool}} = nothing,
     )
-    u = -(transpose(prob.A) * y)
+    u = _potentials(prob.A, y)
     worst = Inf
     smallest = Inf
     stalled = 0
@@ -1148,7 +1155,7 @@ function _outer_residual(
         return promote_type(eltype(v), eltype(x_buf), eltype(g))[]
 
     hv = current_h(prob, x_buf, q)
-    u = -(transpose(prob.A) * y)
+    u = _potentials(prob.A, y)
 
     # One equation per active phase, fixing its absolute level.
     #
@@ -1944,8 +1951,8 @@ function _implicit_system(prob, z, unk, W, act_ph, active, bv; dead, degenerate)
     na = length(active)
     nq = prob.nq
     Nv = nph + m + na + nq
-    y = z[(nph + 1):(nph + m)]
-    xB = z[(nph + m + 1):(nph + m + na)]
+    y = view(z, (nph + 1):(nph + m))
+    xB = view(z, (nph + m + 1):(nph + m + na))
     q = z[(nph + m + na + 1):Nv]
 
     x = zeros(Tz, length(prob.g))
@@ -1965,7 +1972,7 @@ function _implicit_system(prob, z, unk, W, act_ph, active, bv; dead, degenerate)
 
     g = nq == 0 ? prob.g : current_g(prob, q)
     hv = current_h(prob, x, q)
-    u = -(transpose(prob.A) * y)
+    u = _potentials(prob.A, y)
     cqv = nq == 0 ? Tz[] : prob.cq(x, q, prob.params)
     # The element type of the system: that of the unknowns, or of the data when
     # it carries the duals of a caller differentiating the answer, the
@@ -1973,34 +1980,36 @@ function _implicit_system(prob, z, unk, W, act_ph, active, bv; dead, degenerate)
     T = promote_type(Tz, eltype(g), eltype(hv), eltype(u), eltype(prob.A), eltype(bv), eltype(cqv))
 
     # The exponents `u − g − lnγ` of each mole-fraction phase and their
-    # log-sum-exp, over its live members.
-    lZ = Dict{Int, T}()
-    dexp = Dict{Tuple{Int, Int}, T}()
+    # log-sum-exp, over its live members, by the phase's place `a` in `act_ph`:
+    # `dexp[a][j]` is set for every live member `j`, the only ones `unk` names.
+    lZ = Vector{T}(undef, nph)
+    dexp = Vector{Vector{T}}(undef, nph)
     for (a, k) in enumerate(act_ph)
         ph = prob.phases[k]
         ph.mole_fraction || continue
         N = exp(z[a])
+        dexp[a] = da = Vector{T}(undef, length(ph.members))
         ds = T[]
         for (j, i) in enumerate(ph.members)
             i in dead && continue
             lnγ = x[i] > 0 ? hv[i] - log(x[i] / N) : zero(T)
             d = u[i] - g[i] - lnγ
-            dexp[(k, j)] = d
+            da[j] = d
             push!(ds, d)
         end
         M = maximum(ForwardDiff.value, ds)
-        lZ[k] = M + log(sum(exp(d - M) for d in ds))
+        lZ[a] = M + log(sum(exp(d - M) for d in ds))
     end
 
     G = T[
-        mf ? z[Nv + p] - (z[a] + dexp[(k, j)] - lZ[k]) : (u[i] - g[i]) - hv[i]
+        mf ? z[Nv + p] - (z[a] + dexp[a][j] - lZ[a]) : (u[i] - g[i]) - hv[i]
             for (p, (a, k, j, i, mf)) in enumerate(unk)
     ]
     R_ref = T[
         let ph = prob.phases[k]
-            ph.mole_fraction ? lZ[k] :
+            ph.mole_fraction ? lZ[a] :
                 (ir = ph.members[ph.j_ref]; g[ir] + hv[ir] - u[ir])
-        end for k in act_ph
+        end for (a, k) in enumerate(act_ph)
     ]
     Rb = nq == 0 ? prob.A * x .- bv : prob.A * x .+ prob.Aq * q .- bv
     Rb = T.(Rb)
@@ -2468,7 +2477,7 @@ function _dual_newton_attempt(
         xB = na == 0 ? Float64[] : v[(nph + m + 1):(nph + m + na)]
         q = nq == 0 ? Float64[] : v[(nph + m + na + 1):(nph + m + na + nq)]
 
-        u = -(transpose(prob.A) * y)
+        u = _potentials(prob.A, y)
         hv = current_h(prob, x_buf, q)
         si = u .- (current_g(prob, q) .+ hv)
         fill!(admission, NaN)
@@ -2951,7 +2960,7 @@ function kkt_certificate(
     param_residual = prob.nq == 0 ? 0.0 :
         _primal_value(maximum(abs, prob.cq(xv, collect(q), prob.params)))
 
-    u = -(transpose(prob.A) * y)
+    u = _potentials(prob.A, y)
     worst = isempty(at_bound) ? -Inf : maximum(u[i] - ∇f[i] for i in at_bound)
 
     # A member of a PRESENT phase below the floor is excluded from the equality,
