@@ -95,12 +95,12 @@ const W_MAX_RISE = 30.0
 
 # The amount a mixing phase is admitted with, as its total.
 #
-# It has to survive the first Newton step. Admitted at 1e-9, as it was until
-# 0.6.2, a phase could never be kept: the step changes `ln N` by at most one, so
-# after it the total is at most 2.7e-9, below `si_tol` (1e-8), the Newton
-# iteration of the round stops on it and the round drops it as vanished — to be
-# admitted again at the next round, with the same outcome, until the set repeats
-# and the search ends with the phase at e·1e-9.
+# It has to survive the first Newton step. Admitted at 1e-9, a phase could
+# never be kept: the step changes `ln N` by at most one, so after it the total
+# is at most 2.7e-9, below `si_tol` (1e-8), the Newton iteration of the round
+# stops on it and the round drops it as vanished — to be admitted again at the
+# next round, with the same outcome, until the set repeats and the search ends
+# with the phase at e·1e-9.
 # A mixing phase could therefore be present only if the starting point already
 # held it; from a start without it, a supersaturated solid solution stayed out.
 # The seeding of the initial active set lifts a phase total to the same value,
@@ -471,9 +471,8 @@ function DualNewtonProblem(
                     "needs one residual equation."
             )
         )
-        # `qscale` set the difference step of the Jacobian's `q` columns until
-        # 0.7.4. The Jacobian is exact now and reads no scale; one given is
-        # still checked, so that no caller breaks, and none is needed.
+        # The Jacobian is exact and reads no `qscale`; one given is still
+        # checked, so that no caller breaks, and none is needed.
         isempty(qscale) && (qscale = ones(nq))
         length(qscale) == nq || throw(
             ArgumentError(
@@ -1909,10 +1908,8 @@ end
 #
 #     dR/dv = F_v − F_W G_W⁻¹ G_v,
 #
-# with every partial derivative from one forward-mode pass over `z = (v, w)`, `w`
-# the log-amounts the inversion determines. Until 0.7.4 it was formed by finite
-# differences, one inner inversion per column, on states whose inner iteration had
-# not always converged.
+# with every partial derivative by forward-mode differentiation over `z = (v, w)`,
+# `w` the log-amounts the inversion determines.
 
 # The unknowns of the inversion at a converged state: `(a, k, j, i, mf)` for each
 # member it determines, `a` the phase's place in `act_ph`, `mf` whether the phase
@@ -2228,8 +2225,7 @@ function _newton_on_active_set!(W, prob, v, xB, act_ph, active, bv, x_buf, dead,
         # Exact, by the implicit-function theorem over the inversion where it
         # has converged (`_outer_jacobian`), and by forward mode through its
         # sweeps where it has not (`_swept_jacobian`): in both cases the
-        # derivative of the residual the line search then evaluates. Until
-        # 0.7.4 it was one inner inversion per finite-difference column.
+        # derivative of the residual the line search then evaluates.
         J = inner_resid[] <= opts.inner_tol ?
             _outer_jacobian(prob, v, W, act_ph, active, bv; dead, degenerate) :
             _swept_jacobian(
@@ -2326,8 +2322,7 @@ function _newton_on_active_set!(W, prob, v, xB, act_ph, active, bv, x_buf, dead,
         # and not always of `max|Rᵢ|`: on an active set holding more
         # stationarity conditions than there are multipliers, the rows it
         # cannot satisfy stay where they are, and a test on the worst row
-        # alone refuses the step that restores the element balance. Until
-        # 0.7.4 the noise of a difference quotient let such a step through.
+        # alone refuses the step that restores the element balance.
         #
         # The slope of `‖R‖²` along the least-squares step is `−2‖Jδ‖²`,
         # the part of the residual the linearization can remove, so that is
@@ -2547,8 +2542,8 @@ function _dual_newton_attempt(
             ]
         end
 
-        # An admission that does not converge used to be undone by rejecting the
-        # entrant for good. That reads the failure backwards.
+        # An admission that does not converge is not undone by rejecting the
+        # entrant for good: that would read the failure backwards.
         #
         # The inner Newton breaks out the moment an active variable falls below
         # the bound (`minimum(xB) < si_tol`), and that is not a failed admission
@@ -2567,9 +2562,10 @@ function _dual_newton_attempt(
         # dependent modulo the mixing phases, where the residual cannot reach
         # zero at all.
         # A stalled Newton with nothing leaving and nothing newly admitted means the
-        # active set itself cannot be satisfied, and until now the loop had no way
-        # out of that: `drop` tests only the AMOUNTS, so a phase that is held
-        # active while its stationarity `uᵢ = gᵢ` is unreachable stays for ever.
+        # active set itself cannot be satisfied, and without what follows the
+        # loop has no way out of that: `drop` tests only the AMOUNTS, so a phase
+        # that is held active while its stationarity `uᵢ = gᵢ` is unreachable
+        # stays for ever.
         # Measured on an LC³ equilibrium the stationarity residual sat at 12.5 with
         # the element balance at 0.02 — the least-squares step sacrificing the one
         # to hold the other, which is what an inconsistent system looks like.
@@ -2740,11 +2736,12 @@ function _dual_newton_attempt(
     #
     # `converged` needs the state's admission violation as well as its residual.
     # The residual is that of the subproblem the active set defines, and a set
-    # that holds a supersaturated phase out solves its own equations exactly:
-    # until 0.6.2 such a state was returned with `converged = true` next to a
-    # `kkt_error` of 9, and the certificate refused it. The multi-start loop in
-    # `dual_newton_solve` stops at the first converged attempt, so the flag also
-    # ended the search on a point that was not a solution.
+    # that holds a supersaturated phase out solves its own equations exactly.
+    # Judged on its residual alone, such a state was measured with
+    # `converged = true` next to a `kkt_error` of 9, which the certificate
+    # refuses; and the multi-start loop in `dual_newton_solve` stops at the
+    # first converged attempt, so the flag would end the search on a point that
+    # is not a solution.
     if best_state !== nothing
         act_ph, active, v, W, best_viol = best_state
         nph = length(act_ph)
@@ -2907,7 +2904,7 @@ function kkt_certificate(
     # right to nine digits while the certificate reported 2.9e-8 and refused it.
     #
     # The divisor is the size of the quantities the residual is built from, never
-    # below one, so a well-scaled problem is judged exactly as before.
+    # below one, so a well-scaled problem is judged as it would be without it.
     stat_raw = isempty(interior) ? 0.0 :
         maximum(abs, ∇f[interior] .+ transpose(Ai) * y)
     stat_scale = max(
@@ -2923,16 +2920,16 @@ function kkt_certificate(
         (prob.A * xv .+ prob.Aq * collect(q) .- bv)
     # Each row judged against what it holds, in moles above one mole: the
     # measure the solver converges on (`_balance_scales`). Judged in moles alone,
-    # as until 0.7.8, a trace of 1e-9 mol could be 10 % wrong and certified.
+    # a trace of 1e-9 mol could be 10 % wrong and certified.
     #
-    # Until 0.7.8 a comment here held that a relative measure refuses correct
-    # answers: the charge row of a dilute solution, `b = 0` and a flux of 1e-6,
-    # would turn 7.6e-7 mol of machine noise into 0.76. Measured on a dilute
+    # A relative measure might be feared to refuse correct answers: the charge
+    # row of a dilute solution, `b = 0` and a flux of 1e-6, would turn 7.6e-7
+    # mol of machine noise into 0.76. Measured on a dilute
     # sodium chloride, the dual Newton leaves 3e-21 mol on a 1e-6 mol row,
     # 3e-15 of it; a residual of 76 % of a row's flux is no rounding. The rows
     # whose relative residual is large at a correct answer are those of a
     # component nobody supplies, its carriers at the floor: degenerate rows,
-    # judged in moles as before.
+    # judged in moles.
     scales = _balance_scales(prob, xv, q, bv, degenerate)
     bscale = max(1.0, maximum(abs, bv; init = 0.0))
     feas_abs = maximum(abs, resid; init = 0.0)
@@ -2975,7 +2972,7 @@ function kkt_certificate(
     # says. Measured: on a calcite solution the redox direction is free (no
     # interior species carries it), the minimum-norm multiplier made H2⁰ at
     # 1e-305 mol "want" to rise by 0.07, and the multipliers of the solve itself
-    # hold it 17 units below. That was a refusal of a correct answer (0.7.2).
+    # hold it 17 units below. That was a refusal of a correct answer.
     free_directions = isempty(interior) ? Matrix{Float64}(I, size(prob.A, 1), size(prob.A, 1)) :
         nullspace(transpose(Ai))
     determined(i) = begin

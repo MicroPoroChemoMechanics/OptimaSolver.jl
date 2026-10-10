@@ -343,15 +343,15 @@ soon as it lies away from the start.
 
 So the caller's residual is evaluated at the answer. If it agrees with that of
 the linearization, the constraint is affine there and the answer stands: an
-affine problem is solved exactly as before, at the cost of one more evaluation
-of its residual. If it does not, and the residual is not met, the constraint is
-linearized again at the answer and the problem solved again from it. At the
-fixed point the linearization is the tangent at the answer itself, whose
-Jacobian is that of the true constraint, so the answer meets the KKT conditions
-of the problem the caller posed. The rounds stop when the residual is met, when a
-round no longer halves it, or after `MAX_RELINEARIZATIONS`; unless it is met, the
-result says it has not converged rather than returning `Success` on a point that
-violates the caller's constraint.
+affine problem is solved exactly as without this check, at the cost of one more
+evaluation of its residual. If it does not, and the residual is not met, the
+constraint is linearized again at the answer and the problem solved again from
+it. At the fixed point the linearization is the tangent at the answer itself,
+whose Jacobian is that of the true constraint, so the answer meets the KKT
+conditions of the problem the caller posed. The rounds stop when the residual is
+met, when a round no longer halves it, or after `MAX_RELINEARIZATIONS`; unless
+it is met, the result says it has not converged rather than returning `Success`
+on a point that violates the caller's constraint.
 
 Constraints carried by `p` as `A` and `b` are affine by construction and left as
 they are.
@@ -483,10 +483,11 @@ function _extract_constraints(opt_prob, u0::AbstractVector{T}, p) where {T}
         return convert(Matrix{T}, p.A), convert(Vector{T}, p.b)
     end
 
-    # Path 2: nothing to extract. Returning an empty `A` here used to look like
-    # support for unconstrained problems; it is not — the solver needs at least
-    # one constraint (see `OptimaProblem`). Say so while the caller can still
-    # act on it, rather than a `BoundsError` three calls down.
+    # Path 2: nothing to extract. An empty `A` returned here would look like
+    # support for unconstrained problems, and there is none: the solver
+    # needs at least one constraint (see `OptimaProblem`). Say so while the
+    # caller can still act on it, rather than a `BoundsError` three calls
+    # down.
     if opt_prob.f.cons === nothing
         throw(
             ArgumentError(
