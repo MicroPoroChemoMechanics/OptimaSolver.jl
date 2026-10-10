@@ -864,6 +864,28 @@ function _fill_x!(x_buf, prob, W, refs, act_ph, active, xB)
     return x_buf
 end
 
+# The variables held at the floor because a component they carry is absent from
+# the budget (`_degenerate_conservation_rows`), as a mask: the sweeps ask about
+# every member at every sweep, and a mask answers without hashing.
+struct _DeadSet <: AbstractSet{Int}
+    mask::BitVector
+    count::Int
+end
+Base.in(i::Integer, d::_DeadSet) = d.mask[i]
+Base.length(d::_DeadSet) = d.count
+function Base.iterate(d::_DeadSet, from::Int = 1)
+    i = findnext(d.mask, from)
+    return i === nothing ? nothing : (i, i + 1)
+end
+
+function _dead_variables(A::AbstractMatrix, degenerate)
+    mask = falses(size(A, 2))
+    for j in axes(A, 2)
+        mask[j] = any(abs(A[k, j]) > 0 for k in degenerate)
+    end
+    return _DeadSet(mask, count(mask))
+end
+
 """
     _invert_phases!(prob, W, y, refs, act_ph, active, xB, x_buf; dead) -> x_buf
 
@@ -1106,6 +1128,10 @@ function _outer_residual(
         prob, W, y, refs, act_ph, active, xB, x_buf; dead = dead, g = g, q = q,
         resid = resid, maxsweeps = inner_maxit, max_fall, trial, composed,
     )
+    # A trial whose inversion ran away holds no composition, and the line search
+    # reads no more than that of it.
+    trial && resid !== nothing && isinf(resid[]) &&
+        return promote_type(eltype(v), eltype(x_buf), eltype(g))[]
 
     hv = current_h(prob, x_buf, q)
     u = -(transpose(prob.A) * y)
@@ -1647,8 +1673,7 @@ function dual_newton_solve(
     x_buf = zeros(Float64, length(prob.g))
 
     degenerate = _degenerate_conservation_rows(prob, bv)
-    dead = isempty(degenerate) ? Set{Int}() :
-        Set(j for j in eachindex(prob.g) if any(abs(prob.A[k, j]) > 0 for k in degenerate))
+    dead = _dead_variables(prob.A, degenerate)
 
 
     # One log-vector per phase, whether or not the phase is active: an inactive
@@ -2289,6 +2314,8 @@ function _newton_on_active_set!(W, prob, v, xB, act_ph, active, bv, x_buf, dead,
         # In the metric the step was taken in, the balance rows weighted.
         φ = sum(abs2, wR .* R)
         pred = sum(abs2, wR .* (J * δ))
+        v_t = similar(v)
+        W_t = [similar(w) for w in W_ref]
         for strict in (true, false)
             α = α0
             # Trials whose multipliers hold no composition (an inversion that
@@ -2301,8 +2328,8 @@ function _newton_on_active_set!(W, prob, v, xB, act_ph, active, bv, x_buf, dead,
             only_runaway = true
             runaway_streak = 0
             for _ in 1:40
-                v_t = v .+ α .* δ
-                W_t = [copy(w) for w in W_ref]
+                v_t .= v .+ α .* δ
+                foreach(copyto!, W_t, W_ref)
                 R_t = _outer_residual(
                     prob, v_t, W_t, act_ph, active, bv, x_buf;
                     dead, degenerate, resid = cand_resid,
@@ -2797,8 +2824,7 @@ function kkt_certificate(
     ∇f = _primal_value.(gq .+ current_h(prob, xv, q))
 
     degenerate = _degenerate_conservation_rows(prob, bv)
-    dead = isempty(degenerate) ? Set{Int}() :
-        Set(j for j in eachindex(xv) if any(abs(prob.A[k, j]) > 0 for k in degenerate))
+    dead = _dead_variables(prob.A, degenerate)
 
     # WHICH TEST APPLIES TO WHICH VARIABLE.
     #

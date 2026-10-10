@@ -144,8 +144,7 @@ function dual_newton_tangent(
     m = size(pprob.A, 1)
     nq = pprob.nq
     degenerate = _degenerate_conservation_rows(pprob, bv)
-    dead = isempty(degenerate) ? Set{Int}() :
-        Set(j for j in eachindex(pprob.g) if any(abs(pprob.A[k, j]) > 0 for k in degenerate))
+    dead = _dead_variables(pprob.A, degenerate)
     act_ph = active_phases !== nothing ? active_phases : [
             k for (k, ph) in pairs(pprob.phases)
             if ph.always_present || sum(x[i] for i in ph.members) > floor
