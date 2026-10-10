@@ -1,5 +1,66 @@
 # Changelog
 
+## v0.8.4 — less work per trial step, and what is original said
+
+A patch release: one defect of the active-set search fixed, the trial steps of
+the line search and the implicit Jacobian made cheaper, and the documentation
+saying what comes from Optima and what is original to the package. On the 32
+thesis pastes of ChemistryLab every amount is identical to the bit to 0.8.3.
+
+### Fixed
+
+- **After a line search that accepted no step, the active-set search read the
+  composition of its last trial.** The saturation indices computed from that
+  composition decide which bounded variable leaves the active set when the
+  Newton stalls, which absent one enters next, and how the sets met so far are
+  ranked; on the cement pastes three trials in four are ones whose inner
+  inversion has run away, far from the iterate. The composition at the iterate
+  is now put back before they are read. About a hundred line searches end so
+  over a paste of ChemistryLab's thesis corpus; every answer of the 32 pastes
+  is the same to the bit.
+
+### Performance
+
+- **A trial step whose inner inversion runs away costs less.** Such a trial is
+  judged on its inner residual alone: `_outer_residual` now returns there,
+  where it went on to evaluate the activities, the balances and the
+  stationarity rows the line search then threw away. A sweep takes first the
+  phases that invert themselves, which need no activities, and a runaway ends
+  it before the other phases are swept; each phase of a sweep reads the
+  composition the sweep starts from, so the order changes no value. The trial
+  point and its compositions are written into buffers allocated once per line
+  search, and the variables a degenerate component holds at the floor are a
+  mask (`_DeadSet`) rather than a `Set` hashed at every member of every sweep;
+  the keyword `dead` of the public functions accepts any collection, as
+  before.
+- **The implicit Jacobian assembles its system without dictionaries.** It is
+  differentiated in chunks of dual numbers, eight passes for the ninety-odd
+  unknowns of a cement paste, and each pass built two dictionaries keyed by
+  phase and by member; they are arrays now, and `u = −Aᵀy`, formed at every
+  trial step, is negated in place instead of in a second vector.
+- Together, on three heavy pastes of the thesis corpus with the same
+  ChemistryLab: warm solves 3 to 6 % faster (8.14 to 7.68 s, 5.04 to 4.87 s,
+  7.03 to 6.71 s) and allocating 8 to 10 % less (13.3 to 11.9 GB, 7.4 to
+  6.8 GB, 12.0 to 10.8 GB).
+
+### Documentation
+
+- The README, the home page of the documentation, the module docstring,
+  CITATION.cff and the LICENSE notice say what the package is: an
+  interior-point solver ported from Optima (Leal, Blunt and LaForce 2014),
+  whose log-barrier formulation and filter line search follow Wächter and
+  Biegler (2006), and a Newton solver in the space of the multipliers with its
+  KKT certificate, phase-stability tests, linear-programming start and
+  derivatives of the answer, original to the package, after Brinkley (1947),
+  White, Johnson and Dantzig (1958), Karpov, Chudnenko and Kulik (1997) and
+  Michelsen (1982). CITATION.cff is titled "OptimaSolver.jl: certified
+  Gibbs-energy minimization for equilibrium chemistry" and lists these
+  references, each checked against Crossref. The package has one author, as
+  the copyright lines of its original files now say.
+- Comments and docstrings give the reason for the code as it stands rather
+  than the version that changed it; a measurement taken with an earlier version
+  keeps its provenance.
+
 ## v0.8.3 — an audit: number types, assemblage switches, concrete types
 
 A patch release from a review of the whole package against its own rules:
