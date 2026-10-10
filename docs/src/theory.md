@@ -4,10 +4,12 @@ CurrentModule = OptimaSolver
 
 # Theory
 
-This page describes the mathematical foundations of the Optima solver.
-The algorithm closely follows the C++ Optima library by Allan Leal
+This page describes the mathematical foundations of the two solvers. The
+interior-point method closely follows the C++ Optima library by Allan Leal
 ([github.com/reaktoro/optima](https://github.com/reaktoro/optima)) and the
-reference by Leal et al. (2014).
+reference by Leal et al. (2014). The Newton method in the space of the
+multipliers, its certificate and the linear program over pure phases are
+original to this package, after the published methods cited with them.
 
 ## Problem statement
 
@@ -1230,12 +1232,28 @@ The scaling is transparent: the returned solution is always in the original unit
   *Geochimica et Cosmochimica Acta*, **131**, 301–322.
   <https://doi.org/10.1016/j.gca.2014.01.038>
 
+- Brinkley, S.R. (1947).
+  Calculation of the equilibrium composition of systems of many constituents.
+  *The Journal of Chemical Physics*, **15**(2), 107–110.
+  <https://doi.org/10.1063/1.1746420>
+
+- Karpov, I.K., Chudnenko, K.V., Kulik, D.A. (1997).
+  Modeling chemical mass transfer in geochemical processes; thermodynamic
+  relations, conditions of equilibria and numerical algorithms.
+  *American Journal of Science*, **297**(8), 767–806.
+  <https://doi.org/10.2475/ajs.297.8.767>
+
 - Kulik, D.A., Wagner, T., Dmytrieva, S.V., Kosakowski, G., Hingerl, F.F.,
   Chudnenko, K.V., Berner, U.R. (2013).
   GEM-Selektor geochemical modeling package: revised algorithm and GEMS3K
   numerical kernel for coupled simulation codes.
   *Computational Geosciences*, **17**, 1–24.
   <https://doi.org/10.1007/s10596-012-9310-6>
+
+- Michelsen, M.L. (1982).
+  The isothermal flash problem. Part I. Stability.
+  *Fluid Phase Equilibria*, **9**(1), 1–19.
+  <https://doi.org/10.1016/0378-3812(82)85001-2>
 
 - Myers, R.J., Bernal, S.A., Provis, J.L. (2014).
   A thermodynamic model for C-(N-)A-S-H gel: CNASH_ss. Derivation and validation.
@@ -1255,3 +1273,8 @@ The scaling is transparent: the returned solution is always in the original unit
   *Mathematical Programming*, **106**(1), 25–57.
   <https://doi.org/10.1007/s10107-004-0559-y>
 ```
+
+- White, W.B., Johnson, S.M., Dantzig, G.B. (1958).
+  Chemical equilibrium in complex mixtures.
+  *The Journal of Chemical Physics*, **28**(5), 751–755.
+  <https://doi.org/10.1063/1.1744264>

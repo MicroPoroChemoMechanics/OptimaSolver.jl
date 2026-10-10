@@ -225,8 +225,8 @@ function solve!(
                 prob.p.hdiag(hf, n)
             elseif opts.use_fd_hessian
                 # The true diagonal, by forward-mode differentiation of the
-                # gradient. (The option keeps its name; until 0.7.4 it meant a
-                # difference quotient per species.)
+                # gradient. (Despite its name, the option takes no difference
+                # quotient.)
                 ForwardDiff.jacobian!(H_ad, grad_of!, g_pert_h, n, hess_cfg)
                 for i in 1:ns
                     hf[i] = max(H_ad[i, i], zero(T))
@@ -429,7 +429,7 @@ function _make_initial_state(prob::OptimaProblem{T}, opts::OptimaOptions, u0, y0
     m = prob.m
 
     # The result of a previous solve, or its state, as the documentation of
-    # `OptimaState` offers: until 0.8.2 a state was silently ignored here.
+    # `OptimaState` offers.
     if u0 isa Union{OptimaResult, OptimaState}
         n0 = copy(u0.n)
         y0_vec = copy(u0.y)
@@ -625,9 +625,8 @@ function _initialise_feasible!(
 
     # Everything below RECONSTRUCTS the composition, which is what a cold start
     # needs. The least-disturbance route above has already been tried and did not
-    # reach the affine set, so trying it a second time — as an earlier version did,
-    # under a `1e-2` threshold — returns whatever it stalled at and never gets
-    # here. On an LC³ budget that stall was `2.6e-4`, which is enough to deadlock
+    # reach the affine set, so trying it a second time (under a `1e-2` threshold,
+    # say) returns whatever it stalled at and never gets here. On an LC³ budget that stall was `2.6e-4`, which is enough to deadlock
     # the filter line search on the first iteration.
     rhs = collect(prob.b)
     @inbounds for j in jn

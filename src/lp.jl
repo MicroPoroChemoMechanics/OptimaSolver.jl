@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: LGPL-2.1-or-later
-# Copyright © 2025-2026 Jean-François Barthélémy and Anthony Soive (Cerema, UMR MCD)
+# Copyright © 2025-2026 Jean-François Barthélémy (Cerema, UMR MCD)
 
 using LinearAlgebra
 
@@ -269,7 +269,7 @@ end
 
 function lp_start(prob::DualNewtonProblem, b::AbstractVector; tol::Real = 1.0e-9, maxit::Integer = 0)
     degenerate = _degenerate_conservation_rows(prob, b)
-    dead = Set(j for k in degenerate for j in axes(prob.A, 2) if !iszero(prob.A[k, j]))
+    dead = _dead_variables(prob.A, degenerate)
     lp = lp_start(prob.A, current_g(prob, prob.q0), b; dead, tol, maxit)
     lp.status === :optimal || return lp
     y = copy(lp.y)

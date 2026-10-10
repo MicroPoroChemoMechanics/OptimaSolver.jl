@@ -1,10 +1,13 @@
 OptimaSolver.jl
 ===============
 
-A Julia port of the Optima C++ library (https://github.com/reaktoro/optima).
+Gibbs-energy minimization for equilibrium chemistry. Its interior-point solver
+is a Julia port of the Optima C++ library (https://github.com/reaktoro/optima).
 
 Copyright (C) 2020-2024 Allan Leal  (original C++ Optima library)
 Copyright (C) 2026      Jean-François Barthélémy  (Julia port)
+Copyright (C) 2025-2026 Jean-François Barthélémy, Cerema, UMR MCD
+                        (src/dual_newton.jl, src/dual_newton_ad.jl, src/lp.jl)
 
 OptimaSolver.jl is free software; you can redistribute it and/or modify it
 under the terms of the GNU Lesser General Public License as published by the

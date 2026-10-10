@@ -74,8 +74,8 @@ function line_search(
         kkt_merit = nothing,
     ) where {T}
     # `α_max` comes from `clamp_step`, hence carries the type of the iterates:
-    # annotating it `::Float64` used to reject dual numbers outright, which is
-    # what stopped `ForwardDiff` from crossing the solve.
+    # annotated `::Float64`, it would reject dual numbers outright and stop
+    # `ForwardDiff` from crossing the solve.
     Tv = promote_type(eltype(n), eltype(dn), typeof(μ), typeof(α_max))
 
     α = Tv(α_max)
@@ -132,7 +132,7 @@ function line_search(
     #     `maxᵢ|dnᵢ|/max(1,|nᵢ|)` against `10·eps`, which is `6e-12` against
     #     `2.2e-15` here: faithful Ipopt does nothing in this regime either.
     #
-    #     What is done instead, since 0.7.5, is to judge the step on a quantity
+    #     What is done instead is to judge the step on a quantity
     #     that is resolved there: the KKT residual of the barrier problem in
     #     complementarity form, `‖s∘(∇f + Aᵀy) − μ‖` with the balance (`kkt_merit`),
     #     which is bounded and measured at its own scale, `1e-11` to `1e-17`
@@ -144,7 +144,7 @@ function line_search(
     #
     #     Only there, and only for a step that the objective cannot tell apart from
     #     no change: one that raises `f_μ` by more than its rounding, or moves the
-    #     balance, is refused as before. Taken whenever Armijo was unresolved, the
+    #     balance, is still refused. Taken whenever Armijo was unresolved, the
     #     residual let through steps far from the solution, where the curvature
     #     makes the decrease asked for small too, and moved the interior-point
     #     answer of the Reaktoro reference by half on a trace.
@@ -211,7 +211,7 @@ end
 # of that row's own scale, `|bₖ| + Σⱼ |Aₖⱼ nⱼ|`.
 #
 # Row by row, because the rows do not share a scale. Judged on the sum against
-# `√eps` absolute, as 0.7.5 did, a trace component could vanish whole inside a
+# `√eps` absolute, a trace component could vanish whole inside a
 # tolerance the major elements set. Measured on blended cement pastes carrying a
 # trace of carbon nine orders of magnitude below their major elements: the
 # interior point lost it, every start of the certified search downstream came
