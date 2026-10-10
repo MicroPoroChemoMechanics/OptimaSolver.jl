@@ -129,13 +129,11 @@
         @test sol.u ≈ n_analytic atol = 1.0e-6
     end
 
-    @testset "a nonlinear residual is differenced at the right scale" begin
-        # `_extract_constraints` prefers a large step, because for the affine
-        # residual it documents the quotient is exact and a small step only adds
-        # cancellation. A nonlinear residual breaks that reasoning: a
-        # log-parameterized equilibrium sends `A exp(x) - b`, where a step of one
-        # is not a derivative at all — measured, 72 % off. So affinity is checked
-        # per column, and this pins the check.
+    @testset "a nonlinear residual gets its exact tangent" begin
+        # `_extract_constraints` differentiates the residual by forward mode, so
+        # its linearization is exact for an affine residual and is the true
+        # tangent of a nonlinear one: a log-parameterized equilibrium sends
+        # `A exp(x) - b`, whose Jacobian at `x0` is `exp.(x0)`.
         x0 = [-2.0, -3.0]
         consexp!(res, x, _) = (res[1] = exp(x[1]) + exp(x[2]) - 1.0; nothing)
         f = SciMLBase.OptimizationFunction((x, q) -> sum(exp.(x)); cons = consexp!)
@@ -144,12 +142,11 @@
             lb = fill(-30.0, 2), ub = fill(10.0, 2), lcons = [0.0], ucons = [0.0]
         )
         A_nl, _ = OptimaSolver._extract_constraints(prob, x0, prob.p)
-        # The exact Jacobian is exp.(x0); a forward difference reaches ~1e-8.
+        # The exact Jacobian is exp.(x0).
         @test A_nl[1, 1] ≈ exp(x0[1]) rtol = 1.0e-6
         @test A_nl[1, 2] ≈ exp(x0[2]) rtol = 1.0e-6
 
-        # And the affine case still comes back to within an ulp, which is the
-        # whole reason the large step is tried first.
+        # And the affine case comes back to within an ulp.
         conslin!(res, u, _) = (res[1] = 2u[1] + 3u[2] - 5.0; nothing)
         f2 = SciMLBase.OptimizationFunction((u, q) -> sum(u); cons = conslin!)
         prob2 = SciMLBase.OptimizationProblem(
@@ -247,5 +244,108 @@
         @test !sol.original.converged
         # Caching a non-converged point would poison every later warm start.
         @test alg._cache[] === nothing
+    end
+    @testset "the warm-start cache does not cross number types" begin
+        # A plain answer in the cache, then a solve on dual numbers through the
+        # same algorithm object, and the reverse. Until 0.8.2 the first raised a
+        # `MethodError` (the cached plain amounts handed to a lift typed on the
+        # duals) and so did the second. A solve on duals starts cold: it
+        # differentiates the iterations that reach its answer, and must take
+        # them.
+        f = SciMLBase.OptimizationFunction(G; grad = ∇G!)
+        alg = OptimaOptimizer(; tol = 1.0e-12)
+        plain = SciMLBase.OptimizationProblem(f, copy(lb), (μ⁰ = μ⁰, A = A, b = b); lb = lb, ub = fill(Inf, 3))
+        @test SciMLBase.successful_retcode(SciMLBase.solve(plain, alg))
+        solve_at(m1) = SciMLBase.solve(
+            SciMLBase.OptimizationProblem(
+                f, copy(lb), (μ⁰ = [m1, μ⁰[2], μ⁰[3]], A = A, b = b); lb = lb, ub = fill(Inf, 3)
+            ),
+            alg,
+        ).u
+        dn = ForwardDiff.derivative(solve_at, μ⁰[1])
+        @test dn ≈ -n_analytic .* ([1.0, 0.0, 0.0] .- n_analytic[1]) rtol = 1.0e-6
+        # Nothing on dual numbers is left in the cache for a plain solve to trip on.
+        @test alg._cache[] isa OptimaResult{Float64}
+        @test SciMLBase.solve(plain, alg).u ≈ n_analytic atol = 1.0e-7
+        # Two derivatives in a row, one seed each, through one object: the
+        # second may not start from the answer of the first, whose partials are
+        # those of the other seed.
+        solve2(m) = SciMLBase.solve(
+            SciMLBase.OptimizationProblem(
+                f, copy(lb), (μ⁰ = [m[1], m[2], μ⁰[3]], A = A, b = b); lb = lb, ub = fill(Inf, 3)
+            ),
+            alg,
+        ).u
+        m12 = μ⁰[1:2]
+        J = ForwardDiff.jacobian(solve2, m12, ForwardDiff.JacobianConfig(solve2, m12, ForwardDiff.Chunk{1}()))
+        @test J ≈ -(Diagonal(n_analytic) .- n_analytic * transpose(n_analytic))[:, 1:2] rtol = 1.0e-6
+    end
+
+    @testset "a constraint that is not affine is linearized again, and judged" begin
+        # The toy Gibbs problem in the logarithms of its amounts, `x = ln n`, its
+        # constraint `Σ exp(xᵢ) = 1`. OptimaSolver handles `A n = b` and took the
+        # tangent of this constraint at the start; until 0.8.2 it kept it, and
+        # returned `Success` on a point violating the constraint by 3.8e-3, its
+        # amounts 2 % off. Linearized again at each answer, the point meets it to
+        # better than 1e-6; and a point that does not meet it to the tolerance is
+        # not reported a success. (This interior point is made for amounts above
+        # a bound near zero; in logarithms it stalls before the tolerance.)
+        Gx(x, p) = sum(exp(x[i]) * (p.μ⁰[i] + x[i]) for i in eachindex(x))
+        consx!(res, x, _) = (res[1] = sum(exp, x) - 1.0; nothing)
+        f = SciMLBase.OptimizationFunction(Gx; cons = consx!)
+        x0 = log.([0.6, 0.3, 0.1])
+        prob = SciMLBase.OptimizationProblem(
+            f, x0, (μ⁰ = μ⁰,); lb = fill(-40.0, 3), ub = fill(5.0, 3), lcons = [0.0], ucons = [0.0],
+        )
+        sol = SciMLBase.solve(prob, OptimaOptimizer(; tol = 1.0e-12, warm_start = false))
+        violation = abs(sum(exp, sol.u) - 1.0)
+        @test violation < 1.0e-6
+        @test exp.(sol.u) ≈ n_analytic rtol = 1.0e-3
+        @test !SciMLBase.successful_retcode(sol) || violation <= 1.0e-12
+
+        # An affine residual is solved as before: its linearization is the
+        # constraint, and nothing is solved again. Its residual is evaluated
+        # three times: at the start and by the forward-mode Jacobian that
+        # extract `A` and `b`, then once at the answer, which agrees with its
+        # linearization.
+        calls = Ref(0)
+        conslin!(res, u, _) = (calls[] += 1; res[1] = sum(u) - 1.0; nothing)
+        flin = SciMLBase.OptimizationFunction(G; grad = ∇G!, cons = conslin!)
+        plin = SciMLBase.OptimizationProblem(
+            flin, copy(lb), (μ⁰ = μ⁰,); lb = lb, ub = fill(Inf, 3), lcons = [0.0], ucons = [0.0],
+        )
+        s1 = SciMLBase.solve(plin, OptimaOptimizer(; tol = 1.0e-12, warm_start = false))
+        @test SciMLBase.successful_retcode(s1)
+        @test calls[] == 3
+
+        # A round that lands farther from the constraint is not the answer. The
+        # rounds are Newton's method on `atan(u₁ − 5) = 0`, which diverges from a
+        # start two units from the root: the first answer, `u₁ = 7 − 5 atan 2`,
+        # misses the constraint by 1.30, the second by 1.50. The answer is the
+        # first, and it is not reported a success; the last was returned.
+        Ga(u, _) = (u[2] - 1.0)^2
+        consa!(res, u, _) = (res[1] = atan(u[1] - 5.0); nothing)
+        fa = SciMLBase.OptimizationFunction(Ga; cons = consa!)
+        pa = SciMLBase.OptimizationProblem(
+            fa, [7.0, 1.0], nothing; lb = fill(1.0e-16, 2), ub = fill(Inf, 2), lcons = [0.0], ucons = [0.0],
+        )
+        sa = SciMLBase.solve(pa, OptimaOptimizer(; tol = 1.0e-12, warm_start = false))
+        @test !SciMLBase.successful_retcode(sa)
+        @test sa.u[1] ≈ 7.0 - 5 * atan(2.0) rtol = 1.0e-8
+    end
+    @testset "a derivative of a derivative, through the parameters" begin
+        # The answer carries the derivatives of the iterations that reach it;
+        # nested, the second derivative of the softmax: n₁ = softmax(−μ⁰)₁ has
+        # d²n₁/dμ₁² = n₁(1 − n₁)(1 − 2n₁).
+        f = SciMLBase.OptimizationFunction(G; grad = ∇G!)
+        first_amount(m1) = SciMLBase.solve(
+            SciMLBase.OptimizationProblem(
+                f, copy(lb), (μ⁰ = [m1, μ⁰[2], μ⁰[3]], A = A, b = b); lb = lb, ub = fill(Inf, 3)
+            ),
+            OptimaOptimizer(; tol = 1.0e-12, warm_start = false),
+        ).u[1]
+        n1 = n_analytic[1]
+        d2 = ForwardDiff.derivative(m -> ForwardDiff.derivative(first_amount, m), μ⁰[1])
+        @test d2 ≈ n1 * (1 - n1) * (1 - 2n1) rtol = 1.0e-5
     end
 end

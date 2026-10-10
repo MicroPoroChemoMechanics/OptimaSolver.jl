@@ -5,15 +5,15 @@
 # ── convergence.jl ─────────────────────────────────────────────────────────────
 # KKT convergence criteria and iteration logging.
 #
-# Convergence is declared when the scaled KKT error drops below `tol`:
+# Convergence is declared when the KKT error AT μ = 0 drops below `tol`:
 #
-#   error = max(‖ex‖∞, ‖ew‖∞) < tol
+#   error_0 = max(max |sᵢ (∇f + Aᵀy)ᵢ|, error_feas) < tol
 #
-# where ex = ∇f + Aᵀy - μ/s  (optimality residual)
-#       ew = An - b            (feasibility residual)
-#
-# The barrier parameter μ is reduced only after the inner Newton loop has
-# converged for the current μ, following the schedule:
+# with s = n − lb, and `error_feas` the residual of An = b, each row scaled by
+# its own budget (`row_scales`). The barrier parameter μ is reduced once the
+# inner Newton loop has solved the current barrier problem, its error below
+# `max(tol, barrier_eps_factor · μ)`, or has stopped advancing, following the
+# schedule:
 #
 #   μ_new = max(barrier_min, barrier_decay * μ)
 
@@ -30,11 +30,8 @@ end
 """
     should_reduce_barrier(kkt, μ, opts) -> Bool
 
-Return `true` if the inner loop has converged sufficiently to reduce μ.
-
-We use a relaxed inner tolerance: 10× `tol` (or the current μ if larger),
-so that we tighten the barrier aggressively when far from the solution and
-gently when close.
+Return `true` if the inner loop has converged sufficiently to reduce μ: its
+error at the current μ is below `max(tol, barrier_eps_factor · μ)`.
 """
 function should_reduce_barrier(kkt::KKTResidual, μ, opts::OptimaOptions)
     # Reduce μ once the inner loop has solved the CURRENT barrier problem, i.e.

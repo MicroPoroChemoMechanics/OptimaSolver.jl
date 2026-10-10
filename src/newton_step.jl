@@ -26,8 +26,9 @@
 """
     NewtonStep{T}
 
-Workspace for the Schur-complement Newton solver. All matrices and vectors
-are pre-allocated once and reused across Newton iterations.
+Workspace for the Schur-complement Newton solver: its matrices and vectors are
+allocated once and reused across the iterations by `compute_step!`; the
+null-space variant `compute_step_nullspace!` allocates its own temporaries.
 
 Fields:
 - `S`:      Schur complement `A * diag(1/h) * A'`  (m × m)
@@ -71,7 +72,7 @@ Compute the Newton step (dn, dy) by Schur complement elimination.
 - `ew`:  feasibility residual (m,)
 
 # Returns
-`(dn, dy)` — views into the workspace vectors.
+`(dn, dy)` — the workspace vectors themselves, overwritten by the next call.
 """
 function compute_step!(
         ws::NewtonStep,

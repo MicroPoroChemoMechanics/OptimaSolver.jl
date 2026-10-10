@@ -1,5 +1,86 @@
 # Changelog
 
+## v0.8.3 — an audit: number types, assemblage switches, concrete types
+
+A patch release from a review of the whole package against its own rules:
+generic number types, no finite differences, the performance tips of the Julia
+manual. Defects fixed, an optional fallback added, the hot loops typed, and the
+docstrings brought in line with the code. On the 32 thesis pastes of
+ChemistryLab and on the benchmark, every amount is identical to the bit to
+0.8.2, and the 32 pastes take 304 s instead of 328 s.
+
+### Fixed
+
+- **A start in the wrong assemblage held the dual Newton.** From the partition
+  of the instant before an assemblage switch, the phase that should enter was
+  admitted, the inner inversion failed at once, the entrant was rejected, and
+  the phase that should leave never did. Measured on Lerch and Ford's cement c13
+  at 23.9 °C, 4.2 h after mixing, when hydrogarnet gives way to monosulfate:
+  every start ended at a KKT error of 1.5e-4 or worse, with the default options
+  and the lenient ones alike. With `DualNewtonOptions(lp_fallback = true)`, when
+  no start converges and the problem has no unknown parameters,
+  `dual_newton_solve` tries once more from the vertex of `lp_start`, which holds
+  the new assemblage; that start then certifies at once. The option is off by
+  default: in a search that already runs its own starts, the linear program
+  among them, it changes which start certifies first, and the answers in the
+  last digits.
+- **The warm-start cache of `OptimaOptimizer` crossed number types.** A plain
+  answer in the cache handed to a solve on dual numbers, or the reverse, raised
+  a `MethodError`. A solve on dual numbers differentiates the iterations that
+  reach its answer and must take them, so it now starts cold and caches nothing.
+- **A constraint that is not affine was replaced by its tangent at the start.**
+  `OptimaOptimizer` handles `A n = b` and took the Jacobian of a SciML `cons` at
+  `u0`; for `A·exp(x) − b`, a log-parameterized equilibrium, it then returned
+  `Success` on a point that violated the constraint (by 3.8e-3 on a toy problem,
+  the amounts 2 % off). The constraint is now linearized again at each answer
+  while that halves its residual, the answer returned is the one whose residual
+  is the smallest (a round can land farther from the constraint than the one
+  before: Newton's method on the constraint diverges from a poor start), and the
+  result reports `Success` only when the caller's constraint is met. An affine
+  constraint is solved as before.
+- **Verdicts raised on dual numbers.** `phase_tangent_trial` and
+  `phase_split_trial` wrote what an `h` capturing dual numbers returns, or dual
+  multipliers, into plain buffers; they now measure on values, as
+  `kkt_certificate` does. `SolutionPhase` refused split starts computed as dual
+  numbers; they are taken by value. Dual numbers captured by `gq` or `cq` are
+  refused by name, as those of `h` were, instead of failing on a plain buffer.
+- `inner_maxit` reaches the last residual and inversion of a solve, and an
+  explicit `tol` the Newton recovery of a phase composition; the defaults are
+  unchanged. An `OptimaState` passed as `u0` is used, as its docstring said.
+
+### Performance
+
+- `DualNewtonProblem` carries the type of its `params` (`params::Any` made every
+  `h(x, params)` of the sweeps a dynamic call returning a vector of no inferable
+  type); `OptimaProblem.p`, `Canonicalizer.BLU` and the optimizer's cache are
+  concretely typed too. The certified solves of the cement pastes of
+  ChemistryLab's thesis corpus take up to 1.6 times less (7.8 s to 4.8 s on a
+  CEM V paste with CSHQ, 12.4 s to 8.3 s on a CEM III paste with CNASH); the first equilibrium of
+  a process compiles about 3 s longer.
+- No method allocates a `Core.Box` any more: seven variables of the active-set
+  search were boxed. The tangent-plane measure of an absent phase is computed
+  once per round instead of three times, and `A Aᵀ` is factorized once per
+  interior-point solve.
+
+### Documentation
+
+- Two docstrings attached to the wrong function are reattached
+  (`_invert_phases!`, `phase_tangent_trial`), and about twenty signatures,
+  keywords, defaults and rules that had drifted from the code are corrected:
+  `DualNewtonProblem`, `SolutionPhase`, `kkt_certificate`, `OptimaOptimizer`,
+  `OptimaOptions` (`barrier_decay` is 0.2), `line_search`, `sensitivity`,
+  `solve`, the barrier schedule, the routes of the feasibility initialization.
+
+### Internal
+
+- The Newton iteration on one active set and the basis exchange of the
+  active-set search are functions of their own, the second in place of two
+  copies; the log floor is named everywhere it is used.
+- New tests: the derivative of the answer through a phase recovered by
+  Newton's method (with and without a local `h`), through a conservation matrix,
+  through a solvent phase that inverts itself, and a second derivative through
+  the parameters of a SciML problem.
+
 ## v0.8.2 — a pinned mixing phase seeded at its own total
 
 A patch release: one defect fixed, and a docstring corrected. Only the phases

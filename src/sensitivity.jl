@@ -40,7 +40,7 @@ struct SensitivityResult{T <: Real}
 end
 
 """
-    sensitivity(prob, n, y, h; μ) -> SensitivityResult
+    sensitivity(prob, n, y, h, μ) -> SensitivityResult
 
 Compute the sensitivity matrices ∂n*/∂b and ∂n*/∂(μ⁰/RT) at the converged
 point (n, y) with Hessian diagonal h.

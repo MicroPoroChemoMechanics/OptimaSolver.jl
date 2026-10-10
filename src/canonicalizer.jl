@@ -37,7 +37,7 @@ struct Canonicalizer{T <: Real}
     jb::Vector{Int}       # basic variable indices
     jn::Vector{Int}       # non-basic variable indices
     B::Matrix{T}          # A[:, jb]
-    BLU::Any              # lu(B)
+    BLU::LinearAlgebra.LU{T, Matrix{T}, Vector{Int}}   # lu(B)
     R::Matrix{T}          # B⁻¹ N
     ns::Int
     m::Int
@@ -137,10 +137,11 @@ function Canonicalizer(A::AbstractMatrix{T}; tol::Float64 = 1.0e-12) where {T <:
 end
 
 """
-    refactorize!(c::Canonicalizer)
+    refactorize(c::Canonicalizer) -> Canonicalizer
 
-Re-compute the LU factorization of B in-place. Call this if A changes
-(e.g. after variable repartitioning). Returns a new `Canonicalizer`.
+A new `Canonicalizer` with the LU factorization of `B` and the reduced-cost matrix
+`R = B⁻¹N` computed again from `c.B` and `c.A`, the partition kept. `c` itself is
+not modified.
 """
 function refactorize(c::Canonicalizer{T}) where {T}
     BLU = LinearAlgebra.lu(c.B)
@@ -152,14 +153,14 @@ end
 """
     solve_B(c::Canonicalizer, rhs)
 
-Solve B x = rhs using the cached LU factorisation. O(m²).
+Solve B x = rhs using the cached LU factorization. O(m²).
 """
 solve_B(c::Canonicalizer, rhs) = c.BLU \ rhs
 
 """
     solve_Bt(c::Canonicalizer, rhs)
 
-Solve Bᵀ x = rhs using the cached LU factorisation. O(m²).
+Solve Bᵀ x = rhs using the cached LU factorization. O(m²).
 """
 solve_Bt(c::Canonicalizer, rhs) = c.BLU' \ rhs
 
@@ -169,8 +170,8 @@ solve_Bt(c::Canonicalizer, rhs) = c.BLU' \ rhs
 Compute the Schur complement matrix S = A * diag(1/h) * Aᵀ (m × m),
 where h is the diagonal of the Hessian (length ns, all positive).
 
-Exploits the canonical form: S = B diag(1/h_b)⁻¹ Bᵀ + N diag(1/h_n)⁻¹ Nᵀ
-computed directly as A * Diagonal(1 ./ h) * Aᵀ.
+In the canonical form this is `S = B diag(h_b)⁻¹ Bᵀ + N diag(h_n)⁻¹ Nᵀ`; it is
+computed directly as `A * Diagonal(1 ./ h) * Aᵀ`.
 """
 function schur_complement(c::Canonicalizer{T}, h::AbstractVector) where {T}
     # S = A * H⁻¹ * Aᵀ  where H = diag(h)
