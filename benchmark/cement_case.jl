@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: LGPL-2.1-or-later
-# Copyright © 2025-2026 Jean-François Barthélémy and Anthony Soive (Cerema, UMR MCD)
+# Copyright © 2025-2026 Jean-François Barthélémy (Cerema, UMR MCD)
 
 # The frozen cement, shared by `run.jl` and `sweeps.jl` so that the time and the
 # sweep count are measured on one system and not on two that drifted apart.

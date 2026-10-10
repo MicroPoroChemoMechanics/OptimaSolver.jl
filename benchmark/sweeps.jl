@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: LGPL-2.1-or-later
-# Copyright © 2025-2026 Jean-François Barthélémy and Anthony Soive (Cerema, UMR MCD)
+# Copyright © 2025-2026 Jean-François Barthélémy (Cerema, UMR MCD)
 
 # ── benchmark/sweeps.jl ───────────────────────────────────────────────────────
 #
