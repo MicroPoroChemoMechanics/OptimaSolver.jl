@@ -1,6 +1,6 @@
 cff-version: 1.2.0
 message: "If you use OptimaSolver.jl in your work, please cite it as below."
-title: "OptimaSolver.jl: Julia-native primal-dual interior-point solver for Gibbs-energy minimization"
+title: "OptimaSolver.jl: certified Gibbs-energy minimization for equilibrium chemistry"
 authors:
   - family-names: Barthélémy
     given-names: Jean-François
@@ -16,6 +16,9 @@ keywords:
   - julia
   - optimization
   - interior-point
+  - newton-method
+  - kkt-certificate
+  - phase-stability
   - gibbs-energy
   - chemistry
   - sciml
@@ -26,7 +29,7 @@ references:
       - family-names: Leal
         given-names: Allan M. M.
     url: "https://github.com/reaktoro/optima"
-    notes: "Upstream C++ library this Julia port is derived from."
+    notes: "Upstream C++ library the interior-point solver is ported from."
   - type: article
     title: "Efficient chemical equilibrium calculations for geochemical speciation and reactive transport modelling"
     authors:
@@ -42,3 +45,73 @@ references:
     start: 301
     end: 322
     doi: "10.1016/j.gca.2014.01.038"
+  - type: article
+    title: "On the implementation of an interior-point filter line-search algorithm for large-scale nonlinear programming"
+    authors:
+      - family-names: Wächter
+        given-names: Andreas
+      - family-names: Biegler
+        given-names: Lorenz T.
+    journal: "Mathematical Programming"
+    volume: 106
+    issue: 1
+    year: 2006
+    start: 25
+    end: 57
+    doi: "10.1007/s10107-004-0559-y"
+  - type: article
+    title: "Calculation of the Equilibrium Composition of Systems of Many Constituents"
+    authors:
+      - family-names: Brinkley
+        given-names: Stuart R.
+    journal: "The Journal of Chemical Physics"
+    volume: 15
+    issue: 2
+    year: 1947
+    start: 107
+    end: 110
+    doi: "10.1063/1.1746420"
+  - type: article
+    title: "Chemical Equilibrium in Complex Mixtures"
+    authors:
+      - family-names: White
+        given-names: W. B.
+      - family-names: Johnson
+        given-names: S. M.
+      - family-names: Dantzig
+        given-names: G. B.
+    journal: "The Journal of Chemical Physics"
+    volume: 28
+    issue: 5
+    year: 1958
+    start: 751
+    end: 755
+    doi: "10.1063/1.1744264"
+  - type: article
+    title: "Modeling chemical mass transfer in geochemical processes; thermodynamic relations, conditions of equilibria and numerical algorithms"
+    authors:
+      - family-names: Karpov
+        given-names: I. K.
+      - family-names: Chudnenko
+        given-names: K. V.
+      - family-names: Kulik
+        given-names: D. A.
+    journal: "American Journal of Science"
+    volume: 297
+    issue: 8
+    year: 1997
+    start: 767
+    end: 806
+    doi: "10.2475/ajs.297.8.767"
+  - type: article
+    title: "The isothermal flash problem. Part I. Stability"
+    authors:
+      - family-names: Michelsen
+        given-names: Michael L.
+    journal: "Fluid Phase Equilibria"
+    volume: 9
+    issue: 1
+    year: 1982
+    start: 1
+    end: 19
+    doi: "10.1016/0378-3812(82)85001-2"
