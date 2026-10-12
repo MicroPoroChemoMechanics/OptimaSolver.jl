@@ -1,5 +1,31 @@
 # Changelog
 
+## v0.8.5 — the tangent leaves out a phase that cannot exist
+
+A patch release: one defect of `dual_newton_tangent` fixed. No answer of
+`dual_newton_solve` changes.
+
+### Fixed
+
+- **`dual_newton_tangent` raised on a phase every member of which carries a
+  component absent from the budget.** Called without `active_phases`, it took
+  as active every phase that is always present, a surface site family among
+  them. When such a family's budget falls below the threshold of
+  `degenerate_components` (1e-12 of the largest budget, about 5e-11 mol beside
+  a kilogram of water), all its members are dead and the family cannot exist;
+  the log-sum-exp of its stationarity then ran over no member, and
+  `_implicit_system` raised on `maximum` of an empty collection. The solve
+  never activates such a phase, at its seeding or by admission, and the
+  tangent now leaves it out as well, whether it infers the active phases or
+  the caller names them: its amounts have no derivative. ChemistryLab reaches
+  the tangent through the derivatives of every equilibrium it lifts, the
+  Jacobian of a kinetic step among them; a site family carried by a host
+  seeded at 1e-12 mol failed there at the first step, and seeding the host at
+  1e-6 mol was the workaround. Skipping the phase inside `_implicit_system`
+  instead would have read an unset entry into the system: a wrong derivative
+  in place of an error. Wherever the filter acts the old code raised or
+  produced `-Inf`, so no result that was right changes.
+
 ## v0.8.4 — less work per trial step, and what is original said
 
 A patch release: one defect of the active-set search fixed, the trial steps of
