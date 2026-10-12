@@ -1132,6 +1132,41 @@ end
     end
 end
 
+@testset "a site family below si_tol rises from far below its budget" begin
+    # Water, a solute and a site family whose two members, a free site and its
+    # complex with the solute, carry the site row. The family is always present,
+    # so never dropped, and its budget is below `si_tol`. Its members start at
+    # 1e-16 mol, as those of a family whose budget has just passed the threshold
+    # of `degenerate_components`, and a step moves its total by a factor `e` at
+    # most. Until 0.8.5 the Newton stopped after every step on a phase below
+    # `si_tol`, and the search ended with the sites a millionth of their budget.
+    A = Float64[1 0 0 0; 0 1 0 1; 0 0 1 1]
+    g = [0.0, 0.0, 0.0, -1.0]
+    h(x, _) = (
+        N = max(x[3] + x[4], 1.0e-300);
+        [
+            log(x[1] / (x[1] + x[2])), log(max(x[2], 1.0e-300) / x[1]),
+            log(max(x[3], 1.0e-300) / N), log(max(x[4], 1.0e-300) / N),
+        ]
+    )
+    prob = DualNewtonProblem(
+        A, g, h;
+        phases = [
+            SolutionPhase([1, 2], 1; always_present = true),
+            SolutionPhase([3, 4], 1; always_present = true, mole_fraction = true),
+        ],
+    )
+    for N in (1.0e-9, 1.0e-7, 1.0e-5)
+        b = [55.5, 0.1, N]
+        out = dual_newton_solve(prob, b, [55.5, 0.1, 1.0e-16, 1.0e-16])
+        @test out.converged
+        # The stationarity of the two members: x₄/x₃ = e·x₂/x₁.
+        r = ℯ * out.x[2] / out.x[1]
+        @test out.x[3:4] ≈ [N / (1 + r), r * N / (1 + r)] rtol = 1.0e-9
+        @test kkt_certificate(prob, out.x, b).optimal
+    end
+end
+
 @testset "each balance row is judged against what it holds" begin
     # A solvent, a solute and a trace, each carrying a component of its own, so
     # that any composition is stationary and the balance alone is judged. The

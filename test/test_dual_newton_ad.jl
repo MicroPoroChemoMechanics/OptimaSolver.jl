@@ -225,3 +225,40 @@ end
     @test Jinv ≈ Jswp rtol = 1.0e-8
     @test Jinv ≈ Matrix{Float64}(LinearAlgebra.I, 3, 3) atol = 1.0e-8
 end
+
+@testset "the tangent leaves out a phase whose components are all absent" begin
+    # Water, a solute, and a site family whose two members, a free site and its
+    # complex with the solute, carry the site row. Its budget is below the
+    # threshold of `degenerate_components`: both members are dead and the family
+    # cannot exist, though it is always present, as a site family is. The solve
+    # leaves it out; until 0.8.5 the tangent took it as active, and its
+    # log-sum-exp ran over no member.
+    A = Float64[1 0 0 0; 0 1 0 1; 0 0 1 1]
+    g = [0.0, 0.0, 0.0, -1.0]
+    h(x, _) = (
+        N = max(x[3] + x[4], 1.0e-300);
+        [
+            log(x[1] / (x[1] + x[2])), log(max(x[2], 1.0e-300) / x[1]),
+            log(max(x[3], 1.0e-300) / N), log(max(x[4], 1.0e-300) / N),
+        ]
+    )
+    phases = [
+        SolutionPhase([1, 2], 1; always_present = true),
+        SolutionPhase([3, 4], 1; always_present = true, mole_fraction = true),
+    ]
+    p = DualNewtonProblem(A, g, h; phases = phases)
+    b = [55.5, 0.1, 1.0e-13]
+    x0 = [55.5, 0.1, 0.0, 0.0]
+    res = dual_newton_solve(p, b, x0)
+    @test res.converged
+    @test res.active_phases == [1]
+    # The solvent and the solute take every mole of their own element; the
+    # sites have no amount, and no derivative.
+    J = ForwardDiff.jacobian(bb -> dual_newton_tangent(p, bb, res.x).x, b)
+    @test J ≈ [1.0 0.0 0.0; 0.0 1.0 0.0; 0.0 0.0 0.0; 0.0 0.0 0.0] atol = 1.0e-10
+    @test all(iszero, J[3:4, :])
+    # The same as through the solve, which knows its active set, and the same
+    # when the caller names the family.
+    @test J ≈ ForwardDiff.jacobian(bb -> dual_newton_solve(p, bb, x0).x, b) rtol = 1.0e-10
+    @test ForwardDiff.jacobian(bb -> dual_newton_tangent(p, bb, res.x; active_phases = [1, 2]).x, b) == J
+end
