@@ -2404,9 +2404,26 @@ function _newton_on_active_set!(W, prob, v, xB, act_ph, active, bv, x_buf, dead,
         let free = [j for j in 1:na if !(active[j] in prob.always_active)]
             !isempty(free) && minimum(@view xB[free]) < opts.si_tol && break
         end
-        nph > 0 && minimum(@view v[1:nph]) < log(opts.si_tol) && break
+        _phase_vanishing(prob, act_ph, v, opts.si_tol) && break
     end
     return v, inner_ok
+end
+
+# Whether an active phase the round may drop has fallen below `si_tol`, which
+# ends the Newton so that the round drops it. A phase that is always present is
+# never dropped, and may hold less than that legitimately: a site family of
+# 1e-11 mol. Counted here, it stopped the Newton after every step while its
+# total, which a step moves by at most a factor `e`, rose from a start far below
+# its budget; the round, finding the Newton stalled with nothing leaving,
+# released a pure phase the answer needed, and the search ended on a set it had
+# seen, its balance unmet. Measured on a family started at 1e-16 mol, every
+# budget from 1e-9 to 1e-5 mol failed so.
+function _phase_vanishing(prob, act_ph, v, si_tol)
+    for (a, k) in enumerate(act_ph)
+        prob.phases[k].always_present && continue
+        v[a] < log(si_tol) && return true
+    end
+    return false
 end
 
 """

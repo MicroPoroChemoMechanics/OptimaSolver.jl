@@ -744,7 +744,11 @@ An admission that fails to converge is not evidence against the variable
 admitted. The inner Newton stops the moment an active variable falls below its
 bound, and that is the *departing* variable announcing itself: the entrant stays,
 the drop list removes the other, and the two together are the active-set
-exchange.
+exchange. A mixing phase whose amount falls below `si_tol` stops it the same
+way, so that the round drops it. A phase that is always present is never
+dropped and does not stop it: a surface site family may hold a trace, and a
+family started far below its budget, whose amount a step multiplies by `e` at
+most, would otherwise rise by one step per round.
 
 Reading that failure as the entrant's fault is what an earlier version did, and
 the consequence was silent. On a cement, ettringite and monosulphate compete for

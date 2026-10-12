@@ -1,9 +1,12 @@
 # Changelog
 
-## v0.8.5 — the tangent leaves out a phase that cannot exist
+## v0.8.5 — site families of very small budgets
 
-A patch release: one defect of `dual_newton_tangent` fixed. No answer of
-`dual_newton_solve` changes.
+A patch release: two defects fixed, both met by surface site families whose
+budget is a trace. The tangent raised on a family that cannot exist, and the
+solve never brought a family below `si_tol` to its budget from far below it.
+The iteration changes only where a phase that is always present holds less
+than `si_tol` at some iterate.
 
 ### Fixed
 
@@ -22,8 +25,24 @@ A patch release: one defect of `dual_newton_tangent` fixed. No answer of
   Jacobian of a kinetic step among them, where a site family carried by a host
   seeded at 1e-12 mol raised at the first step. Skipping the phase inside
   `_implicit_system` instead would have read an unset entry into the system: a
-  wrong derivative in place of an error. Wherever the filter acts the old code raised or
-  produced `-Inf`, so no result that was right changes.
+  wrong derivative in place of an error. Wherever the filter acts the old code
+  raised or produced `-Inf`, so no result that was right changes.
+- **A site family below `si_tol`, started far below its budget, was never
+  brought to it.** The Newton of an active set stopped as soon as an active
+  phase held less than `si_tol` (1e-8 mol), so that the round could drop it.
+  A phase that is always present is never dropped, and a site family may hold
+  less than that legitimately; its total, which a step moves by a factor `e`
+  at most, then rose by one step per round. The round, finding the Newton
+  stalled with nothing leaving, released a pure phase the answer needed, and
+  the search ended on a set it had already seen, its balance unmet. Measured
+  on a family started at 1e-16 mol, every budget from 1e-9 to 1e-5 mol failed
+  so, the sites ending a millionth of their budget or less. A family starts so
+  when its budget passes the threshold of `degenerate_components` in a
+  sequence of solves warm-started from the last: in ChemistryLab, a kinetic
+  run whose C-S-H, seeded at 1e-12 mol, carries sulfate sites found no
+  partition 0.32 s in, its right-hand side was `NaN` at every trial step, and
+  the run stopped. Such a phase no longer stops the Newton; the same run now
+  goes to its end.
 
 ## v0.8.4 — less work per trial step, and what is original said
 
