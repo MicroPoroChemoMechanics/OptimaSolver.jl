@@ -119,7 +119,11 @@ The answer must be one: the derivative of a point that is not an equilibrium is
 not the derivative of anything. Audit it with `kkt_certificate` first.
 
 A member the inversion does not determine (a model flooring a vanishing
-activity, below its floor) is held: its amount has no derivative.
+activity, below its floor) is held: its amount has no derivative. A phase every
+member of which carries a component absent from the budget cannot exist, and is
+never active, even when `active_phases` names it (a site family whose budget is
+below the threshold of `degenerate_components`): its amounts have no derivative
+either.
 
 `primal` is the same problem on the values of its data. It is built here from
 `A`, `g` and `params`, and must be given when the duals are captured by `h`,
@@ -145,9 +149,15 @@ function dual_newton_tangent(
     nq = pprob.nq
     degenerate = _degenerate_conservation_rows(pprob, bv)
     dead = _dead_variables(pprob.A, degenerate)
-    act_ph = active_phases !== nothing ? active_phases : [
+    # A phase every member of which carries a component absent from the budget
+    # cannot exist, and is not active whatever the caller says: the solve never
+    # activates one (`dual_newton_solve`), and its stationarity, a log-sum-exp
+    # over no live member, is no equation. A site family is always present, and
+    # its budget can fall below the threshold of `degenerate_components`.
+    can_exist(k) = !all(i in dead for i in pprob.phases[k].members)
+    act_ph = active_phases !== nothing ? Int[k for k in active_phases if can_exist(k)] : Int[
             k for (k, ph) in pairs(pprob.phases)
-            if ph.always_present || sum(x[i] for i in ph.members) > floor
+            if can_exist(k) && (ph.always_present || sum(x[i] for i in ph.members) > floor)
         ]
     active = active !== nothing ? active : [
             i for i in pprob.idx_bounded if !(i in dead) && (x[i] > floor || i in pprob.always_active)
