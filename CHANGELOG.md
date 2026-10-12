@@ -19,11 +19,10 @@ A patch release: one defect of `dual_newton_tangent` fixed. No answer of
   tangent now leaves it out as well, whether it infers the active phases or
   the caller names them: its amounts have no derivative. ChemistryLab reaches
   the tangent through the derivatives of every equilibrium it lifts, the
-  Jacobian of a kinetic step among them; a site family carried by a host
-  seeded at 1e-12 mol failed there at the first step, and seeding the host at
-  1e-6 mol was the workaround. Skipping the phase inside `_implicit_system`
-  instead would have read an unset entry into the system: a wrong derivative
-  in place of an error. Wherever the filter acts the old code raised or
+  Jacobian of a kinetic step among them, where a site family carried by a host
+  seeded at 1e-12 mol raised at the first step. Skipping the phase inside
+  `_implicit_system` instead would have read an unset entry into the system: a
+  wrong derivative in place of an error. Wherever the filter acts the old code raised or
   produced `-Inf`, so no result that was right changes.
 
 ## v0.8.4 — less work per trial step, and what is original said
