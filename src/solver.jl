@@ -76,9 +76,7 @@ function solve!(
     # matter to leave the start visibly infeasible. `_initialise_feasible!` solves
     # for the basic amounts given the others, so it is exact and there is nothing
     # left to clamp afterwards.
-    @inbounds for i in eachindex(n)
-        n[i] = max(n[i], prob.lb[i] + eps(T))
-    end
+    _lift_above_bounds!(n, prob.lb)
     ew0 = prob.A * n .- prob.b
     if maximum(abs, ew0) > sqrt(opts.tol)
         _initialise_feasible!(n, prob, can)
@@ -420,6 +418,15 @@ end
 
 # ── Internal helpers ──────────────────────────────────────────────────────────
 
+# Every amount strictly above its lower bound, by one ulp of its type: the
+# barrier and the logarithms of the Hessian are undefined on the bound itself.
+function _lift_above_bounds!(n::AbstractVector{T}, lb) where {T}
+    @inbounds for i in eachindex(n, lb)
+        n[i] = max(n[i], lb[i] + eps(T))
+    end
+    return n
+end
+
 """
     _make_initial_state(prob, opts, u0, y0) -> OptimaState
 
@@ -469,9 +476,7 @@ function _default_initial_n(prob::OptimaProblem{T}) where {T}
         end
     end
     # Ensure strict positivity
-    @inbounds for i in eachindex(n0)
-        n0[i] = max(n0[i], prob.lb[i] + eps(T))
-    end
+    _lift_above_bounds!(n0, prob.lb)
     return n0
 end
 
@@ -595,13 +600,7 @@ function _initialise_feasible!(
     # and giving that answer to a caller who supplied a good guess throws the
     # guess away.
     AAT0 = prob.A * prob.A'
-    dmax = one(T)
-    @inbounds for i in axes(AAT0, 1)
-        dmax = max(dmax, AAT0[i, i])
-    end
-    @inbounds for i in axes(AAT0, 1)
-        AAT0[i, i] += dmax * T(1.0e-14)
-    end
+    _regularize_diagonal!(AAT0)
     # Factorized once: `AAT0 \ ew` factorizes it again at every call. What `\`
     # does with a square matrix is kept exactly — a triangular one solved as it
     # stands, any other by its LU — so that the iterates do not move by a bit.
@@ -610,18 +609,14 @@ function _initialise_feasible!(
         ew = prob.A * n .- prob.b
         maximum(abs, ew) <= tol && return n
         n .-= prob.A' * (AAT0_fact \ ew)
-        @inbounds for i in eachindex(n)
-            n[i] = max(n[i], prob.lb[i] + eps(T))
-        end
+        _lift_above_bounds!(n, prob.lb)
     end
     maximum(abs, prob.A * n .- prob.b) <= sqrt(eps(T)) * scale0 && return n
 
     # Strict interiority is part of the contract: this point is handed to a
     # barrier method, and a variable sitting exactly on its bound gives `α = 0`
     # on the first negative step component.
-    @inbounds for i in eachindex(n)
-        n[i] = max(n[i], prob.lb[i] + eps(T))
-    end
+    _lift_above_bounds!(n, prob.lb)
 
     # Everything below RECONSTRUCTS the composition, which is what a cold start
     # needs. The least-disturbance route above has already been tried and did not
@@ -703,13 +698,7 @@ function _project_alternating!(
         n::AbstractVector{T}, prob::OptimaProblem{T}; maxit::Int, tol::T,
     ) where {T}
     AAT = prob.A * prob.A'
-    diag_max = one(T)
-    @inbounds for i in axes(AAT, 1)
-        diag_max = max(diag_max, AAT[i, i])
-    end
-    @inbounds for i in axes(AAT, 1)
-        AAT[i, i] += diag_max * T(1.0e-14)
-    end
+    _regularize_diagonal!(AAT)
     F = LinearAlgebra.cholesky(LinearAlgebra.Symmetric(AAT); check = false)
     solve_aat = LinearAlgebra.issuccess(F) ? (r -> F \ r) : (r -> AAT \ r)
 
@@ -721,18 +710,14 @@ function _project_alternating!(
         # this routine exists to rule out. That point then reaches the barrier,
         # where `log(n)` of a non-positive amount is `NaN`, and the solve is
         # lost with nothing in the trace pointing back here.
-        @inbounds for i in eachindex(n)
-            n[i] = max(n[i], prob.lb[i] + eps(T))
-        end
+        _lift_above_bounds!(n, prob.lb)
         ew = prob.A * n .- prob.b
         res = maximum(abs, ew)
         res <= tol && break
         res > prev * T(0.999) && break        # stalled: the sets barely overlap here
         prev = res
         n .-= prob.A' * solve_aat(ew)
-        @inbounds for i in eachindex(n)
-            n[i] = max(n[i], prob.lb[i] + eps(T))
-        end
+        _lift_above_bounds!(n, prob.lb)
     end
     return n
 end

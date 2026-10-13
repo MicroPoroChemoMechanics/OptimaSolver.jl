@@ -48,6 +48,22 @@ mutable struct NewtonStep{T <: Real}
     AoverH::Matrix{T}     # A ./ h'  (m × ns) — reusable buffer
 end
 
+
+# A Tikhonov shift of the diagonal by 1e-14 of its largest entry (at least 1):
+# what keeps a Gram matrix with an absent species' zero row factorizable,
+# without moving a well-conditioned row.
+function _regularize_diagonal!(M::AbstractMatrix{T}) where {T}
+    dmax = one(T)
+    @inbounds for i in axes(M, 1)
+        dmax = max(dmax, M[i, i])
+    end
+    δ = dmax * T(1.0e-14)
+    @inbounds for i in axes(M, 1)
+        M[i, i] += δ
+    end
+    return M
+end
+
 function NewtonStep(ns::Int, m::Int, T::Type = Float64)
     return NewtonStep{T}(
         zeros(T, m, m),
@@ -99,15 +115,7 @@ function compute_step!(
     # only absent species (e.g. Na⁺ row at V=0 in a titration: all sodium
     # species are absent, so S[Na⁺,Na⁺] ≈ (scale)²/h ≈ 10⁻²⁷ → zero pivot).
     # δ ≪ well-conditioned diagonals, so it does not affect accurate rows.
-    T_s = eltype(ws.S)
-    diag_max = one(T_s)
-    @inbounds for i in 1:m
-        diag_max = max(diag_max, ws.S[i, i])
-    end
-    δ_reg = diag_max * T_s(1.0e-14)
-    @inbounds for i in 1:m
-        ws.S[i, i] += δ_reg
-    end
+    _regularize_diagonal!(ws.S)
     # Equilibration scaling: scale row/col i by 1/sqrt(S[i,i]) so all
     # diagonal entries become 1.  This reduces the condition number from
     # O(1e7) near equivalence points (where, e.g., S[H+,H+]≈2e-7 while
@@ -236,7 +244,7 @@ function compute_step_nullspace!(
     nb, nn = length(jb), length(jn)
 
     # Particular solution: dnₚ[jn] = 0, dnₚ[jb] = B⁻¹(−ew).
-    dnp_b = can.BLU \ collect(-ew)
+    dnp_b = can.BLU \ (-ew)
 
     # Reduced Hessian Zᵀ H Z = Rᵀ diag(h_b) R + diag(h_n).
     hb = @view h[jb]

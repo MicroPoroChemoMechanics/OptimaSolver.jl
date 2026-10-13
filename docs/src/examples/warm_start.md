@@ -56,8 +56,8 @@ Pass a previous [`OptimaResult`](@ref) as the `u0` keyword argument:
 using OptimaSolver
 
 μ⁰ = [0.0, 1.0, 2.0]
-G(n, p)    = sum(n[i] * (p.μ⁰[i] + log(n[i])) for i in eachindex(n))
-∇G!(g,n,p) = for i in eachindex(n); g[i] = p.μ⁰[i] + log(n[i]) + 1; end
+G(n, p)      = sum(n .* (p.μ⁰ .+ log.(n)))
+∇G!(g, n, p) = g .= p.μ⁰ .+ log.(n) .+ 1
 A = ones(1, 3)
 b = [1.0]
 opts = OptimaOptions(tol=1e-12)
@@ -101,7 +101,7 @@ can = Canonicalizer(A)   # fixed A, build QR + LU once
 # A placeholder, not thermodynamics: the subject here is warm-starting.
 μ⁰_at_temperature(T_K) = μ⁰ .* (298.15 / T_K)
 
-results = OptimaResult[]
+results = OptimaResult{Float64}[]
 prev = nothing
 
 for T_K in range(298.15, 400.0; step=5.0)

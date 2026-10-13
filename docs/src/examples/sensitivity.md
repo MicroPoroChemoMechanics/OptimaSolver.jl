@@ -22,8 +22,8 @@ already-factored Schur complement $S = A H^{-1} A^\top$).
 using OptimaSolver
 
 μ⁰ = [0.0, 1.0, 2.0]
-G(n, p)    = sum(n[i] * (p.μ⁰[i] + log(n[i])) for i in eachindex(n))
-∇G!(g,n,p) = for i in eachindex(n); g[i] = p.μ⁰[i] + log(n[i]) + 1; end
+G(n, p)      = sum(n .* (p.μ⁰ .+ log.(n)))
+∇G!(g, n, p) = g .= p.μ⁰ .+ log.(n) .+ 1
 A = ones(1, 3)
 b = [1.0]
 
@@ -137,7 +137,7 @@ jac_ad = ForwardDiff.jacobian(
     μ⁰,
 )
 
-# Should agree with sens.∂n_∂μ0 (modulo sign — IFT gives ∂n*/∂(μ⁰/RT), AD gives ∂n*/∂μ⁰)
+# The same derivative ∂n*/∂μ⁰ as the implicit-function result sens.∂n_∂μ0
 println(maximum(abs, jac_ad .- sens.∂n_∂μ0))   # < 1e-5
 ```
 ```

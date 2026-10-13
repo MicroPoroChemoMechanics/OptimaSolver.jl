@@ -4,6 +4,7 @@ using OptimaSolver
 import OptimaSolver: solve!          # solve! is not exported; import explicitly for tests
 using LinearAlgebra
 using ForwardDiff
+using SparseArrays
 import SciMLBase
 
 """

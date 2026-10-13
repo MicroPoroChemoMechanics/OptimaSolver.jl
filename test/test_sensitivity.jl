@@ -7,12 +7,7 @@
         return sum(n[i] * (μ0[i] + log(n[i])) for i in eachindex(n))
     end
 
-    function ∇G!(grad, n, p)
-        μ0 = p.μ⁰
-        for i in eachindex(n)
-            grad[i] = μ0[i] + log(n[i]) + 1
-        end
-    end
+    ∇G!(grad, n, p) = grad .= p.μ⁰ .+ log.(n) .+ 1
 
     A = ones(1, 3)
     b = [1.0]

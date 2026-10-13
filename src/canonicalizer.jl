@@ -55,6 +55,9 @@ Uses QR with column pivoting to identify m linearly independent columns
 function Canonicalizer(A::AbstractMatrix{T}; tol::Float64 = 1.0e-12) where {T <: Real}
     m, ns = size(A)
     @assert m <= ns "A must have more columns than rows (m=$m, ns=$ns)"
+    # One dense copy, whatever `A` is (sparse, a view, an adjoint): the pivoted QR
+    # and the LU below are dense factorizations, and the struct keeps its own copy.
+    Ad = Matrix{T}(A)
 
     # The basis is chosen on a COLUMN-EQUILIBRATED copy, and this is not a
     # refinement — without it the factorization is wrong on exactly the problems
@@ -72,12 +75,8 @@ function Canonicalizer(A::AbstractMatrix{T}; tol::Float64 = 1.0e-12) where {T <:
     #
     # Equilibrating first makes the test scale-invariant, which is what it was
     # always meant to be.
-    colnorm = [LinearAlgebra.norm(@view A[:, j]) for j in 1:ns]
-    Aeq = similar(Matrix{T}(A))
-    @inbounds for j in 1:ns
-        c = colnorm[j] > 0 ? colnorm[j] : one(T)
-        Aeq[:, j] .= @view(A[:, j]) ./ c
-    end
+    colnorm = LinearAlgebra.norm.(eachcol(Ad))
+    Aeq = Ad ./ transpose(ifelse.(colnorm .> 0, colnorm, one(T)))
 
     # The rank is read off the equilibrated matrix, the basis ORDER off the
     # matrix as given. The two questions are different and each needs its own
@@ -103,7 +102,7 @@ function Canonicalizer(A::AbstractMatrix{T}; tol::Float64 = 1.0e-12) where {T <:
         d = abs.(diag(F.R))
         max(count(x -> x > tol * d[1], d), 1)
     end
-    Q = LinearAlgebra.qr(Matrix{T}(A), LinearAlgebra.ColumnNorm()).p
+    Q = LinearAlgebra.qr(Ad, LinearAlgebra.ColumnNorm()).p
 
     # A genuinely rank-deficient A means a conservation law that is a combination
     # of the others. It is not an error in itself — the primal solution is
@@ -121,20 +120,23 @@ function Canonicalizer(A::AbstractMatrix{T}; tol::Float64 = 1.0e-12) where {T <:
     jb = sort(Q[1:rank_A])           # basic variable indices (sorted for stability)
     jn = sort(setdiff(1:ns, jb))     # non-basic variable indices
 
-    B = A[:, jb]
+    B = Ad[:, jb]
     BLU = LinearAlgebra.lu(B)
 
     # Reduced-cost matrix R = B⁻¹ N
-    N = A[:, jn]
-    R_mat = BLU \ Matrix{T}(N)
+    R_mat = BLU \ Ad[:, jn]
 
     Qvec = vcat(jb, jn)              # full permutation: basics first, then non-basics
     Qinv = invperm(Qvec)
 
     return Canonicalizer{T}(
-        Matrix{T}(A), Qvec, Qinv, jb, jn, Matrix{T}(B), BLU, R_mat, ns, m, rank_A,
+        Ad, Qvec, Qinv, jb, jn, B, BLU, R_mat, ns, m, rank_A,
     )
 end
+
+# An integer conservation matrix — the natural way to write one — is factorized in
+# floating point: an LU of integers does not exist, and the equilibration divides.
+Canonicalizer(A::AbstractMatrix{<:Integer}; kwargs...) = Canonicalizer(float(A); kwargs...)
 
 """
     refactorize(c::Canonicalizer) -> Canonicalizer
@@ -145,8 +147,7 @@ not modified.
 """
 function refactorize(c::Canonicalizer{T}) where {T}
     BLU = LinearAlgebra.lu(c.B)
-    N = c.A[:, c.jn]
-    R_mat = BLU \ Matrix{T}(N)
+    R_mat = BLU \ c.A[:, c.jn]
     return Canonicalizer{T}(c.A, c.Q, c.Qinv, c.jb, c.jn, c.B, BLU, R_mat, c.ns, c.m, c.rank_A)
 end
 

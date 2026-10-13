@@ -1,12 +1,7 @@
 @testset "Pathological inputs and diagnostics" begin
     μ⁰ = [0.0, 1.0, 2.0]
     G(n, p) = sum(n[i] * (p.μ⁰[i] + log(n[i])) for i in eachindex(n))
-    function ∇G!(grad, n, p)
-        for i in eachindex(n)
-            grad[i] = p.μ⁰[i] + log(n[i]) + 1
-        end
-        return nothing
-    end
+    ∇G!(grad, n, p) = grad .= p.μ⁰ .+ log.(n) .+ 1
     A = ones(1, 3)
     b = [1.0]
     prob = OptimaProblem(A, b, G, ∇G!; lb = fill(1.0e-16, 3), p = (μ⁰ = μ⁰,))
