@@ -1,5 +1,48 @@
 # Changelog
 
+## v0.8.6 — the conservation matrix as it is naturally written
+
+A patch release: `Canonicalizer` accepts integer and sparse conservation
+matrices, the documentation states the right default for `barrier_decay`, and
+code that was written several times is written once. On the cement case of
+`benchmark/`, every amount, the pH, the stationarity and the balance are
+identical to the bit to 0.8.5, cold, warm and from a neighboring budget.
+
+### Fixed
+
+- **`Canonicalizer` refused an integer conservation matrix**, the natural way
+  to write one (`[2 1 1 2; 1 0 1 0]`): the column equilibration divided into an
+  integer copy and threw an `InexactError`, and an LU of integers does not
+  exist. An integer matrix is now factorized in floating point.
+- **`Canonicalizer` refused a sparse conservation matrix.** The basic block
+  `A[:, jb]` stayed sparse, its LU was a sparse factorization, and the
+  constructor could not store it. The pivoted QR and the LU are dense
+  factorizations; `A` is now copied once to a dense matrix, whatever its type,
+  and every step reads that copy. On a dense matrix this removes two of the
+  three copies the constructor made, and `refactorize` one of its two.
+- **The documentation gave 0.1 as the default of `barrier_decay`**, in the
+  options table and in the SciML example; it is 0.2. The sensitivity example
+  compared two equal derivatives "modulo sign" while checking their
+  difference; the comment now says what is compared.
+
+### Changed
+
+- The KKT residual formed `Aᵀy` twice per evaluation; `∇f + Aᵀy` is formed
+  once and reused, with the same association, hence the same bits.
+- The ratio test of `lp_start` started from a `Float64` `Inf` whatever the
+  element type of the tableau, a type instability on `Float32` or dual
+  tableaux; its constants now take that type.
+- The lift of the amounts above their lower bounds, written seven times, and
+  the Tikhonov shift of a Gram diagonal, written three times, are each one
+  internal function, with the operations of the copies they replace.
+
+### Tests and documentation
+
+- Tests of an integer and of a sparse conservation matrix.
+- The ideal-Gibbs fixture of the documentation and of six test files is written
+  as broadcasts, `G(n, p) = sum(n .* (p.μ⁰ .+ log.(n)))`, instead of index
+  loops.
+
 ## v0.8.5 — site families of very small budgets
 
 A patch release: two defects fixed, both met by surface site families whose
