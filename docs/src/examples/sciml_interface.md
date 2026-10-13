@@ -45,7 +45,7 @@ alg = OptimaOptimizer(;
     warm_start     = true,   # cache and reuse last converged result
     verbose        = false,  # print iteration log
     barrier_init   = 1e-4,   # initial barrier weight μ₀
-    barrier_decay  = 0.1,    # μ ← 0.1 μ per outer step
+    barrier_decay  = 0.2,    # μ ← 0.2 μ per outer step
     use_fd_hessian = true,   # correct for mixed solid/aqueous (default true here)
 )
 ```

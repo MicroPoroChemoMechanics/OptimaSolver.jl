@@ -14,8 +14,8 @@ using LinearAlgebra
 
 μ⁰ = [0.0, 1.0, 2.0]
 
-G(n, p)    = sum(n[i] * (p.μ⁰[i] + log(n[i])) for i in eachindex(n))
-∇G!(g,n,p) = for i in eachindex(n); g[i] = p.μ⁰[i] + log(n[i]) + 1; end
+G(n, p)      = sum(n .* (p.μ⁰ .+ log.(n)))
+∇G!(g, n, p) = g .= p.μ⁰ .+ log.(n) .+ 1
 
 A = ones(1, 3)
 b = [1.0]
@@ -46,10 +46,7 @@ b2 = [4.0, 1.0]        # 4 units of X, 1 unit of Y
 
 μ⁰4 = [0.0, 0.5, 1.0, 1.5]
 
-G4(n, p)     = sum(n[i] * (p.μ⁰[i] + log(n[i])) for i in eachindex(n))
-∇G4!(g, n, p) = for i in eachindex(n); g[i] = p.μ⁰[i] + log(n[i]) + 1; end
-
-prob4 = OptimaProblem(A2, b2, G4, ∇G4!;
+prob4 = OptimaProblem(A2, b2, G, ∇G!;
                       lb = fill(1e-16, 4),
                       p  = (μ⁰ = μ⁰4,))
 result4 = solve(prob4)
@@ -77,7 +74,7 @@ can = Canonicalizer(A2)
 # Solve at many temperatures, reusing the LU factorisation
 for T_K in range(298.15, 400.0; step=5.0)
     μ⁰_T = μ⁰_at_temperature(T_K)
-    prob_T = OptimaProblem(A2, b2, G4, ∇G4!;
+    prob_T = OptimaProblem(A2, b2, G, ∇G!;
                            lb = fill(1e-16, 4),
                            p  = (μ⁰ = μ⁰_T,))
     result_T = solve(prob_T, can)     # QR not repeated

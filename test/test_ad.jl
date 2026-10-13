@@ -13,11 +13,7 @@
     function G(n, p)
         return sum(n[i] * (p.μ⁰[i] + log(n[i])) for i in eachindex(n))
     end
-    function ∇G!(grad, n, p)
-        for i in eachindex(n)
-            grad[i] = p.μ⁰[i] + log(n[i]) + one(eltype(n))
-        end
-    end
+    ∇G!(grad, n, p) = grad .= p.μ⁰ .+ log.(n) .+ one(eltype(n))
 
     prob = OptimaProblem(A, b, G, ∇G!; lb = fill(1.0e-16, 3), p = (μ⁰ = μ⁰,))
 

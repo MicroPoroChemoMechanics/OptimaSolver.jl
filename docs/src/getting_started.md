@@ -44,13 +44,9 @@ using OptimaSolver
 # --- Objective and gradient ---
 μ⁰ = [0.0, 1.0, 2.0]
 
-G(n, p) = sum(n[i] * (p.μ⁰[i] + log(n[i])) for i in eachindex(n))
+G(n, p) = sum(n .* (p.μ⁰ .+ log.(n)))
 
-function ∇G!(grad, n, p)
-    for i in eachindex(n)
-        grad[i] = p.μ⁰[i] + log(n[i]) + 1
-    end
-end
+∇G!(grad, n, p) = grad .= p.μ⁰ .+ log.(n) .+ 1
 
 # --- Build problem ---
 A = ones(1, 3)    # single conservation: n₁ + n₂ + n₃ = 1
@@ -95,7 +91,7 @@ Key options in [`OptimaOptions`](@ref):
 | `max_iter` | `300` | maximum Newton iterations |
 | `verbose` | `false` | print per-iteration log |
 | `barrier_init` | `1e-4` | initial barrier weight $\mu_0$ |
-| `barrier_decay` | `0.1` | $\mu \leftarrow 0.1\,\mu$ each outer step |
+| `barrier_decay` | `0.2` | $\mu \leftarrow 0.2\,\mu$ each outer step |
 | `use_fd_hessian` | `false` | exact Hessian diagonal, by forward mode |
 
 ### When to use `use_fd_hessian = true`
