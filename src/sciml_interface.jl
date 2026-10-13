@@ -457,10 +457,7 @@ function _lift_cold_start(u::Vector{T}, A::Matrix{T}, b::Vector{T}, lb::Vector{T
     end
 
     # ── Re-clamp ──────────────────────────────────────────────────────────────
-    for k in 1:ns
-        u[k] = max(u[k], lb[k] + eps(T))
-    end
-    return u
+    return _lift_above_bounds!(u, lb)
 end
 
 # ── Constraint extraction helper ─────────────────────────────────────────────

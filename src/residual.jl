@@ -89,8 +89,9 @@ function kkt_residual(
 
     s = n .- prob.lb           # slack = n - lb  (all > 0 at interior point)
 
-    # Optimality: ∇f + Aᵀy - μ/s
-    ex = grad_f .+ prob.A' * y .- μ ./ s
+    # Optimality: ∇f + Aᵀy - μ/s, with gL = ∇f + Aᵀy the gradient of the Lagrangian
+    gL = grad_f .+ transpose(prob.A) * y
+    ex = gL .- μ ./ s
 
     # Feasibility: An - b
     ew = prob.A * n .- prob.b
@@ -112,7 +113,6 @@ function kkt_residual(
     # Multiplying stationarity through by sᵢ gives the equivalent condition
     # sᵢ(∇f + Aᵀy)ᵢ − μ = 0, which is bounded, vanishes at the optimum, and is
     # the complementarity measure Ipopt reports (Wächter & Biegler 2006, §3.5).
-    gL = grad_f .+ prob.A' * y
     err_opt = zero(Tv)
     @inbounds for i in eachindex(gL)
         v = abs(s[i] * gL[i] - μ)

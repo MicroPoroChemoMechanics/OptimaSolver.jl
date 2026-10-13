@@ -102,7 +102,7 @@ function _lp_run!(T::AbstractMatrix, basis, ncols, itmax, tol, col)
             end
         end
         c == 0 && return (:optimal, it - 1)
-        r, best = 0, Inf
+        r, best = 0, eltype(T)(Inf)
         @inbounds for i in 1:nrows
             T[i, c] > tol || continue
             ratio = T[i, end] / T[i, c]
@@ -236,7 +236,7 @@ function lp_start(
         f = T2[end, bi]
         iszero(f) || (@views T2[end, :] .-= f .* T2[i, :])
     end
-    st2, it2 = _lp_run!(T2, basis, na, itmax, ptol * max(1.0, _inf_norm(gf)), col)
+    st2, it2 = _lp_run!(T2, basis, na, itmax, ptol * max(one(F), _inf_norm(gf)), col)
     st2 === :iteration_limit && return _lp_answer(F, :iteration_limit, m, n, it1 + it2)
     st2 === :unbounded && return _lp_answer(F, :undecided, m, n, it1 + it2)
 
@@ -313,6 +313,6 @@ function _is_farkas(A, b, z, alive, tol)
     zn > 0 || return false
     Aᵀz = transpose(A) * z
     ascale = _inf_norm(A) * zn
-    bscale = max(_inf_norm(b) * zn, eps())
+    bscale = max(_inf_norm(b) * zn, eps(float(typeof(zn))))
     return all(j -> Aᵀz[j] >= -tol * ascale, alive) && dot(b, z) < -1.0e-12 * bscale
 end

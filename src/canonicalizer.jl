@@ -72,12 +72,8 @@ function Canonicalizer(A::AbstractMatrix{T}; tol::Float64 = 1.0e-12) where {T <:
     #
     # Equilibrating first makes the test scale-invariant, which is what it was
     # always meant to be.
-    colnorm = [LinearAlgebra.norm(@view A[:, j]) for j in 1:ns]
-    Aeq = similar(Matrix{T}(A))
-    @inbounds for j in 1:ns
-        c = colnorm[j] > 0 ? colnorm[j] : one(T)
-        Aeq[:, j] .= @view(A[:, j]) ./ c
-    end
+    colnorm = LinearAlgebra.norm.(eachcol(A))
+    Aeq = A ./ transpose(ifelse.(colnorm .> 0, colnorm, one(T)))
 
     # The rank is read off the equilibrated matrix, the basis ORDER off the
     # matrix as given. The two questions are different and each needs its own
@@ -135,6 +131,10 @@ function Canonicalizer(A::AbstractMatrix{T}; tol::Float64 = 1.0e-12) where {T <:
         Matrix{T}(A), Qvec, Qinv, jb, jn, Matrix{T}(B), BLU, R_mat, ns, m, rank_A,
     )
 end
+
+# An integer conservation matrix — the natural way to write one — is factorized in
+# floating point: an LU of integers does not exist, and the equilibration divides.
+Canonicalizer(A::AbstractMatrix{<:Integer}; kwargs...) = Canonicalizer(float(A); kwargs...)
 
 """
     refactorize(c::Canonicalizer) -> Canonicalizer
