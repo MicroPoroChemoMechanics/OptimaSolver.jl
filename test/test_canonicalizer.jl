@@ -46,6 +46,18 @@ end
     @test eltype(can_i.R) === Float64
 end
 
+@testset "Canonicalizer — a sparse conservation matrix" begin
+    # The pivoted QR and the LU are dense factorizations: a sparse matrix is
+    # copied once to a dense one and gives the canonicalizer of that matrix.
+    A = [2.0 1.0 1.0 2.0; 1.0 0.0 1.0 0.0]
+    can_s = Canonicalizer(sparse(A))
+    can_d = Canonicalizer(A)
+    @test can_s.jb == can_d.jb && can_s.jn == can_d.jn
+    @test can_s.R == can_d.R
+    @test can_s.A isa Matrix{Float64}
+    @test OptimaSolver.refactorize(can_s).R == can_s.R
+end
+
 @testset "the basis is chosen independently of column scaling" begin
 
     # The caller scales each column by the starting value of its variable, and

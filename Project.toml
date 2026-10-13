@@ -17,13 +17,15 @@ ForwardDiff = "1"
 # them all the same, and an explicit bound is one less thing to wonder about.
 LinearAlgebra = "1"
 SciMLBase = "2, 3"
+SparseArrays = "1"
 Test = "1"
 julia = "1.12"
 
 [extras]
 Aqua = "4c88cf16-eb10-579e-8560-4a9242c79595"
 DynamicQuantities = "06fc5a27-2a28-4c7c-a15d-362465fb6821"
+SparseArrays = "2f01184e-e22b-5df5-ae63-d93ebab69eaf"
 Test = "8dfed614-e22c-5e08-85e1-65c5234f0b40"
 
 [targets]
-test = ["Aqua", "Test", "DynamicQuantities"]
+test = ["Aqua", "Test", "DynamicQuantities", "SparseArrays"]
