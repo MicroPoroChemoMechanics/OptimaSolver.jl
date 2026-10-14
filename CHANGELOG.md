@@ -1,5 +1,26 @@
 # Changelog
 
+## Unreleased
+
+### Fixed
+
+- **A phase made of a trace could not be held present.** The active-set search
+  compared amounts with fixed numbers of moles: a pure phase below `si_tol`
+  (1e-8 mol) was dropped as vanishing, one under 1e-6 mol was not seeded
+  present, and an entrant was admitted at 1e-9 mol, mixing phases alike. A
+  phase that the budget limits to less than that was dropped at every round
+  and admitted again, and the search ended uncertified with the balance of its
+  element unmet. Measured on a portlandite suspension whose aluminum is a
+  1e-9 mol seed of ettringite (ChemistryLab, CEMDATA18): the ettringite ended
+  at 4.9e-9 mol for at most 1e-9, the aluminum row 7.9e-9 mol out and the
+  gypsum 13 % off; from a seed of 1e-6 mol the same solve certified. Each
+  amount is now judged on the scale of what the budget lets the variable hold,
+  `min(1, max(1e-9, b_k/A_ki))` over the one-signed conservation rows: a
+  variable that can hold a mole or more is judged exactly as before, the
+  answers of the tests from 2e-7 mol up identical to the bit, and one made of
+  a trace on its own scale. The two-solid trace case of the tests certifies
+  where it ended with five times its budget.
+
 ## v0.8.6 — the conservation matrix as it is naturally written
 
 A patch release: `Canonicalizer` accepts integer and sparse conservation
