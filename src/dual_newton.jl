@@ -107,12 +107,14 @@ const W_MAX_RISE = 30.0
 # for the same reason.
 const PHASE_ADMISSION_SEED = 1.0e-6
 
-# The amounts above are those of a variable that can hold a mole or more. An
-# amount is otherwise judged on the scale of what the budget lets it hold
-# (`_amount_scales`), and that scale goes no lower than this: the floor the
-# solver gives an absent amount, `LP_FALLBACK_FLOOR`, then stays below every
-# threshold it is compared with.
-const AMOUNT_SCALE_FLOOR = 1.0e-9
+# The amounts above are right for a variable that can hold far more than they
+# are. One that the budget lets hold less than `AMOUNT_SCALE_REF` has them scaled
+# by what it can hold over that reference (`_amount_scales`), and the scale goes
+# no lower than `AMOUNT_SCALE_FLOOR`: the smallest amount a search compares with,
+# 1e-9 of the scale, then stays above `LP_FALLBACK_FLOOR`, the floor the solver
+# gives an absent amount.
+const AMOUNT_SCALE_REF = 1.0e-4
+const AMOUNT_SCALE_FLOOR = 1.0e-6
 
 """
     _degenerate_conservation_rows(prob, b) -> Vector{Int}
@@ -2151,22 +2153,28 @@ function _judged_residual(R, scales, off)
     return worst
 end
 
-# The scale of each variable's amount: the most the budget `b` lets it hold, up to
-# a mole and no lower than `AMOUNT_SCALE_FLOOR`. A row whose entries over the
-# variables not dead all carry one sign bounds every variable on it by
+# The scale of each variable's amount: the most the budget `b` lets it hold, over
+# `AMOUNT_SCALE_REF`, between `AMOUNT_SCALE_FLOOR` and one. A row whose entries
+# over the variables not dead all carry one sign bounds every variable on it by
 # `b_k/A_ki`, nothing else on the row being able to give back what it holds; a
-# variable no such row bounds has the scale of a mole.
+# variable no such row bounds has the scale one.
 #
 # Every amount the search compares with a fixed number — `si_tol` to say that a
 # phase is leaving, `1e-6` to seed a phase present, the amount it admits one
-# with — was a number of moles, right for a phase that can hold a mole and wrong
-# for one made of a trace. Measured on a portlandite suspension whose aluminum
-# is a 1e-9 mol seed of ettringite: the ettringite, which cannot exceed 1e-9 mol,
-# was dropped as vanishing below 1e-8 at every round and admitted again, and the
-# search ended with 4.9e-9 mol of it, the aluminum row 7.9e-9 mol out (four
-# times the row) and the gypsum wrong; from a seed of 1e-6 the same solve
-# certifies. Scaled, a phase made of a trace is judged on its own scale, and one
-# that can hold a mole is judged as before.
+# with — was a number of moles, right for a phase that can hold far more and
+# wrong for one made of a trace. Measured on a portlandite suspension whose
+# aluminum is a 1e-9 mol seed of ettringite: the ettringite, which cannot exceed
+# 1e-9 mol, was dropped as vanishing below 1e-8 at every round and admitted
+# again, and the search ended with 4.9e-9 mol of it, the aluminum row 7.9e-9 mol
+# out (four times the row) and the gypsum wrong; from a seed of 1e-6 the same
+# solve certifies. Scaled, the largest of these amounts stays a hundredth of what
+# the phase can hold.
+#
+# Only a variable that cannot hold `AMOUNT_SCALE_REF` is rescaled, so that a
+# phase which can is searched exactly as before. Scaled on what it can hold up to
+# a mole instead, every hydrate of a mixture of 0.01 mol of C3A had its
+# thresholds moved a hundredfold, and an equilibrium of it at 95 °C that
+# certified no longer did.
 function _amount_scales(prob::DualNewtonProblem, b::AbstractVector, dead)
     A = prob.A
     cap = fill(Inf, size(A, 2))
@@ -2181,7 +2189,7 @@ function _amount_scales(prob::DualNewtonProblem, b::AbstractVector, dead)
             cap[i] = min(cap[i], max(b[k] / a, 0.0))
         end
     end
-    return clamp.(cap, AMOUNT_SCALE_FLOOR, 1.0)
+    return clamp.(cap ./ AMOUNT_SCALE_REF, AMOUNT_SCALE_FLOOR, 1.0)
 end
 
 # The scale of a mixing phase's total: the largest of its members'.

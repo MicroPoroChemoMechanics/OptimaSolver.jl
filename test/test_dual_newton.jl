@@ -1219,12 +1219,14 @@ end
     # it was dropped as vanishing at every round and admitted again, and the
     # search ended uncertified with 5.5e-9 mol of it, five times what the budget
     # allows (an ettringite seed of 1e-9 mol in a portlandite suspension did the
-    # same). From 2e-7 mol up, the answer is the same to the bit as before.
+    # same). A budget of `AMOUNT_SCALE_REF` (1e-4 mol) or more leaves every scale
+    # at one, and the search as it was.
     h(x, _) = [0.0, log(max(x[2], 1.0e-300) / x[1]), 0.0, 0.0]
     A = Float64[1 0 0 0; 0 1 1 2]
     g = [0.0, 0.0, log(1.0e-11 / 55), 2 * log(1.0e-11 / 55) - 0.5]
     prob = DualNewtonProblem(A, g, h; phases = [SolutionPhase([1, 2], 1; always_present = true)], idx_bounded = [3, 4])
-    @test OptimaSolver._amount_scales(prob, [55.0, 2.0e-9], Set{Int}()) == [1.0, 2.0e-9, 2.0e-9, 1.0e-9]
+    @test OptimaSolver._amount_scales(prob, [55.0, 2.0e-9], Set{Int}()) ≈ [1.0, 2.0e-5, 2.0e-5, 1.0e-5] rtol = 1.0e-14
+    @test OptimaSolver._amount_scales(prob, [55.0, 2.0e-4], Set{Int}()) == ones(4)
     # No lower than the floor, so that an absent amount at its own floor reads absent.
     @test OptimaSolver._amount_scales(prob, [55.0, 2.0e-12], Set{Int}()) ==
         [1.0, OptimaSolver.AMOUNT_SCALE_FLOOR, OptimaSolver.AMOUNT_SCALE_FLOOR, OptimaSolver.AMOUNT_SCALE_FLOOR]

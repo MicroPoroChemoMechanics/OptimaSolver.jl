@@ -5,8 +5,8 @@
 A patch release: the active-set search judges the amount of a phase on the
 scale of what the budget lets it hold, so that a phase made of an element
 present as a trace can be held present and its element balanced. A phase that
-can hold a mole or more is judged exactly as before, and the answers of the
-tests from 2e-7 mol up are identical to the bit.
+can hold 1e-4 mol or more is judged exactly as before, the search over it
+unchanged to the bit.
 
 ### Fixed
 
@@ -21,11 +21,13 @@ tests from 2e-7 mol up are identical to the bit.
   at 4.9e-9 mol for at most 1e-9, the aluminum row 7.9e-9 mol out and the
   gypsum 14 % off; from a seed of 1e-6 mol the same solve certified. Each
   amount is now judged on the scale of what the budget lets the variable hold,
-  `min(1, max(1e-9, b_k/A_ki))` over the one-signed conservation rows: a
-  variable that can hold a mole or more is judged exactly as before, the
-  answers of the tests from 2e-7 mol up identical to the bit, and one made of
-  a trace on its own scale. The two-solid trace case of the tests certifies
-  where it ended with five times its budget.
+  relative to 1e-4 mol, `min(1, max(1e-6, b_k/(A_ki · 1e-4 mol)))` over the
+  one-signed conservation rows: a variable that can hold 1e-4 mol or more is
+  judged exactly as before, and one that cannot has its thresholds scaled in
+  proportion, the 1e-6 mol of a seed staying a hundredth of what it can hold.
+  The two-solid trace case of the tests certifies where it ended with five
+  times its budget, and a millimole-scale system, whose phases hold far more
+  than the thresholds, is searched as before.
 
 ## v0.8.6 — the conservation matrix as it is naturally written
 
