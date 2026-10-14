@@ -1,6 +1,12 @@
 # Changelog
 
-## Unreleased
+## v0.8.7 — a phase made of a trace
+
+A patch release: the active-set search judges the amount of a phase on the
+scale of what the budget lets it hold, so that a phase made of an element
+present as a trace can be held present and its element balanced. A phase that
+can hold a mole or more is judged exactly as before, and the answers of the
+tests from 2e-7 mol up are identical to the bit.
 
 ### Fixed
 
@@ -13,7 +19,7 @@
   element unmet. Measured on a portlandite suspension whose aluminum is a
   1e-9 mol seed of ettringite (ChemistryLab, CEMDATA18): the ettringite ended
   at 4.9e-9 mol for at most 1e-9, the aluminum row 7.9e-9 mol out and the
-  gypsum 13 % off; from a seed of 1e-6 mol the same solve certified. Each
+  gypsum 14 % off; from a seed of 1e-6 mol the same solve certified. Each
   amount is now judged on the scale of what the budget lets the variable hold,
   `min(1, max(1e-9, b_k/A_ki))` over the one-signed conservation rows: a
   variable that can hold a mole or more is judged exactly as before, the
