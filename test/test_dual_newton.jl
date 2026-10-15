@@ -1126,7 +1126,7 @@ end
         out = OptimaSolver._dual_newton_attempt(
             prob, b, [0.0, -log(x2 / 55.5)], [[log(55.5), log(x2)]], [1], [55.5], Int[],
             Float64[], zeros(2), Set{Int}(), Int[], 2, DualNewtonOptions(),
-            OptimaSolver._amount_scales(prob, b, Set{Int}()),
+            OptimaSolver._capacities(prob, b, Set{Int}()),
         )
         @test out.converged
         @test abs(out.x[2] - 1.0e-9) <= DualNewtonOptions().tol
@@ -1219,17 +1219,28 @@ end
     # it was dropped as vanishing at every round and admitted again, and the
     # search ended uncertified with 5.5e-9 mol of it, five times what the budget
     # allows (an ettringite seed of 1e-9 mol in a portlandite suspension did the
-    # same). A budget of `AMOUNT_SCALE_REF` (1e-4 mol) or more leaves every scale
-    # at one, and the search as it was.
+    # same). From 2e-7 mol up, nothing is rescued and the search is that of
+    # moles.
     h(x, _) = [0.0, log(max(x[2], 1.0e-300) / x[1]), 0.0, 0.0]
     A = Float64[1 0 0 0; 0 1 1 2]
     g = [0.0, 0.0, log(1.0e-11 / 55), 2 * log(1.0e-11 / 55) - 0.5]
     prob = DualNewtonProblem(A, g, h; phases = [SolutionPhase([1, 2], 1; always_present = true)], idx_bounded = [3, 4])
-    @test OptimaSolver._amount_scales(prob, [55.0, 2.0e-9], Set{Int}()) ≈ [1.0, 2.0e-5, 2.0e-5, 1.0e-5] rtol = 1.0e-14
-    @test OptimaSolver._amount_scales(prob, [55.0, 2.0e-4], Set{Int}()) == ones(4)
-    # No lower than the floor, so that an absent amount at its own floor reads absent.
-    @test OptimaSolver._amount_scales(prob, [55.0, 2.0e-12], Set{Int}()) ==
-        [1.0, OptimaSolver.AMOUNT_SCALE_FLOOR, OptimaSolver.AMOUNT_SCALE_FLOOR, OptimaSolver.AMOUNT_SCALE_FLOOR]
+    @test OptimaSolver._capacities(prob, [55.0, 2.0e-9], Set{Int}()) == [55.0, 2.0e-9, 2.0e-9, 1.0e-9]
+    # Rescued, an amount is judged on its capacity over 1e-4 mol, no lower than
+    # the floor, so that an absent amount at its own floor reads absent.
+    @test OptimaSolver._trace_scale(1.0e-9) ≈ 1.0e-5 rtol = 1.0e-14
+    @test OptimaSolver._trace_scale(1.0e-12) == OptimaSolver.AMOUNT_SCALE_FLOOR
+    @test OptimaSolver._trace_scale(Inf) == 1.0
+    # A variable that vanished is rescued once, its amount lowered to the amount
+    # it would be admitted with on its own scale; one that did not is not.
+    sc, sc_ph = ones(4), ones(1)
+    cap4, xBr, refsr = [55.0, 2.0e-9, 2.0e-9, 1.0e-9], [2.0e-9, 1.0e-9], [55.0]
+    vanished = BitVector([false, false, false, true])
+    @test OptimaSolver._rescue_traces!(sc, sc_ph, vanished, falses(1), cap4, [3, 4], xBr, [1], refsr, prob) == 1
+    @test sc ≈ [1.0, 1.0, 1.0, 1.0e-5] rtol = 1.0e-14
+    @test xBr ≈ [2.0e-9, 1.0e-14] rtol = 1.0e-14
+    @test refsr == [55.0] && sc_ph == [1.0]
+    @test OptimaSolver._rescue_traces!(sc, sc_ph, vanished, falses(1), cap4, [3, 4], xBr, [1], refsr, prob) == 0
     u_T = g[4] / 2
     for N in (2.0e-9, 2.0e-7, 2.0)
         b = [55.0, N]

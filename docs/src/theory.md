@@ -752,33 +752,45 @@ most, would otherwise rise by one step per round.
 
 ### The scale of an amount
 
-"Below `si_tol`" is a comparison of an amount with a number, and a number of
-moles is the wrong yardstick for a phase made of a trace. The amount of each
-variable is therefore judged on the scale of what the budget lets it hold,
-relative to ``c_\mathrm{ref} = 10^{-4}`` mol,
+"Below `si_tol`" compares an amount with a number of moles, and a phase made of
+a trace can never pass that test: the ettringite of a portlandite suspension
+whose aluminum is a ``10^{-9}`` mol seed holds at most ``10^{-9}`` mol. Judged
+in moles, it was dropped below ``10^{-8}`` at every round, admitted again because
+it was supersaturated, and the search ended when its active set repeated, with
+the aluminum row four times out.
+
+Such a variable shows itself by that cycle. Its capacity, the most the budget
+lets it hold,
 
 ```math
-\sigma_i = \min\!\left(1,\ \max\!\left(10^{-6},\ \frac{1}{c_\mathrm{ref}} \min_k \frac{b_k}{A_{ki}}\right)\right),
+c_i = \min_k \frac{b_k}{A_{ki}}
 ```
 
-the minimum over the conservation rows whose entries, over the variables not
-dead, carry one sign — nothing else on such a row can give back what the
-variable holds. A variable leaves when ``x_i < \texttt{si\_tol}\,\sigma_i``, a
-mixing phase on the largest ``\sigma`` of its members, and the amounts that seed a
-phase present or admit it are scaled alike. A variable that can hold
-``c_\mathrm{ref}`` or more is judged exactly as before. One that cannot has every
-threshold scaled in proportion, the largest of them, the ``10^{-6}`` mol a phase
-is seeded and admitted with, staying a hundredth of what it can hold: the
-ettringite of a portlandite suspension whose aluminum is a ``10^{-9}`` mol seed
-holds at most ``10^{-9}`` mol, and judged in moles it was dropped below
-``10^{-8}`` at every round, admitted again, and left with the aluminum row four
-times out; scaled, the solve certifies, with the gypsum where a seed of
-``10^{-6}`` mol puts it. The reference leaves alone the phases whose thresholds
-were already small against what they hold: scaled on what it can hold up to a
-mole, every hydrate of a mixture of 0.01 mol of C₃A had its thresholds moved a
-hundredfold, and an equilibrium of it at 95 °C that certified no longer did.
-The floor ``10^{-6}`` keeps every threshold above ``10^{-16}``, the amount the
-solver gives an absent variable.
+over the conservation rows whose entries, over the variables not dead, carry one
+sign, is below `si_tol`; it was dropped as vanishing; and the set the search is
+about to repeat holds it again. If the search has no solution yet at that point,
+the variable, or the mixing phase, is judged from then on on the scale
+
+```math
+\sigma_i = \min\!\left(1,\ \max\!\left(10^{-6},\ \frac{c_i}{c_\mathrm{ref}}\right)\right),
+\qquad c_\mathrm{ref} = 10^{-4}\ \text{mol}:
+```
+
+it leaves when ``x_i < \texttt{si\_tol}\,\sigma_i``, enters at
+``10^{-9}\sigma_i``, and a phase is admitted at ``10^{-6}\sigma_i`` — a
+ten-thousandth, a hundred-thousandth and a hundredth of what it can hold. The
+rescue makes the repeated set a new state of the search, which goes on, and
+nothing is rescued twice, which keeps the search finite. The suspension then
+certifies, with the gypsum where a seed of ``10^{-6}`` mol puts it. The floor
+``10^{-6}`` keeps every threshold above ``10^{-16}``, the amount the solver
+gives an absent variable.
+
+Every other search is the search in moles, to the bit. Scaling every variable
+on its capacity from the start was tried and refused: a cement given
+``10^{-9}`` mol of carbon, for its carbonate phases to be able to form, holds
+thousands of carbonate variables of that capacity, which the search rightly
+sends away for good at their first drop; kept on their own scale, they slowed
+the search and left uncertified an equilibrium that certified before.
 
 Reading that failure as the entrant's fault is what an earlier version did, and
 the consequence was silent. On a cement, ettringite and monosulphate compete for

@@ -107,12 +107,14 @@ const W_MAX_RISE = 30.0
 # for the same reason.
 const PHASE_ADMISSION_SEED = 1.0e-6
 
-# The amounts above are right for a variable that can hold far more than they
-# are. One that the budget lets hold less than `AMOUNT_SCALE_REF` has them scaled
-# by what it can hold over that reference (`_amount_scales`), and the scale goes
-# no lower than `AMOUNT_SCALE_FLOOR`: the smallest amount a search compares with,
-# 1e-9 of the scale, then stays above `LP_FALLBACK_FLOOR`, the floor the solver
-# gives an absent amount.
+# The amounts above are numbers of moles, right for a variable that can hold more
+# than they are. A variable that cannot, and that the search keeps sending away
+# and taking back, is judged instead on the scale of what it can hold
+# (`_rescue_traces!`): its capacity over `AMOUNT_SCALE_REF`, so that it leaves
+# below 1e-4 of its capacity, enters at 1e-5 of it, and a phase is admitted at
+# 1e-2 of it. The scale goes no lower than `AMOUNT_SCALE_FLOOR`, which keeps the
+# smallest amount a search compares with, 1e-9 of the scale, above
+# `LP_FALLBACK_FLOOR`, the floor the solver gives an absent amount.
 const AMOUNT_SCALE_REF = 1.0e-4
 const AMOUNT_SCALE_FLOOR = 1.0e-6
 
@@ -1704,7 +1706,7 @@ function dual_newton_solve(
 
     degenerate = _degenerate_conservation_rows(prob, bv)
     dead = _dead_variables(prob.A, degenerate)
-    scale = _amount_scales(prob, bv, dead)
+    cap = _capacities(prob, bv, dead)
 
 
     # One log-vector per phase, whether or not the phase is active: an inactive
@@ -1730,7 +1732,7 @@ function dual_newton_solve(
     act_ph = Int[
         k for (k, ph) in pairs(prob.phases)
             if !all(i in dead for i in ph.members) &&
-            (ph.always_present || sum(n0[i] for i in ph.members) > 1.0e-9 * _phase_scale(scale, ph))
+            (ph.always_present || sum(n0[i] for i in ph.members) > 1.0e-9)
     ]
     isempty(act_ph) && (act_ph = Int[1])
     # `refs[a]` is the reference member's amount for a phase with a solvent, and
@@ -1747,11 +1749,11 @@ function dual_newton_solve(
     refs = Float64[
         let ph = prob.phases[k], total = sum(n0[i] for i in ph.members)
             if !ph.mole_fraction
-                max(n0[ph.members[ph.j_ref]], PHASE_ADMISSION_SEED * _phase_scale(scale, ph))
+                max(n0[ph.members[ph.j_ref]], PHASE_ADMISSION_SEED)
             elseif ph.always_present
                 max(total, floatmin(Float64))
             else
-                max(total, PHASE_ADMISSION_SEED * _phase_scale(scale, ph))
+                max(total, PHASE_ADMISSION_SEED)
             end
         end for k in act_ph
     ]
@@ -1785,7 +1787,7 @@ function dual_newton_solve(
     let cand0 = sort(
             [
                 i for i in prob.idx_bounded
-                    if n0[i] > 1.0e-6 * scale[i] && !(i in dead) && !(i in prob.always_active)
+                    if n0[i] > 1.0e-6 && !(i in dead) && !(i in prob.always_active)
             ];
             by = i -> -n0[i],
         )
@@ -1881,7 +1883,7 @@ function dual_newton_solve(
     best = nothing
     for y0 in y_starts
         out = _dual_newton_attempt(
-            prob, bv, y0, W, act_ph, refs, active, xB, x_buf, dead, degenerate, m, opts, scale,
+            prob, bv, y0, W, act_ph, refs, active, xB, x_buf, dead, degenerate, m, opts, cap,
         )
         if best === nothing || out.kkt_error < best.kkt_error
             best = out
@@ -2153,29 +2155,11 @@ function _judged_residual(R, scales, off)
     return worst
 end
 
-# The scale of each variable's amount: the most the budget `b` lets it hold, over
-# `AMOUNT_SCALE_REF`, between `AMOUNT_SCALE_FLOOR` and one. A row whose entries
-# over the variables not dead all carry one sign bounds every variable on it by
-# `b_k/A_ki`, nothing else on the row being able to give back what it holds; a
-# variable no such row bounds has the scale one.
-#
-# Every amount the search compares with a fixed number — `si_tol` to say that a
-# phase is leaving, `1e-6` to seed a phase present, the amount it admits one
-# with — was a number of moles, right for a phase that can hold far more and
-# wrong for one made of a trace. Measured on a portlandite suspension whose
-# aluminum is a 1e-9 mol seed of ettringite: the ettringite, which cannot exceed
-# 1e-9 mol, was dropped as vanishing below 1e-8 at every round and admitted
-# again, and the search ended with 4.9e-9 mol of it, the aluminum row 7.9e-9 mol
-# out (four times the row) and the gypsum wrong; from a seed of 1e-6 the same
-# solve certifies. Scaled, the largest of these amounts stays a hundredth of what
-# the phase can hold.
-#
-# Only a variable that cannot hold `AMOUNT_SCALE_REF` is rescaled, so that a
-# phase which can is searched exactly as before. Scaled on what it can hold up to
-# a mole instead, every hydrate of a mixture of 0.01 mol of C3A had its
-# thresholds moved a hundredfold, and an equilibrium of it at 95 °C that
-# certified no longer did.
-function _amount_scales(prob::DualNewtonProblem, b::AbstractVector, dead)
+# What the budget `b` lets each variable hold: a row whose entries over the
+# variables not dead all carry one sign bounds every variable on it by
+# `b_k/A_ki`, nothing else on the row being able to give back what it holds. A
+# variable no such row bounds has an infinite capacity.
+function _capacities(prob::DualNewtonProblem, b::AbstractVector, dead)
     A = prob.A
     cap = fill(Inf, size(A, 2))
     for k in prob.conservation_rows
@@ -2189,11 +2173,51 @@ function _amount_scales(prob::DualNewtonProblem, b::AbstractVector, dead)
             cap[i] = min(cap[i], max(b[k] / a, 0.0))
         end
     end
-    return clamp.(cap ./ AMOUNT_SCALE_REF, AMOUNT_SCALE_FLOOR, 1.0)
+    return cap
 end
 
-# The scale of a mixing phase's total: the largest of its members'.
-_phase_scale(scale, ph) = maximum(i -> scale[i], ph.members)
+# The capacity of a mixing phase's total: the largest of its members'.
+_phase_capacity(cap, ph) = maximum(i -> cap[i], ph.members)
+
+# The scale on which an amount of capacity `c` is judged once rescued.
+_trace_scale(c) = clamp(c / AMOUNT_SCALE_REF, AMOUNT_SCALE_FLOOR, 1.0)
+
+# A variable the search dropped as vanishing although it could never reach the
+# threshold it was dropped below (`vanished`), present again in the set the
+# search is about to repeat, is the cycle of a phase made of a trace: admitted
+# because it is supersaturated, dropped because it holds less than `si_tol`,
+# admitted again. Measured on a portlandite suspension whose aluminum is a
+# 1e-9 mol seed of ettringite: the ettringite, which cannot exceed 1e-9 mol,
+# went round so until the set repeated, and the search ended with 4.9e-9 mol of
+# it and the aluminum row 7.9e-9 mol out (four times the row); from a seed of
+# 1e-6 the same solve certifies. Each such variable, and each such mixing phase,
+# is given from then on the scale of what it can hold, its present amount
+# brought down to the amount it would be admitted with on that scale; the
+# number rescued is returned, nothing being rescued twice.
+#
+# Only a repeat that would end the search unconverged rescues anything, so a
+# search that the thresholds in moles lead to a solution is unchanged to the
+# bit. Scaling every variable on its capacity from the start was tried and
+# refused: a cement given 1e-9 mol of carbon, for its carbonate phases to be
+# able to form, holds thousands of carbonate variables of that capacity, rightly
+# sent away for good at their first drop, and kept on their own scale they
+# slowed the search and left uncertified an equilibrium that certified before.
+function _rescue_traces!(scale, scale_ph, vanished, vanished_ph, cap, active, xB, act_ph, refs, prob)
+    n = 0
+    for (j, i) in enumerate(active)
+        (vanished[i] && isone(scale[i])) || continue
+        scale[i] = _trace_scale(cap[i])
+        xB[j] = min(xB[j], 1.0e-9 * scale[i])
+        n += 1
+    end
+    for (a, k) in enumerate(act_ph)
+        (vanished_ph[k] && isone(scale_ph[k])) || continue
+        scale_ph[k] = _trace_scale(_phase_capacity(cap, prob.phases[k]))
+        refs[a] = min(refs[a], PHASE_ADMISSION_SEED * scale_ph[k])
+        n += 1
+    end
+    return n
+end
 
 # A basis exchange: the first incumbent among the positions `candidates`, in
 # order of increasing amount, whose removal lets the active set support a
@@ -2207,7 +2231,7 @@ function _exchange_incumbent(prob, active, xB, act_ph, candidates)
 end
 
 """
-    _newton_on_active_set!(W, prob, v, xB, act_ph, active, bv, x_buf, dead, degenerate, m, opts, scale)
+    _newton_on_active_set!(W, prob, v, xB, act_ph, active, bv, x_buf, dead, degenerate, m, opts, scale, scale_ph)
         -> (v, inner_ok)
 
 The Newton iteration of the outer system on one active set, from `v`: the
@@ -2216,7 +2240,7 @@ has converged (the swept one elsewhere), the step capped, and the two-pass
 line search. `W`, the log-compositions of the phases, is updated in place.
 Returns the last accepted `v` and whether the residual met `opts.tol`.
 """
-function _newton_on_active_set!(W, prob, v, xB, act_ph, active, bv, x_buf, dead, degenerate, m, opts, scale)
+function _newton_on_active_set!(W, prob, v, xB, act_ph, active, bv, x_buf, dead, degenerate, m, opts, scale, scale_ph)
     nph = length(act_ph)
     na = length(active)
     nq = prob.nq
@@ -2456,7 +2480,7 @@ function _newton_on_active_set!(W, prob, v, xB, act_ph, active, bv, x_buf, dead,
         let free = [j for j in 1:na if !(active[j] in prob.always_active)]
             _bounded_vanishing(xB, active, free, opts.si_tol, scale) && break
         end
-        _phase_vanishing(prob, act_ph, v, opts.si_tol, scale) && break
+        _phase_vanishing(prob, act_ph, v, opts.si_tol, scale_ph) && break
     end
     return v, inner_ok
 end
@@ -2475,10 +2499,10 @@ _bounded_vanishing(xB, active, free, si_tol, scale) = any(j -> xB[j] < si_tol * 
 # released a pure phase the answer needed, and the search ended on a set it had
 # seen, its balance unmet. Measured on a family started at 1e-16 mol, every
 # budget from 1e-9 to 1e-5 mol failed so.
-function _phase_vanishing(prob, act_ph, v, si_tol, scale)
+function _phase_vanishing(prob, act_ph, v, si_tol, scale_ph)
     for (a, k) in enumerate(act_ph)
         prob.phases[k].always_present && continue
-        v[a] < log(si_tol * _phase_scale(scale, prob.phases[k])) && return true
+        v[a] < log(si_tol * scale_ph[k]) && return true
     end
     return false
 end
@@ -2490,7 +2514,7 @@ One run of the two-level Newton from a given set of multipliers. Called once per
 starting point by [`dual_newton_solve`](@ref).
 """
 function _dual_newton_attempt(
-        prob, bv, y_init, W0, act_ph0, refs0, active0, xB0, x_buf, dead, degenerate, m, opts, scale,
+        prob, bv, y_init, W0, act_ph0, refs0, active0, xB0, x_buf, dead, degenerate, m, opts, cap,
     )
     # The sets, amounts and parameters below are rebound as the search moves, and
     # a comprehension or a closure that captured them directly would box them —
@@ -2506,7 +2530,16 @@ function _dual_newton_attempt(
     q = copy(prob.q0)
 
     converged = false
-    seen = Set{Tuple{Vector{Int}, Vector{Int}}}()
+    # The sets visited, with the number of variables rescued when they were: a
+    # rescue makes a set seen before a new state of the search.
+    seen = Set{Tuple{Vector{Int}, Vector{Int}, Int}}()
+    # Every amount is judged in moles, scale one, until `_rescue_traces!` gives a
+    # variable or a phase that cannot reach the thresholds its own scale.
+    scale = ones(length(cap))
+    scale_ph = ones(length(prob.phases))
+    vanished = falses(length(cap))
+    vanished_ph = falses(length(prob.phases))
+    n_rescued = 0
     # Candidates whose admission was tried and left the stationarity block
     # unsatisfiable. Two bound-constrained variables both declared stationary
     # over-determine `y` whenever their formulas are dependent modulo the span of
@@ -2531,6 +2564,7 @@ function _dual_newton_attempt(
     # last one tried.
     best_res = Inf
     best_state = nothing
+    best_ok = false
     # The tangent-plane measure of each absent phase within a round, `NaN` until
     # asked for: three steps of a round ask for it at the same multipliers and
     # composition, and each evaluation runs up to `maxit` substitution sweeps.
@@ -2541,7 +2575,7 @@ function _dual_newton_attempt(
         na = length(active)
         v = vcat([log(r) for r in refs], y, xB, q)
         v, inner_ok = _newton_on_active_set!(
-            W, prob, v, xB, act_ph, active, bv, x_buf, dead, degenerate, m, opts, scale,
+            W, prob, v, xB, act_ph, active, bv, x_buf, dead, degenerate, m, opts, scale, scale_ph,
         )
 
         refs = let v = v
@@ -2588,6 +2622,7 @@ function _dual_newton_attempt(
             opts.verbose && @info "active-set round" kkt_err res_outer viol nph na inner_ok
             if kkt_err < best_res * (1 - 1.0e-9)
                 best_res = kkt_err
+                best_ok = res_outer <= opts.tol && viol <= opts.si_tol
                 # `v` carries refs, `y` and the bounded amounts together, so the
                 # state is that vector plus the sets it is indexed by.
                 best_state = (
@@ -2623,6 +2658,11 @@ function _dual_newton_attempt(
                         (inner_ok && si[active[j]] < -max(opts.si_tol, opts.tol))
                     )
             ]
+        end
+        # A variable dropped as vanishing that could never hold `si_tol`.
+        for j in drop
+            i = active[j]
+            xB[j] < opts.si_tol * scale[i] && cap[i] < opts.si_tol && (vanished[i] = true)
         end
 
         # An admission that does not converge is not undone by rejecting the
@@ -2705,8 +2745,13 @@ function _dual_newton_attempt(
         drop_ph = let refs = refs
             [
                 a for (a, k) in enumerate(act_ph)
-                    if !prob.phases[k].always_present && refs[a] < opts.si_tol * _phase_scale(scale, prob.phases[k])
+                    if !prob.phases[k].always_present && refs[a] < opts.si_tol * scale_ph[k]
             ]
+        end
+        for a in drop_ph
+            k = act_ph[a]
+            refs[a] < opts.si_tol * scale_ph[k] && _phase_capacity(cap, prob.phases[k]) < opts.si_tol &&
+                (vanished_ph[k] = true)
         end
         # Where the Newton stalled with nothing leaving, the most undersaturated
         # phase is the incumbent to release, as the bounded variable carrying the
@@ -2794,7 +2839,7 @@ function _dual_newton_attempt(
                 cand_ph[argmax([_admission_measure!(admission, prob, k, u, x_buf, q, dead) for k in cand_ph])]
             end
             push!(act_ph, k_best)
-            push!(refs, PHASE_ADMISSION_SEED * _phase_scale(scale, prob.phases[k_best]))
+            push!(refs, PHASE_ADMISSION_SEED * scale_ph[k_best])
             # A mole-fraction phase also spends one unit of stationarity capacity.
             if !_active_set_supports_a_solution(prob, active, act_ph)
                 active, xB = _exchange_incumbent(prob, active, xB, act_ph, eachindex(active))
@@ -2806,8 +2851,16 @@ function _dual_newton_attempt(
         end
 
         drop_ph_prev = drop_ph
-        key = (sort(copy(act_ph)), sort(copy(active)))
-        key in seen && break
+        key = (sort(copy(act_ph)), sort(copy(active)), n_rescued)
+        if key in seen
+            # A set seen before ends the search, unless the search has no
+            # solution yet and the set holds a trace it keeps sending away.
+            rescued = best_ok ? 0 :
+                _rescue_traces!(scale, scale_ph, vanished, vanished_ph, cap, active, xB, act_ph, refs, prob)
+            iszero(rescued) && break
+            n_rescued += rescued
+            key = (sort(copy(act_ph)), sort(copy(active)), n_rescued)
+        end
         push!(seen, key)
     end
 
