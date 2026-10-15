@@ -1,5 +1,37 @@
 # Changelog
 
+## v0.8.7 — a phase made of a trace
+
+A patch release: a phase made of an element present as a trace, which the
+search kept sending away and taking back, is now judged on the scale of what
+the budget lets it hold, so that it can be held present and its element
+balanced. Every other search is unchanged to the bit.
+
+### Fixed
+
+- **A phase made of a trace could not be held present.** The active-set search
+  compares amounts with numbers of moles: a pure phase below `si_tol`
+  (1e-8 mol) is dropped as vanishing, an entrant is admitted at 1e-9 mol and a
+  mixing phase at 1e-6. A supersaturated phase that the budget limits to less
+  than `si_tol` was dropped at every round and admitted again, until the
+  active set repeated and the search ended uncertified with the balance of its
+  element unmet. Measured on a portlandite suspension whose aluminum is a
+  1e-9 mol seed of ettringite (ChemistryLab, CEMDATA18): the ettringite ended
+  at 4.9e-9 mol for at most 1e-9 and the aluminum row 7.9e-9 mol out, and with
+  1.74 mmol of gypsum the answer ChemistryLab returned had the gypsum 14 % high;
+  from a seed of 1e-6 mol the same solves certified. A variable or a mixing
+  phase dropped as vanishing although its capacity, `min_k b_k/A_ki` over the
+  one-signed conservation rows, is below `si_tol`, and present again in a set
+  the search is about to repeat without a solution, is now judged from then on
+  on the scale `min(1, max(1e-6, capacity / 1e-4 mol))`: it leaves below 1e-4
+  of its capacity, enters at 1e-5 of it, and a phase is admitted at 1e-2 of
+  it. The suspension certifies, with the gypsum where a seed of 1e-6 mol puts
+  it, and so does the two-solid trace case of the tests, which ended with five
+  times its budget. A search that reaches a solution without this rescue is
+  the same as before to the bit: scaling every amount on its capacity from the
+  start moved the search of cements given 1e-9 mol of carbon, whose carbonate
+  phases are rightly sent away at their first drop.
+
 ## v0.8.6 — the conservation matrix as it is naturally written
 
 A patch release: `Canonicalizer` accepts integer and sparse conservation

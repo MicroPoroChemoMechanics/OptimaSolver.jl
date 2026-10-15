@@ -1126,6 +1126,7 @@ end
         out = OptimaSolver._dual_newton_attempt(
             prob, b, [0.0, -log(x2 / 55.5)], [[log(55.5), log(x2)]], [1], [55.5], Int[],
             Float64[], zeros(2), Set{Int}(), Int[], 2, DualNewtonOptions(),
+            OptimaSolver._capacities(prob, b, Set{Int}()),
         )
         @test out.converged
         @test abs(out.x[2] - 1.0e-9) <= DualNewtonOptions().tol
@@ -1208,6 +1209,69 @@ end
     y = copy(out.x)
     y[1] += 1.0e-9
     @test !kkt_certificate(prob, y, b).optimal
+end
+
+@testset "a phase made of a trace is judged on its own scale" begin
+    # Water, a solute T and two solids made of it, S₁ = T and S₂ = T₂, the second
+    # the more stable; the budget of T is 2e-9 mol. At equilibrium S₂ holds what
+    # the solution does not, (2e-9 − x_T)/2 = 9.96e-10 mol: below `si_tol` as a
+    # number of moles, the whole of what the budget allows it. Judged in moles,
+    # it was dropped as vanishing at every round and admitted again, and the
+    # search ended uncertified with 5.5e-9 mol of it, five times what the budget
+    # allows (an ettringite seed of 1e-9 mol in a portlandite suspension did the
+    # same). From 2e-7 mol up, nothing is rescued and the search is that of
+    # moles.
+    h(x, _) = [0.0, log(max(x[2], 1.0e-300) / x[1]), 0.0, 0.0]
+    A = Float64[1 0 0 0; 0 1 1 2]
+    g = [0.0, 0.0, log(1.0e-11 / 55), 2 * log(1.0e-11 / 55) - 0.5]
+    prob = DualNewtonProblem(A, g, h; phases = [SolutionPhase([1, 2], 1; always_present = true)], idx_bounded = [3, 4])
+    @test OptimaSolver._capacities(prob, [55.0, 2.0e-9], Set{Int}()) == [55.0, 2.0e-9, 2.0e-9, 1.0e-9]
+    # Rescued, an amount is judged on its capacity over 1e-4 mol, no lower than
+    # the floor, so that an absent amount at its own floor reads absent.
+    @test OptimaSolver._trace_scale(1.0e-9) ≈ 1.0e-5 rtol = 1.0e-14
+    @test OptimaSolver._trace_scale(1.0e-12) == OptimaSolver.AMOUNT_SCALE_FLOOR
+    @test OptimaSolver._trace_scale(Inf) == 1.0
+    # A variable that vanished is rescued once, its amount lowered to the amount
+    # it would be admitted with on its own scale; one that did not is not.
+    sc, sc_ph = ones(4), ones(1)
+    cap4, xBr, refsr = [55.0, 2.0e-9, 2.0e-9, 1.0e-9], [2.0e-9, 1.0e-9], [55.0]
+    vanished = BitVector([false, false, false, true])
+    @test OptimaSolver._rescue_traces!(sc, sc_ph, vanished, falses(1), cap4, [3, 4], xBr, [1], refsr, prob) == 1
+    @test sc ≈ [1.0, 1.0, 1.0, 1.0e-5] rtol = 1.0e-14
+    @test xBr ≈ [2.0e-9, 1.0e-14] rtol = 1.0e-14
+    @test refsr == [55.0] && sc_ph == [1.0]
+    @test OptimaSolver._rescue_traces!(sc, sc_ph, vanished, falses(1), cap4, [3, 4], xBr, [1], refsr, prob) == 0
+    u_T = g[4] / 2
+    for N in (2.0e-9, 2.0e-7, 2.0)
+        b = [55.0, N]
+        for start in ([55.0, N, 0.0, 0.0], [55.0, 1.0e-16, N, 0.0], [55.0, 1.0e-16, 0.0, N / 2])
+            out = dual_newton_solve(prob, b, start)
+            @test out.converged
+            @test out.x[2] ≈ out.x[1] * exp(u_T) rtol = 1.0e-9
+            @test out.x[4] ≈ (N - out.x[2]) / 2 rtol = 1.0e-9
+            @test out.x[3] == 0
+            @test kkt_certificate(prob, out.x, b).optimal
+        end
+    end
+
+    # The same for a solid solution of two members holding T, admitted and kept
+    # at the 2e-9 mol its budget allows, each member half of it.
+    hs(x, _) = [
+        0.0, log(max(x[2], 1.0e-300) / x[1]),
+        log(max(x[3], 1.0e-300) / max(x[3] + x[4], 1.0e-300)),
+        log(max(x[4], 1.0e-300) / max(x[3] + x[4], 1.0e-300)),
+    ]
+    As = Float64[1 0 0 0; 0 1 1 1]
+    gs = [0.0, 0.0, log(2.0e-11 / 55), log(2.0e-11 / 55)]
+    phases = [SolutionPhase([1, 2], 1; always_present = true), SolutionPhase([3, 4], 1; mole_fraction = true)]
+    probs = DualNewtonProblem(As, gs, hs; phases, idx_bounded = Int[])
+    b = [55.0, 2.0e-9]
+    out = dual_newton_solve(probs, b, [55.0, 2.0e-9, 0.0, 0.0])
+    @test out.converged && 2 in out.active_phases
+    @test out.x[2] ≈ 1.0e-11 * out.x[1] / 55 rtol = 1.0e-9
+    @test out.x[3] ≈ out.x[4] rtol = 1.0e-9
+    @test out.x[3] + out.x[4] ≈ 2.0e-9 - out.x[2] rtol = 1.0e-9
+    @test kkt_certificate(probs, out.x, b).optimal
 end
 
 @testset "the trial composition comes back with the verdict" begin
