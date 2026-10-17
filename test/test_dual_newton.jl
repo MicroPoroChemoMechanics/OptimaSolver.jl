@@ -145,6 +145,79 @@ end
 
 end
 
+@testset "a bounded variable pinned by its own row stays active" begin
+    # An ideal binary mixture on row 1, and a pure solid whose amount row 2 fixes
+    # at c. Its standard potential g₃ = 2 is unfavorable to any sign test, and it
+    # starts at zero; declared `always_active`, it takes the amount its row
+    # demands, its row's multiplier absorbing g₃. The mixture keeps its closed
+    # form, x₁ = 1/(1 + e^{g₁-g₂}).
+    g = [0.0, 1.0, 2.0]
+    h(x, _) = [log(max(x[1], 1.0e-300)), log(max(x[2], 1.0e-300)), 0.0]
+    A = Float64[1 1 0; 0 0 1]
+    c = 0.3
+    b = [1.0, c]
+    prob = DualNewtonProblem(
+        A, g, h;
+        phases = [SolutionPhase([1, 2], 2; always_present = true)],
+        idx_bounded = [3], always_active = [3],
+    )
+    res = dual_newton_solve(prob, b, [0.5, 0.5, 0.0])
+    @test res.converged
+    @test res.x[3] ≈ c rtol = 1.0e-10
+    @test res.x[1] ≈ 1 / (1 + exp(g[1] - g[2])) rtol = 1.0e-8
+    @test kkt_certificate(prob, res.x, b).optimal
+end
+
+@testset "an incumbent whose stationarity no amount can meet is released" begin
+    # Water, and an element E carried by a solute and by a pure solid. The start
+    # holds the solid, which is seeded active; with a NEGATIVE budget of E no
+    # composition exists, the multiplier of E runs away, and the solid's
+    # stationarity cannot be met whatever its amount, which stays above every
+    # threshold: nothing leaves on the amounts, and the Newton stalls. The most
+    # violated incumbent is released, so that the search ends, unconverged, with
+    # a certificate that says no, rather than repeat the same set for ever. With
+    # a positive budget the same problem certifies.
+    lg(v) = log(max(v, 1.0e-300))
+    h(x, _) = [lg(x[1] / (x[1] + x[2])), lg(x[2] / x[1]), 0.0]
+    prob = DualNewtonProblem(
+        Float64[1 0 0; 0 1 1], [0.0, 0.0, -5.0], h;
+        phases = [SolutionPhase([1, 2], 1; always_present = true)], idx_bounded = [3],
+    )
+    x0 = [55.5, 1.0e-4, 1.0e-3]
+    bad = [55.5, -1.0e-3]
+    res = dual_newton_solve(prob, bad, x0)
+    @test !res.converged
+    @test !kkt_certificate(prob, res.x, bad).optimal
+    good = [55.5, 1.0e-3]
+    res_ok = dual_newton_solve(prob, good, x0)
+    @test res_ok.converged
+    @test kkt_certificate(prob, res_ok.x, good).optimal
+    # The solid is undersaturated there: the solute holds the whole of E.
+    @test res_ok.x[3] == 0
+    @test res_ok.x[2] ≈ 1.0e-3 rtol = 1.0e-8
+end
+
+@testset "a species the balance cannot hold is turned away" begin
+    # A pure species with an empty column and g₃ < 0 lowers the objective
+    # without bound, A x = b putting no limit on it: the problem has no minimum.
+    # Admitting it would make every active set singular, whatever leaves, so it
+    # goes back out each time it is tried. The mixture keeps its closed form, and
+    # the solve does not claim a convergence there is none of.
+    g = [0.0, 1.0, -1.0]
+    h(x, _) = [log(max(x[1], 1.0e-300)), log(max(x[2], 1.0e-300)), 0.0]
+    A = Float64[1 1 0]
+    b = [1.0]
+    prob = DualNewtonProblem(
+        A, g, h;
+        phases = [SolutionPhase([1, 2], 2; always_present = true)], idx_bounded = [3],
+    )
+    res = dual_newton_solve(prob, b, [0.5, 0.5, 0.0])
+    @test !res.converged
+    @test res.x[3] == 0
+    @test res.x[1] ≈ 1 / (1 + exp(g[1] - g[2])) rtol = 1.0e-8
+    @test !kkt_certificate(prob, res.x, b).optimal
+end
+
 @testset "a variable cannot be in two places at once" begin
 
     h(x, _) = log.(max.(x, 1.0e-300))
@@ -820,6 +893,25 @@ end
     @test haskey(cert, :worst_violation_split)
     @test isempty(cert.split_phases)
     @test cert.optimal
+
+    # Solved with A = 3, the phase settles between binodal and spinodal: its
+    # members are stationary, yet a composition below its tangent plane exists.
+    # The certificate names the phase, refuses optimality, and returns that
+    # composition, which shares the tangent of the present one: the slope
+    # g'(t) = ln(t/(1 - t)) + A(1 - 2t) of the regular solution is the same at both.
+    prob3 = make_prob(3.0)
+    b3 = Amat * x_present
+    res3 = dual_newton_solve(prob3, b3, copy(x_present))
+    cert3 = kkt_certificate(prob3, res3.x, b3)
+    @test res3.converged
+    @test cert3.split_phases == [2]
+    @test !cert3.optimal
+    trial = cert3.split_trials[2]
+    @test trial.members == [2, 3]
+    slope(t) = log(t / (1 - t)) + 3.0 * (1 - 2t)
+    z = res3.x[2] / (res3.x[2] + res3.x[3])
+    @test abs(trial.x[1] - z) > 0.5                 # the other side of the gap
+    @test slope(trial.x[1]) ≈ slope(z) atol = 1.0e-3
 end
 
 @testset "a dead end-member is not evidence that a phase wants to split" begin
@@ -1525,4 +1617,92 @@ end
     @test kkt_certificate(prob, res.x, b).optimal
     @test res.active_phases == [1, 2] && res.active == [4]
     @test res.x[7] + res.x[8] > 0.6
+end
+
+@testset "the rows an active set leaves without a holder" begin
+    # An element held by a phase, a solid's own row, a row an unknown parameter
+    # enters, and a row without budget. An exchange may not leave unheld a row it
+    # held, which needs to know which rows are held: a row with a budget is held
+    # by a bounded variable of the set, by a live member of an active phase, or by
+    # a parameter, and a row without budget or a degenerate one is not judged.
+    A = Float64[1 1 0; 0 0 1; 0 0 0; 0 0 0]
+    Aq = reshape([0.0, 0.0, -1.0, 0.0], 4, 1)
+    lg(v) = log(max(v, 1.0e-300))
+    prob = DualNewtonProblem(
+        A, zeros(3), (x, _) -> [lg(x[1]), lg(x[2]), 0.0];
+        phases = [SolutionPhase([1, 2], 1; mole_fraction = true)], idx_bounded = [3],
+        gq = (q, _) -> zeros(3), cq = (x, q, _) -> [q[1]], Aq = Aq, q0 = [0.0], qscale = [1.0],
+    )
+    bv = [1.0, 0.5, 0.2, 0.0]
+    unheld(active, act_ph; dead = Set{Int}(), degenerate = Int[]) =
+        OptimaSolver._unheld_rows(prob, active, act_ph, bv, dead, degenerate)
+    @test isempty(unheld([3], [1]))
+    @test unheld(Int[], [1]) == [2]                      # without the solid, its row
+    @test unheld([3], Int[]) == [1]                      # without the phase, the element
+    @test unheld([3], [1]; dead = Set([1, 2])) == [1]    # dead members hold nothing
+    @test isempty(unheld(Int[], Int[]; degenerate = [1, 2]))
+end
+
+@testset "a phase admitted on a set full of phases sends a phase out" begin
+    # One component and two ideal binary solutions of it, B the more stable by
+    # one RT per member: the answer is B alone, at x = 1/2, whatever the start.
+    # From a start holding A only, B is supersaturated, and admitting it spends a
+    # second unit of a capacity of one with no bounded variable to send out.
+    # An incumbent phase has to leave instead; the entrant was withdrawn at every
+    # round, and the solve ended unconverged on A.
+    lg(v) = log(max(v, 1.0e-300))
+    h(x, _) = begin
+        Na, Nb = max(x[1] + x[2], 1.0e-300), max(x[3] + x[4], 1.0e-300)
+        [lg(x[1] / Na), lg(x[2] / Na), lg(x[3] / Nb), lg(x[4] / Nb)]
+    end
+    phases = [SolutionPhase([1, 2], 1; mole_fraction = true), SolutionPhase([3, 4], 1; mole_fraction = true)]
+    prob = DualNewtonProblem(Float64[1 1 1 1], [0.0, 0.0, -1.0, -1.0], h; phases, idx_bounded = Int[])
+    res = dual_newton_solve(prob, [1.0], [0.5, 0.5, 0.0, 0.0])
+    @test res.converged
+    @test res.active_phases == [2]
+    @test res.x ≈ [0.0, 0.0, 0.5, 0.5] atol = 1.0e-10
+    @test kkt_certificate(prob, res.x, [1.0]).optimal
+
+    # The same with a second component held by a pure solid. The exchange of a
+    # bounded incumbent comes first, and the only one is the solid: sending it
+    # out met the phase rule but left the second row with nothing to hold it, a
+    # balance no amounts can meet. It may not; the phase in place leaves instead.
+    h2(x, _) = vcat(h(x, nothing), 0.0)
+    prob2 = DualNewtonProblem(Float64[1 1 1 1 0; 0 0 0 0 1], [0.0, 0.0, -1.0, -1.0, 0.0], h2; phases, idx_bounded = [5])
+    res2 = dual_newton_solve(prob2, [1.0, 1.0], [0.5, 0.5, 0.0, 0.0, 1.0])
+    @test res2.converged
+    @test res2.x ≈ [0.0, 0.0, 0.5, 0.5, 1.0] atol = 1.0e-10
+    @test kkt_certificate(prob2, res2.x, [1.0, 1.0]).optimal
+
+    # Two components, a phase of each present (A and C), and B, more stable than
+    # A, entering on A's component: the capacity of two is spent by phases only.
+    # C, the smaller, would leave first, but it alone holds the second row; A
+    # leaves instead, and the answer is B and C.
+    h3(x, _) = begin
+        Na, Nb, Nc = (max(x[1] + x[2], 1.0e-300), max(x[3] + x[4], 1.0e-300), max(x[5] + x[6], 1.0e-300))
+        [lg(x[1] / Na), lg(x[2] / Na), lg(x[3] / Nb), lg(x[4] / Nb), lg(x[5] / Nc), lg(x[6] / Nc)]
+    end
+    phases3 = [
+        SolutionPhase([1, 2], 1; mole_fraction = true), SolutionPhase([3, 4], 1; mole_fraction = true),
+        SolutionPhase([5, 6], 1; mole_fraction = true),
+    ]
+    prob4 = DualNewtonProblem(
+        Float64[1 1 1 1 0 0; 0 0 0 0 1 1], [0.0, 0.0, -1.0, -1.0, 0.0, 0.0], h3;
+        phases = phases3, idx_bounded = Int[],
+    )
+    res4 = dual_newton_solve(prob4, [1.0, 0.3], [0.5, 0.5, 0.0, 0.0, 0.15, 0.15])
+    @test res4.converged
+    @test sort(res4.active_phases) == [2, 3]
+    @test res4.x ≈ [0.0, 0.0, 0.5, 0.5, 0.15, 0.15] atol = 1.0e-10
+    @test kkt_certificate(prob4, res4.x, [1.0, 0.3]).optimal
+
+    # A phase declared always present never leaves, so B cannot enter in its
+    # place: the entrant goes back out, and the solve says it has not converged
+    # rather than certify A.
+    phases_A = [SolutionPhase([1, 2], 1; mole_fraction = true, always_present = true), SolutionPhase([3, 4], 1; mole_fraction = true)]
+    prob3 = DualNewtonProblem(Float64[1 1 1 1], [0.0, 0.0, -1.0, -1.0], h; phases = phases_A, idx_bounded = Int[])
+    res3 = dual_newton_solve(prob3, [1.0], [0.5, 0.5, 0.0, 0.0])
+    @test !res3.converged
+    @test res3.active_phases == [1]
+    @test !kkt_certificate(prob3, res3.x, [1.0]).optimal
 end

@@ -2219,15 +2219,75 @@ function _rescue_traces!(scale, scale_ph, vanished, vanished_ph, cap, active, xB
     return n
 end
 
+"""
+    _unheld_rows(prob, active, act_ph, bv, dead, degenerate) -> Vector{Int}
+
+The balance rows with a budget that nothing in the active set holds: no bounded
+variable of the set and no live member of one of its mixing phases has a
+coefficient there. Such a row cannot be met by any amounts, whatever `y`, and
+`_active_set_supports_a_solution`, which counts conditions and takes the
+rank of the bounded variables alone, does not see it. A row an unknown parameter
+enters (`Aq`) or a degenerate one is held by construction. Read on values, as the
+rank is: a set of equations is chosen, not differentiated.
+"""
+function _unheld_rows(prob, active, act_ph, bv, dead, degenerate)
+    holds(k, i) = !(i in dead) && !iszero(_primal_value(prob.A[k, i]))
+    return [
+        k for k in axes(prob.A, 1)
+            if !iszero(bv[k]) && !(k in degenerate) &&
+            !any(j -> !iszero(_primal_value(prob.Aq[k, j])), axes(prob.Aq, 2)) &&
+            !any(i -> holds(k, i), active) &&
+            !any(ph -> any(i -> holds(k, i), prob.phases[ph].members), act_ph)
+    ]
+end
+
+# Whether a removal leaves unheld a row the set held before it: an exchange must
+# not trade a condition it cannot meet for a balance it cannot meet either.
+_orphans_a_row(prob, active, act_ph, active_after, act_ph_after, bv, dead, degenerate) =
+    !issubset(
+    _unheld_rows(prob, active_after, act_ph_after, bv, dead, degenerate),
+    _unheld_rows(prob, active, act_ph, bv, dead, degenerate),
+)
+
 # A basis exchange: the first incumbent among the positions `candidates`, in
 # order of increasing amount, whose removal lets the active set support a
-# solution, removed from `active` and from its amounts `xB`. Both are returned
-# unchanged when no removal does.
-function _exchange_incumbent(prob, active, xB, act_ph, candidates)
+# solution without leaving a balance row it held unheld, removed from `active`
+# and from its amounts `xB`. Both are returned unchanged when no removal does.
+function _exchange_incumbent(prob, active, xB, act_ph, candidates, bv, dead, degenerate)
     order = sort(candidates; by = j -> xB[j])
     without(v, j) = v[setdiff(eachindex(v), [j])]
-    k = findfirst(j -> _active_set_supports_a_solution(prob, without(active, j), act_ph), order)
+    k = findfirst(
+        j -> _active_set_supports_a_solution(prob, without(active, j), act_ph) &&
+            !_orphans_a_row(prob, active, act_ph, without(active, j), act_ph, bv, dead, degenerate),
+        order,
+    )
     return k === nothing ? (active, xB) : (without(active, order[k]), without(xB, order[k]))
+end
+
+"""
+    _exchange_incumbent_phase(prob, active, act_ph, refs, bv, dead, degenerate) -> (act_ph, refs)
+
+The same exchange for a mixing phase just admitted (the last of `act_ph`) when no
+bounded incumbent can make room: an incumbent PHASE leaves, the smallest first and
+never one that is always present. Where the stationarity capacity is spent by
+mole-fraction phases alone, which happens with one row and two phases of its
+component, there is no bounded variable to send out, and without this the entrant
+was withdrawn at every round however supersaturated it was: a phase more stable
+than the one present could never take its place. Decided on values, as the rest
+of the active set is: it is a choice of equations, not a function of the data.
+"""
+function _exchange_incumbent_phase(prob, active, act_ph, refs, bv, dead, degenerate)
+    order = sort(
+        [a for a in 1:(length(act_ph) - 1) if !prob.phases[act_ph[a]].always_present];
+        by = a -> refs[a],
+    )
+    without(v, a) = v[setdiff(eachindex(v), [a])]
+    k = findfirst(
+        a -> _active_set_supports_a_solution(prob, active, without(act_ph, a)) &&
+            !_orphans_a_row(prob, active, act_ph, active, without(act_ph, a), bv, dead, degenerate),
+        order,
+    )
+    return k === nothing ? (act_ph, refs) : (without(act_ph, order[k]), without(refs, order[k]))
 end
 
 """
@@ -2819,7 +2879,7 @@ function _dual_newton_attempt(
             # conditions, since otherwise no `y` exists. Termination is unaffected:
             # `seen` records the active sets visited and there are finitely many.
             if !_active_set_supports_a_solution(prob, active, act_ph)
-                active, xB = _exchange_incumbent(prob, active, xB, act_ph, 1:(length(active) - 1))
+                active, xB = _exchange_incumbent(prob, active, xB, act_ph, 1:(length(active) - 1), bv, dead, degenerate)
             end
             # If nothing worked the entrant itself goes back out: the set it would
             # make is unsolvable whatever leaves.
@@ -2842,7 +2902,11 @@ function _dual_newton_attempt(
             push!(refs, PHASE_ADMISSION_SEED * scale_ph[k_best])
             # A mole-fraction phase also spends one unit of stationarity capacity.
             if !_active_set_supports_a_solution(prob, active, act_ph)
-                active, xB = _exchange_incumbent(prob, active, xB, act_ph, eachindex(active))
+                active, xB = _exchange_incumbent(prob, active, xB, act_ph, eachindex(active), bv, dead, degenerate)
+            end
+            # No bounded incumbent made room: a phase in place may.
+            if !_active_set_supports_a_solution(prob, active, act_ph)
+                act_ph, refs = _exchange_incumbent_phase(prob, active, act_ph, refs, bv, dead, degenerate)
             end
             if !_active_set_supports_a_solution(prob, active, act_ph)
                 pop!(act_ph)
