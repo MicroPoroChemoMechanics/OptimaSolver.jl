@@ -239,31 +239,8 @@ function solve!(
                 compute_step_nullspace!(ws, can, h, kkt.ex, kkt.ew) :
                 compute_step!(ws, can, h, kkt.ex, kkt.ew)
 
-            # Fraction-to-boundary step limit
-            α_max = clamp_step(n, prob.lb, dn)
-
-            # Variable stability: cap step for near-bound variables
-            _, ju = classify_variables(n, prob.lb, kkt.ex)
-            reduced_step_for_unstable!(dn, ju, n, prob.lb)
-
-            # Clipping individual components takes the step OUT of the null space
-            # of `A`, and with it the one property the null-space branch exists to
-            # provide: that `A(n + α dn) = An` for every `α`, so feasibility once
-            # attained is never lost. Silently, because nothing downstream checks.
-            # On an LC³ equilibrium the start was feasible to 3e-10 and the solve
-            # finished at `‖An − b‖∞ = 4.5e-3`, drifting a little at every
-            # iteration where a variable near its bound was clipped.
-            #
-            # Re-projecting onto `{A d = 0}` restores it exactly and keeps what the
-            # clip was for. The projection is the minimum-norm correction, so it
-            # changes the clipped components as little as it can.
-            if opts.nullspace_step
-                r_dn = prob.A * dn
-                if maximum(abs, r_dn) > eps(T) * max(one(T), maximum(abs, dn))
-                    aat_qr === nothing && (aat_qr = LinearAlgebra.qr(can.A * can.A', LinearAlgebra.ColumnNorm()))
-                    dn .-= can.A' * (aat_qr \ r_dn)
-                end
-            end
+            # The step the line search tries, and how far along it it may go.
+            α_max, aat_qr = _limited_step!(dn, n, prob, can, kkt.ex, aat_qr, opts.nullspace_step)
 
             # Line search with filter
             f_val = prob.f(n, prob.p)
@@ -352,6 +329,51 @@ function solve!(
     state.μ = μ
     log_final(state, opts)
     return state
+end
+
+"""
+    _limited_step!(dn, n, prob, can, ex, aat_qr, nullspace) -> (α_max, aat_qr)
+
+Turn the Newton direction `dn` into the step the line search tries, in place, and
+return the fraction-to-boundary limit of THAT step with the factorization of
+`A Aᵀ` the projection may have built.
+
+The direction is clipped for the variables near their bounds, then, with the
+null-space step, projected back onto `{A d = 0}`, and only then limited. The
+limit used to be taken on the raw direction: the projection then moved the step
+the line search tried, which could cross a bound well short of `α_max`, and the
+line search could only halve until it no longer did. On the part of
+ChemistryLab's suite that equilibrates the most, that was 1.1 million halvings
+over 280 thousand iterations, each a step shorter than the direction allowed;
+on calcite the interior point alone came out more than 1e-3 off the certified
+pH, and 5e-4 off once limited on its own step.
+"""
+function _limited_step!(dn, n, prob::OptimaProblem{T}, can, ex, aat_qr, nullspace::Bool) where {T}
+    # Variable stability: cap the step of the variables near their bounds.
+    _, ju = classify_variables(n, prob.lb, ex)
+    reduced_step_for_unstable!(dn, ju, n, prob.lb)
+
+    # Clipping individual components takes the step OUT of the null space of `A`,
+    # and with it the one property the null-space branch exists to provide: that
+    # `A(n + α dn) = An` for every `α`, so feasibility once attained is never lost.
+    # Silently, because nothing downstream checks. On an LC³ equilibrium the start
+    # was feasible to 3e-10 and the solve finished at `‖An − b‖∞ = 4.5e-3`,
+    # drifting a little at every iteration where a variable near its bound was
+    # clipped.
+    #
+    # Re-projecting onto `{A d = 0}` restores it exactly and keeps what the clip
+    # was for. The projection is the minimum-norm correction, so it changes the
+    # clipped components as little as it can.
+    if nullspace
+        r_dn = prob.A * dn
+        if maximum(abs, r_dn) > eps(T) * max(one(T), maximum(abs, dn))
+            aat_qr === nothing && (aat_qr = LinearAlgebra.qr(can.A * can.A', LinearAlgebra.ColumnNorm()))
+            dn .-= can.A' * (aat_qr \ r_dn)
+        end
+    end
+
+    # The fraction-to-boundary limit of the step as it now is.
+    return clamp_step(n, prob.lb, dn), aat_qr
 end
 
 # The best iterate of a barrier level replaces the last one when it is MATERIALLY

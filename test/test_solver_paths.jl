@@ -108,6 +108,24 @@
         end
     end
 
+    @testset "the step limit is that of the step the line search tries" begin
+        # `A` is one row, so projecting onto {A d = 0} takes the mean of A·d off
+        # every component: a direction that leaves the third variable alone comes
+        # back driving it to its bound, at α = 1/200 where the raw direction
+        # allowed α = 1. The limit is taken on the step as projected.
+        A1 = ones(1, 3)
+        p1 = OptimaProblem(A1, [2.001], (n, _) -> 0.0, (g, n, _) -> (g .= 0); lb = zeros(3))
+        n1 = [1.0, 1.0, 1.0e-3]
+        dn = [0.3, 0.3, 0.0]
+        @test OptimaSolver.clamp_step(n1, p1.lb, dn) == 1
+        α, _ = OptimaSolver._limited_step!(dn, n1, p1, OptimaSolver.Canonicalizer(A1), zeros(3), nothing, true)
+        @test maximum(abs, A1 * dn) < 1.0e-15
+        @test dn ≈ [0.1, 0.1, -0.2]
+        @test α ≈ 0.995 * 1.0e-3 / 0.2
+        @test all(n1 .+ α .* dn .> p1.lb)        # strictly inside at the limit
+        @test any(n1 .+ dn .<= p1.lb)            # where the raw limit was not
+    end
+
     @testset "the exact Hessian diagonal handed over through the parameters" begin
         # `p.hdiag` replaces both approximations of ∂²f/∂nᵢ²; for this ideal
         # mixture it is 1/nᵢ exactly. The answer is the same closed form.
