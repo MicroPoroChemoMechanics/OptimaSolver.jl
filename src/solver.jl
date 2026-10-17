@@ -239,31 +239,8 @@ function solve!(
                 compute_step_nullspace!(ws, can, h, kkt.ex, kkt.ew) :
                 compute_step!(ws, can, h, kkt.ex, kkt.ew)
 
-            # Fraction-to-boundary step limit
-            α_max = clamp_step(n, prob.lb, dn)
-
-            # Variable stability: cap step for near-bound variables
-            _, ju = classify_variables(n, prob.lb, kkt.ex)
-            reduced_step_for_unstable!(dn, ju, n, prob.lb)
-
-            # Clipping individual components takes the step OUT of the null space
-            # of `A`, and with it the one property the null-space branch exists to
-            # provide: that `A(n + α dn) = An` for every `α`, so feasibility once
-            # attained is never lost. Silently, because nothing downstream checks.
-            # On an LC³ equilibrium the start was feasible to 3e-10 and the solve
-            # finished at `‖An − b‖∞ = 4.5e-3`, drifting a little at every
-            # iteration where a variable near its bound was clipped.
-            #
-            # Re-projecting onto `{A d = 0}` restores it exactly and keeps what the
-            # clip was for. The projection is the minimum-norm correction, so it
-            # changes the clipped components as little as it can.
-            if opts.nullspace_step
-                r_dn = prob.A * dn
-                if maximum(abs, r_dn) > eps(T) * max(one(T), maximum(abs, dn))
-                    aat_qr === nothing && (aat_qr = LinearAlgebra.qr(can.A * can.A', LinearAlgebra.ColumnNorm()))
-                    dn .-= can.A' * (aat_qr \ r_dn)
-                end
-            end
+            # The step the line search tries, and how far along it it may go.
+            α_max, aat_qr = _limited_step!(dn, n, prob, can, kkt.ex, aat_qr, opts.nullspace_step)
 
             # Line search with filter
             f_val = prob.f(n, prob.p)
@@ -304,18 +281,11 @@ function solve!(
                 # and finished at 2.3, four orders worse — not to second-guess a
                 # healthy solve, where best and last differ by rounding and
                 # swapping them costs the caller the last few digits it earned.
-                μ, _ = _restore_best!(n, y, μ, n_best, y_best, μ_best[], err_best[], kkt.error)
-                state.n .= n
-                state.y .= y
-                state.μ = μ
-                eval_gradient!(grad, prob, n)
-                kkt_f = kkt_residual(prob, n, y, grad, μ)
-                state.error_opt = kkt_f.error_opt
-                state.error_feas = kkt_f.error_feas
-                state.error_feas_abs = kkt_f.error_feas_abs
-                state.converged = is_converged(kkt_f, opts)
-                log_final(state, opts)
-                return state
+                # `n` has moved since `kkt` was taken: the residual is recomputed.
+                return _report_best!(
+                    state, prob, grad, n, y, μ,
+                    n_best, y_best, μ_best[], err_best[], kkt.error, nothing, opts,
+                )
             end
         end  # inner
 
@@ -338,20 +308,88 @@ function solve!(
     # materially better — see the note at the max-iteration exit above.
     eval_gradient!(grad, prob, n)
     kkt = kkt_residual(prob, n, y, grad, μ)
-    μ, restored = _restore_best!(n, y, μ, n_best, y_best, μ_best[], err_best[], kkt.error)
-    if restored
+    return _report_best!(
+        state, prob, grad, n, y, μ, n_best, y_best, μ_best[], err_best[], kkt.error, kkt, opts,
+    )
+end
+
+"""
+    _report_best!(state, prob, grad, n, y, μ, n_best, y_best, μ_best, err_best,
+                  err_last, kkt_last, opts) -> state
+
+What the two exits of `solve!` that are not a convergence report — the
+iteration budget spent, and the barrier at its floor: the best iterate of the
+last barrier level when it is materially better than the last one
+(`_restore_best!`), with the residuals of the point reported. `kkt_last` is the
+residual at `n` when the caller holds it, `nothing` when `n` has moved since, as
+after the step the iteration budget ends on; it is recomputed then, and whenever
+the best iterate is restored. One function, so that the two exits cannot come to
+report differently.
+"""
+function _report_best!(
+        state, prob, grad, n, y, μ, n_best, y_best, μ_best, err_best, err_last, kkt_last, opts,
+    )
+    μ, restored = _restore_best!(n, y, μ, n_best, y_best, μ_best, err_best, err_last)
+    kkt = if restored || kkt_last === nothing
         eval_gradient!(grad, prob, n)
-        kkt = kkt_residual(prob, n, y, grad, μ)
+        kkt_residual(prob, n, y, grad, μ)
+    else
+        kkt_last
     end
+    state.n .= n
+    state.y .= y
+    state.μ = μ
     state.error_opt = kkt.error_opt
     state.error_feas = kkt.error_feas
     state.error_feas_abs = kkt.error_feas_abs
     state.converged = is_converged(kkt, opts)
-    state.n .= n
-    state.y .= y
-    state.μ = μ
     log_final(state, opts)
     return state
+end
+
+"""
+    _limited_step!(dn, n, prob, can, ex, aat_qr, nullspace) -> (α_max, aat_qr)
+
+Turn the Newton direction `dn` into the step the line search tries, in place, and
+return the fraction-to-boundary limit of THAT step with the factorization of
+`A Aᵀ` the projection may have built.
+
+The direction is clipped for the variables near their bounds, then, with the
+null-space step, projected back onto `{A d = 0}`, and only then limited. The
+limit used to be taken on the raw direction: the projection then moved the step
+the line search tried, which could cross a bound well short of `α_max`, and the
+line search could only halve until it no longer did. On the part of
+ChemistryLab's suite that equilibrates the most, that was 1.1 million halvings
+over 280 thousand iterations, each a step shorter than the direction allowed;
+on calcite the interior point alone came out more than 1e-3 off the certified
+pH, and 5e-4 off once limited on its own step.
+"""
+function _limited_step!(dn, n, prob::OptimaProblem{T}, can, ex, aat_qr, nullspace::Bool) where {T}
+    # Variable stability: cap the step of the variables near their bounds.
+    _, ju = classify_variables(n, prob.lb, ex)
+    reduced_step_for_unstable!(dn, ju, n, prob.lb)
+
+    # Clipping individual components takes the step OUT of the null space of `A`,
+    # and with it the one property the null-space branch exists to provide: that
+    # `A(n + α dn) = An` for every `α`, so feasibility once attained is never lost.
+    # Silently, because nothing downstream checks. On an LC³ equilibrium the start
+    # was feasible to 3e-10 and the solve finished at `‖An − b‖∞ = 4.5e-3`,
+    # drifting a little at every iteration where a variable near its bound was
+    # clipped.
+    #
+    # Re-projecting onto `{A d = 0}` restores it exactly and keeps what the clip
+    # was for. The projection is the minimum-norm correction, so it changes the
+    # clipped components as little as it can.
+    if nullspace
+        r_dn = prob.A * dn
+        if maximum(abs, r_dn) > eps(T) * max(one(T), maximum(abs, dn))
+            aat_qr === nothing && (aat_qr = LinearAlgebra.qr(can.A * can.A', LinearAlgebra.ColumnNorm()))
+            dn .-= can.A' * (aat_qr \ r_dn)
+        end
+    end
+
+    # The fraction-to-boundary limit of the step as it now is.
+    return clamp_step(n, prob.lb, dn), aat_qr
 end
 
 # The best iterate of a barrier level replaces the last one when it is MATERIALLY

@@ -87,4 +87,21 @@
         @test α == 1.0
         @test n_new ≈ [0.6, 0.4, 1.0e-9]
     end
+
+    @testset "a trial step below a bound is shortened before it is judged" begin
+        # Along [0.1, -0.1, 0] the second amount, 0.05, reaches its bound at
+        # α = 0.5: the whole step and the half one are below or on it, so the
+        # search halves twice and judges the step at α = 1/4.
+        A = [1.0 1.0 0.0; 0.0 0.0 1.0]
+        b = [0.55, 1.0e-9]
+        prob = OptimaProblem(A, b, (n, p) -> 0.0, (g, n, p) -> (g .= 0.0))
+        n = [0.5, 0.05, 1.0e-9]
+        α, n_new, _, _ = OptimaSolver.line_search(
+            prob, n, zeros(2), [0.1, -0.1, 0.0], zeros(2), 0.0, zeros(3), 1.0e-30, OptimaOptions();
+            filter = OptimaSolver.LineSearchFilter(Float64),
+            kkt_merit = (nn, yy) -> nn[1] > 0.5 ? 0.0 : 1.0,
+        )
+        @test α == 0.25
+        @test n_new ≈ [0.525, 0.025, 1.0e-9]
+    end
 end

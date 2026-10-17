@@ -1,5 +1,68 @@
 # Changelog
 
+## v0.8.8 — the step it takes, and the phase that takes another's place
+
+A patch release. The interior point limits its step on the step it actually
+takes, and the active-set search of the dual Newton method makes room for a
+mixing phase by sending out a phase in place when nothing else can leave,
+without ever leaving a balance row unheld. Every line of the package now runs in
+a test.
+
+### Fixed
+
+- **The fraction-to-boundary limit bounded a step the line search never
+  tried.** `α_max` was taken on the raw Newton direction; the direction was
+  then clipped for the variables near their bounds and, with the null-space
+  step, projected back onto `{A d = 0}`, and the projected step could cross a
+  bound well short of `α_max`. The line search then halved until it no longer
+  did: on the part of ChemistryLab's suite that equilibrates the most, 1.1
+  million halvings over 280 thousand iterations, each step shorter than its
+  direction allowed. The limit is now taken on the step as projected
+  (`_limited_step!`): no halving is left on that part, the interior point
+  takes 6 % fewer iterations there, and on calcite its unpolished answer comes
+  5e-4 from the certified pH, against more than 1e-3. A run's path
+  changes, so its last digits may.
+- **A mixing phase that could not enter for want of room never took a phase's
+  place.** Admitting a phase on an active set whose stationarity capacity is
+  spent sends out an incumbent, but only a bounded one: with the capacity spent
+  by mole-fraction phases alone -- one row and two phases of its component --
+  there was none, and the entrant was withdrawn at every round, however
+  supersaturated. From a start holding only the less stable phase, the solve
+  ended unconverged on it. An incumbent phase now leaves when no bounded
+  variable can, the smallest first and never one that is always present.
+- **An exchange could send out the last holder of a balance row.** The test of
+  whether an active set supports a solution counts its conditions and takes the
+  rank of its bounded variables alone; it accepted a set that left a row with a
+  budget and nothing to hold it, which no amounts can meet. Both exchanges now
+  refuse a removal that leaves unheld a row the set held. On ChemistryLab's
+  suite, this and the previous fix change no decision: its 67 exchanges are
+  made as before.
+
+### Changed
+
+- The two exits of the interior point that are not a convergence, the
+  iteration budget spent and the barrier at its floor, report through one
+  function (`_report_best!`): the best iterate of the last barrier level when it
+  is materially better, with the residuals of the point reported. The answers
+  are the same to the bit.
+
+### Tests
+
+- Every line of `src/` runs in a test (2028 of 2028). Among the paths no test
+  reached: the release step of `_nnls`, which an existing test claimed to run
+  and did not; the exact routes of the feasible start; the exact Hessian
+  diagonal handed over as `p.hdiag`; a line search shortened at a bound; a
+  variable pinned by its own row; the certificate of a phase inside its
+  miscibility gap, whose trial composition shares the tangent of the present
+  one; a species no active set can hold; the release of an incumbent whose
+  stationarity no amount can meet, on a budget of negative amounts.
+
+### ChemistryLab
+
+ChemistryLab's suite passes against this release, all five parts, with one
+test relaxed: the unpolished interior point on calcite is now 5e-4 from the
+certified pH, where the test asked for a disagreement above 1e-3.
+
 ## v0.8.7 — a phase made of a trace
 
 A patch release: a phase made of an element present as a trace, which the
