@@ -281,18 +281,11 @@ function solve!(
                 # and finished at 2.3, four orders worse — not to second-guess a
                 # healthy solve, where best and last differ by rounding and
                 # swapping them costs the caller the last few digits it earned.
-                μ, _ = _restore_best!(n, y, μ, n_best, y_best, μ_best[], err_best[], kkt.error)
-                state.n .= n
-                state.y .= y
-                state.μ = μ
-                eval_gradient!(grad, prob, n)
-                kkt_f = kkt_residual(prob, n, y, grad, μ)
-                state.error_opt = kkt_f.error_opt
-                state.error_feas = kkt_f.error_feas
-                state.error_feas_abs = kkt_f.error_feas_abs
-                state.converged = is_converged(kkt_f, opts)
-                log_final(state, opts)
-                return state
+                # `n` has moved since `kkt` was taken: the residual is recomputed.
+                return _report_best!(
+                    state, prob, grad, n, y, μ,
+                    n_best, y_best, μ_best[], err_best[], kkt.error, nothing, opts,
+                )
             end
         end  # inner
 
@@ -315,18 +308,41 @@ function solve!(
     # materially better — see the note at the max-iteration exit above.
     eval_gradient!(grad, prob, n)
     kkt = kkt_residual(prob, n, y, grad, μ)
-    μ, restored = _restore_best!(n, y, μ, n_best, y_best, μ_best[], err_best[], kkt.error)
-    if restored
+    return _report_best!(
+        state, prob, grad, n, y, μ, n_best, y_best, μ_best[], err_best[], kkt.error, kkt, opts,
+    )
+end
+
+"""
+    _report_best!(state, prob, grad, n, y, μ, n_best, y_best, μ_best, err_best,
+                  err_last, kkt_last, opts) -> state
+
+What the two exits of `solve!` that are not a convergence report — the
+iteration budget spent, and the barrier at its floor: the best iterate of the
+last barrier level when it is materially better than the last one
+(`_restore_best!`), with the residuals of the point reported. `kkt_last` is the
+residual at `n` when the caller holds it, `nothing` when `n` has moved since, as
+after the step the iteration budget ends on; it is recomputed then, and whenever
+the best iterate is restored. One function, so that the two exits cannot come to
+report differently.
+"""
+function _report_best!(
+        state, prob, grad, n, y, μ, n_best, y_best, μ_best, err_best, err_last, kkt_last, opts,
+    )
+    μ, restored = _restore_best!(n, y, μ, n_best, y_best, μ_best, err_best, err_last)
+    kkt = if restored || kkt_last === nothing
         eval_gradient!(grad, prob, n)
-        kkt = kkt_residual(prob, n, y, grad, μ)
+        kkt_residual(prob, n, y, grad, μ)
+    else
+        kkt_last
     end
+    state.n .= n
+    state.y .= y
+    state.μ = μ
     state.error_opt = kkt.error_opt
     state.error_feas = kkt.error_feas
     state.error_feas_abs = kkt.error_feas_abs
     state.converged = is_converged(kkt, opts)
-    state.n .= n
-    state.y .= y
-    state.μ = μ
     log_final(state, opts)
     return state
 end
