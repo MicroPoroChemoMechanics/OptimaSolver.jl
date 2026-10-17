@@ -168,6 +168,35 @@ end
     @test kkt_certificate(prob, res.x, b).optimal
 end
 
+@testset "an incumbent whose stationarity no amount can meet is released" begin
+    # Water, and an element E carried by a solute and by a pure solid. The start
+    # holds the solid, which is seeded active; with a NEGATIVE budget of E no
+    # composition exists, the multiplier of E runs away, and the solid's
+    # stationarity cannot be met whatever its amount, which stays above every
+    # threshold: nothing leaves on the amounts, and the Newton stalls. The most
+    # violated incumbent is released, so that the search ends, unconverged, with
+    # a certificate that says no, rather than repeat the same set for ever. With
+    # a positive budget the same problem certifies.
+    lg(v) = log(max(v, 1.0e-300))
+    h(x, _) = [lg(x[1] / (x[1] + x[2])), lg(x[2] / x[1]), 0.0]
+    prob = DualNewtonProblem(
+        Float64[1 0 0; 0 1 1], [0.0, 0.0, -5.0], h;
+        phases = [SolutionPhase([1, 2], 1; always_present = true)], idx_bounded = [3],
+    )
+    x0 = [55.5, 1.0e-4, 1.0e-3]
+    bad = [55.5, -1.0e-3]
+    res = dual_newton_solve(prob, bad, x0)
+    @test !res.converged
+    @test !kkt_certificate(prob, res.x, bad).optimal
+    good = [55.5, 1.0e-3]
+    res_ok = dual_newton_solve(prob, good, x0)
+    @test res_ok.converged
+    @test kkt_certificate(prob, res_ok.x, good).optimal
+    # The solid is undersaturated there: the solute holds the whole of E.
+    @test res_ok.x[3] == 0
+    @test res_ok.x[2] ≈ 1.0e-3 rtol = 1.0e-8
+end
+
 @testset "a species the balance cannot hold is turned away" begin
     # A pure species with an empty column and g₃ < 0 lowers the objective
     # without bound, A x = b putting no limit on it: the problem has no minimum.
