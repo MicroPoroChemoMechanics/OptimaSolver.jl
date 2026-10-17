@@ -145,6 +145,50 @@ end
 
 end
 
+@testset "a bounded variable pinned by its own row stays active" begin
+    # An ideal binary mixture on row 1, and a pure solid whose amount row 2 fixes
+    # at c. Its standard potential g₃ = 2 is unfavorable to any sign test, and it
+    # starts at zero; declared `always_active`, it takes the amount its row
+    # demands, its row's multiplier absorbing g₃. The mixture keeps its closed
+    # form, x₁ = 1/(1 + e^{g₁-g₂}).
+    g = [0.0, 1.0, 2.0]
+    h(x, _) = [log(max(x[1], 1.0e-300)), log(max(x[2], 1.0e-300)), 0.0]
+    A = Float64[1 1 0; 0 0 1]
+    c = 0.3
+    b = [1.0, c]
+    prob = DualNewtonProblem(
+        A, g, h;
+        phases = [SolutionPhase([1, 2], 2; always_present = true)],
+        idx_bounded = [3], always_active = [3],
+    )
+    res = dual_newton_solve(prob, b, [0.5, 0.5, 0.0])
+    @test res.converged
+    @test res.x[3] ≈ c rtol = 1.0e-10
+    @test res.x[1] ≈ 1 / (1 + exp(g[1] - g[2])) rtol = 1.0e-8
+    @test kkt_certificate(prob, res.x, b).optimal
+end
+
+@testset "a species the balance cannot hold is turned away" begin
+    # A pure species with an empty column and g₃ < 0 lowers the objective
+    # without bound, A x = b putting no limit on it: the problem has no minimum.
+    # Admitting it would make every active set singular, whatever leaves, so it
+    # goes back out each time it is tried. The mixture keeps its closed form, and
+    # the solve does not claim a convergence there is none of.
+    g = [0.0, 1.0, -1.0]
+    h(x, _) = [log(max(x[1], 1.0e-300)), log(max(x[2], 1.0e-300)), 0.0]
+    A = Float64[1 1 0]
+    b = [1.0]
+    prob = DualNewtonProblem(
+        A, g, h;
+        phases = [SolutionPhase([1, 2], 2; always_present = true)], idx_bounded = [3],
+    )
+    res = dual_newton_solve(prob, b, [0.5, 0.5, 0.0])
+    @test !res.converged
+    @test res.x[3] == 0
+    @test res.x[1] ≈ 1 / (1 + exp(g[1] - g[2])) rtol = 1.0e-8
+    @test !kkt_certificate(prob, res.x, b).optimal
+end
+
 @testset "a variable cannot be in two places at once" begin
 
     h(x, _) = log.(max.(x, 1.0e-300))
@@ -820,6 +864,25 @@ end
     @test haskey(cert, :worst_violation_split)
     @test isempty(cert.split_phases)
     @test cert.optimal
+
+    # Solved with A = 3, the phase settles between binodal and spinodal: its
+    # members are stationary, yet a composition below its tangent plane exists.
+    # The certificate names the phase, refuses optimality, and returns that
+    # composition, which shares the tangent of the present one: the slope
+    # g'(t) = ln(t/(1 - t)) + A(1 - 2t) of the regular solution is the same at both.
+    prob3 = make_prob(3.0)
+    b3 = Amat * x_present
+    res3 = dual_newton_solve(prob3, b3, copy(x_present))
+    cert3 = kkt_certificate(prob3, res3.x, b3)
+    @test res3.converged
+    @test cert3.split_phases == [2]
+    @test !cert3.optimal
+    trial = cert3.split_trials[2]
+    @test trial.members == [2, 3]
+    slope(t) = log(t / (1 - t)) + 3.0 * (1 - 2t)
+    z = res3.x[2] / (res3.x[2] + res3.x[3])
+    @test abs(trial.x[1] - z) > 0.5                 # the other side of the gap
+    @test slope(trial.x[1]) ≈ slope(z) atol = 1.0e-3
 end
 
 @testset "a dead end-member is not evidence that a phase wants to split" begin
