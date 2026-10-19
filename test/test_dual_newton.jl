@@ -1583,6 +1583,28 @@ end
     @test kkt_certificate(prob, res.x, b).optimal
     @test res.x[6] == 0.0 && res.x[4] > 0.3 && res.x[5] > 0.5
 
+    # A start that holds the answer's CaX as a trace, below the amount that seeds
+    # the initial active set: seeded out, it needs a change of the active set
+    # that the budget of one does not leave, and the search does not converge;
+    # retried with the trace in the initial set, it converges in the round it
+    # starts with, on the answer of the linear program's vertex above.
+    trace = [55.0, 1.0e-3, 1.0e-3, 1.0, 5.0e-7, 1.0e-12]
+    one = DualNewtonOptions(max_active_updates = 1)
+    @test 1.0e-8 < trace[5] < OptimaSolver.INITIAL_SEED_AMOUNT
+    seeded = dual_newton_solve(prob, b, trace; opts = one)
+    @test seeded.converged && kkt_certificate(prob, seeded.x, b).optimal
+    @test seeded.x ≈ res.x rtol = 1.0e-10
+    # The retry is what converged, the search without the trace having failed
+    # (it says so); and it runs only when such a trace is there: from `wrong`,
+    # whose CaX is below `si_tol`, it is not tried, and the search ends as it did.
+    v = DualNewtonOptions(max_active_updates = 1, verbose = true)
+    @test_logs (:info, r"traces of the start") match_mode = :any dual_newton_solve(prob, b, trace; opts = v)
+    records, _ = Test.collect_test_logs() do
+        dual_newton_solve(prob, b, wrong; opts = v)
+    end
+    @test !any(r -> occursin("traces of the start", string(r.message)), records)
+    @test dual_newton_solve(prob, b, wrong; opts = one).x == stuck.x
+
     # The fallback is run without a fallback of its own, the other options kept.
     o = DualNewtonOptions(tol = 1.0e-9, inner_fall_bound = Inf, lp_fallback = true, verbose = true)
     o2 = OptimaSolver._without_lp_fallback(o)

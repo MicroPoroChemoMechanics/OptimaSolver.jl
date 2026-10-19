@@ -107,6 +107,13 @@ const W_MAX_RISE = 30.0
 # for the same reason.
 const PHASE_ADMISSION_SEED = 1.0e-6
 
+# A pure phase enters the initial active set when the start holds more than this
+# of it, in moles. An interior-point start holds every absent phase near its
+# barrier parameter, about 1e-6, and this keeps them out; a genuine trace below
+# it is seeded by the retry of `_dual_newton_solve_values` when the search
+# without it does not converge.
+const INITIAL_SEED_AMOUNT = 1.0e-6
+
 # The amounts above are numbers of moles, right for a variable that can hold more
 # than they are. A variable that cannot, and that the search keeps sending away
 # and taking back, is judged instead on the scale of what it can hold
@@ -1699,6 +1706,13 @@ function dual_newton_solve(
         prob.gq === nothing || _refuse_captured_duals("gq", prob.gq(prob.q0, prob.params))
         _refuse_captured_duals("cq", prob.cq(x0, prob.q0, prob.params))
     end
+    return _dual_newton_solve_values(prob, b, x0, opts, INITIAL_SEED_AMOUNT)
+end
+
+# The solve on plain numbers, its initial active set seeded with the pure phases
+# the start holds above `seed` moles (`INITIAL_SEED_AMOUNT`, or `si_tol` when the
+# solve is retried for a trace of the start, below).
+function _dual_newton_solve_values(prob::DualNewtonProblem, b::AbstractVector, x0::AbstractVector, opts::DualNewtonOptions, seed::Float64)
     bv = Vector{Float64}(b)
     n0 = Vector{Float64}(x0)
     m = size(prob.A, 1)
@@ -1787,7 +1801,7 @@ function dual_newton_solve(
     let cand0 = sort(
             [
                 i for i in prob.idx_bounded
-                    if n0[i] > 1.0e-6 && !(i in dead) && !(i in prob.always_active)
+                    if n0[i] > seed && !(i in dead) && !(i in prob.always_active)
             ];
             by = i -> -n0[i],
         )
@@ -1891,6 +1905,27 @@ function dual_newton_solve(
         out.converged && break
     end
     best.converged && return best
+
+    # No start converged, and the start holds a pure phase between `si_tol` and
+    # the seeding amount: once more with that trace in the initial set. Seeded
+    # out, it is the one phase that fixes a potential the others leave free, and
+    # every phase that potential then reads as supersaturated is admitted against
+    # it. Measured on a CEM I paste in a semi-adiabatic cell at 1.22 days, its
+    # sulfate all in ettringite and its magnesium in hydrotalcite: 7e-7 mol of
+    # monocarbonate holds the aluminum the two leave over, and the partition of
+    # the instant before, which holds it, started the search without it; the
+    # aluminum potential then put monocarbonate at 4.3 RT and the AFm solid
+    # solution above saturation, both were admitted, the inner inversion failed,
+    # and monocarbonate and hemicarbonate took turns until the set repeated. With
+    # monocarbonate seeded the solve certifies, the AFm phase undersaturated.
+    # Only a solve that did not converge pays for this, and only its converged
+    # answer is kept: a search that converged, or one this does not help, returns
+    # what it returned before.
+    if seed > opts.si_tol && any(i -> opts.si_tol < n0[i] <= seed && !(i in dead), prob.idx_bounded)
+        opts.verbose && @info "dual-newton: no start converged; with the traces of the start in the initial set"
+        again = _dual_newton_solve_values(prob, b, x0, _without_lp_fallback(opts), opts.si_tol)
+        again.converged && return again
+    end
 
     # No start converged: once more from the vertex of the linear program over
     # the pure phases. A start that carries the wrong assemblage can hold the

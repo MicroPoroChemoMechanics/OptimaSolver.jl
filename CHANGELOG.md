@@ -1,5 +1,36 @@
 # Changelog
 
+## v0.8.9 — a trace the start holds, in the initial active set
+
+A patch release. When no start of the dual Newton method converges and the start
+holds a pure phase between `si_tol` and the amount that seeds the initial active
+set, the solve is tried once more with that trace in the set, and its answer is
+kept only if it converges. A solve that converged, or one this does not help,
+returns what it returned before, to the bit.
+
+### Fixed
+
+- **A trace the start held was left out of the initial active set, and the
+  search could not bring it back.** A pure phase enters the initial set only
+  above 1e-6 mol, which keeps out the absent phases an interior-point start
+  holds near its barrier parameter, but also a genuine trace below it. Left
+  out, such a trace can be the one phase that fixes a potential the others
+  leave free: every phase that potential then reads as supersaturated is
+  admitted against it. Measured on a CEM I paste in a semi-adiabatic cell,
+  solved by ChemistryLab at 1.22 days, its sulfate all in ettringite and its
+  magnesium in hydrotalcite: 7e-7 mol of monocarbonate holds the aluminum the
+  two leave over. Started from the partition of the instant before, which
+  holds it, the search left it out; the aluminum potential then put
+  monocarbonate at 4.3 RT and the AFm solid solution above saturation, both
+  were admitted, the inner inversion failed, and monocarbonate and
+  hemicarbonate took turns until the set repeated. No start certified the
+  instants that followed, and the run stopped there, on some machines and not
+  others, with the rounding. The trace is now seeded when the search without
+  it does not converge, and those instants certify, monocarbonate growing
+  from 6.96e-7 to 9.77e-7 mol over three seconds and the AFm phase
+  undersaturated, as the same equilibrium solved without the competing
+  phases says.
+
 ## v0.8.8 — the step it takes, and the phase that takes another's place
 
 A patch release. The interior point limits its step on the step it actually
