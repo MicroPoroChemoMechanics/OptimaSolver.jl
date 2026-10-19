@@ -1,14 +1,31 @@
 # Changelog
 
-## v0.8.9 — a trace the start holds, in the initial active set
+## v0.8.9 — a trace the start holds, and a phase in the place of another
 
-A patch release. When no start of the dual Newton method converges and the start
-holds a pure phase between `si_tol` and the amount that seeds the initial active
-set, the solve is tried once more with that trace in the set, and its answer is
-kept only if it converges. A solve that converged, or one this does not help,
-returns what it returned before, to the bit.
+A patch release, on the dual Newton method when no start converges: the solve is
+tried once more from the best answer with a pure phase in the place of the one
+it depends on, then with the traces of the start in the initial active set, and
+an answer is kept only if it converges. A solve that converged, or one this does
+not help, returns what it returned before, to the bit.
 
 ### Fixed
+
+- **A start in the wrong one of two phases the solvent relates could not leave
+  it.** Gypsum and anhydrite differ by two waters, and water is the reference
+  of the solution: the two cannot both be stationary but at the one
+  temperature where they coexist. From a start holding gypsum just above that
+  temperature, the search admitted anhydrite beside it, the inner inversion
+  could not hold both, and anhydrite was refused at every round, gypsum, being
+  stationary, never leaving: each solve ended uncertified with the gypsum
+  kept, after about 100 ms against 0.4 ms for one that certifies. The solve is
+  now restarted from the best answer with the supersaturated phase in the
+  place of the one it depends on, modulo the reference members of the
+  solutions, the amounts moved exactly (`_swapped_start`, `_dependent_incumbent`).
+  On ChemistryLab's run of a lime and gypsum paste in a semi-adiabatic cell,
+  which crosses that transition, the run went from 670 s to under 100 s, its
+  uncertified solves from 8268 to 1, and the temperature at which the cell
+  stays while gypsum turns to anhydrite came within 3e-7 K of where the two
+  coexist, against 1e-3 K above it.
 
 - **A trace the start held was left out of the initial active set, and the
   search could not bring it back.** A pure phase enters the initial set only

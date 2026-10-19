@@ -1712,7 +1712,10 @@ end
 # The solve on plain numbers, its initial active set seeded with the pure phases
 # the start holds above `seed` moles (`INITIAL_SEED_AMOUNT`, or `si_tol` when the
 # solve is retried for a trace of the start, below).
-function _dual_newton_solve_values(prob::DualNewtonProblem, b::AbstractVector, x0::AbstractVector, opts::DualNewtonOptions, seed::Float64)
+function _dual_newton_solve_values(
+        prob::DualNewtonProblem, b::AbstractVector, x0::AbstractVector, opts::DualNewtonOptions, seed::Float64;
+        swap_restart::Bool = true,
+    )
     bv = Vector{Float64}(b)
     n0 = Vector{Float64}(x0)
     m = size(prob.A, 1)
@@ -1905,6 +1908,25 @@ function _dual_newton_solve_values(prob::DualNewtonProblem, b::AbstractVector, x
         out.converged && break
     end
     best.converged && return best
+
+    # No start converged: once more from the answer of the best attempt with its
+    # most supersaturated pure phase in the place of the incumbent it depends on
+    # (`_swapped_start`). From a start in the wrong one of two such phases the
+    # search refuses the right one at every round, the wrong one being stationary
+    # by construction, and the inner inversion cannot hold both: measured on
+    # gypsum in a paste just above the temperature where it gives way to
+    # anhydrite, each solve ended uncertified with the gypsum kept, after 100 ms
+    # against 0.4 ms for one that certifies, and from the swapped composition the
+    # solve certifies in 0.5 ms. Only a solve that did not converge pays for this,
+    # once, and only a converged answer is kept.
+    if swap_restart
+        xs = _swapped_start(prob, best, dead, opts.si_tol)
+        if xs !== nothing
+            opts.verbose && @info "dual-newton: no start converged; from the best answer with a phase swapped"
+            again = _dual_newton_solve_values(prob, b, xs, _without_lp_fallback(opts), seed; swap_restart = false)
+            again.converged && return again
+        end
+    end
 
     # No start converged, and the start holds a pure phase between `si_tol` and
     # the seeding amount: once more with that trace in the initial set. Seeded
@@ -2608,6 +2630,67 @@ end
 One run of the two-level Newton from a given set of multipliers. Called once per
 starting point by [`dual_newton_solve`](@ref).
 """
+# The incumbent the bounded entrant `e` can take the place of: `(j, c, d)`, `j`
+# its place in `active`, when `e`'s column is `c` times that incumbent's plus
+# `dᵣ` times the reference member of each active mixing phase, the one whose
+# stationarity the search holds, and depends on no other incumbent; `nothing`
+# otherwise. Gypsum and anhydrite are the case, `CaSO₄ = CaSO₄·2H₂O − 2 H₂O`,
+# water the reference of the solution: the two cannot both be stationary but at
+# the one temperature where they coexist. The swap moves amounts exactly
+# (`x_e = x_j / c`, each reference less `dᵣ x_e`), so it is offered only where
+# that move means what it says: `c > 0`, and only references that are an amount
+# of their member (not the total of a mole-fraction phase).
+function _dependent_incumbent(prob, active, act_ph, e, dead)
+    others = [(p, i) for (p, i) in enumerate(active) if i != e && !(i in prob.always_active)]
+    isempty(others) && return nothing
+    refcols = [prob.phases[k].members[prob.phases[k].j_ref] for k in act_ph]
+    live = [!(i in dead) for i in refcols]
+    A = _primal_value.(prob.A)
+    M = hcat(A[:, last.(others)], A[:, refcols[live]])
+    a = A[:, e]
+    coef = LinearAlgebra.pinv(M) * a
+    LinearAlgebra.norm(M * coef - a) <= 1.0e-10 * max(1.0, LinearAlgebra.norm(a)) || return nothing
+    cb = coef[eachindex(others)]
+    nz = findall(x -> abs(x) > 1.0e-10, cb)
+    length(nz) == 1 || return nothing
+    k = only(nz)
+    cb[k] > 0 || return nothing
+    d = zeros(length(act_ph))
+    d[live] = coef[(length(others) + 1):end]
+    all(a -> iszero(d[a]) || !prob.phases[act_ph[a]].mole_fraction, eachindex(act_ph)) || return nothing
+    return first(others[k]), cb[k], d
+end
+
+# The composition of the attempt `out` with its most supersaturated pure phase
+# put in the place of the incumbent it depends on (`_dependent_incumbent`), the
+# amounts moved exactly: `nothing` when no pure phase above `si_tol` can take any
+# incumbent's place. The phase may be absent or held at a trace: a search that
+# admitted it beside the incumbent ends with both active, the entrant at its
+# admission amount, and the two cannot be stationary together.
+function _swapped_start(prob, out, dead, si_tol)
+    q = out.q
+    u = _potentials(prob.A, out.y)
+    si = u .- (current_g(prob, q) .+ current_h(prob, out.x, q))
+    cands = [i for i in prob.idx_bounded if !(i in dead) && si[i] > si_tol]
+    sort!(cands; by = i -> -si[i])
+    for e in cands
+        sw = _dependent_incumbent(prob, out.active, out.active_phases, e, dead)
+        sw === nothing && continue
+        j, c, d = sw
+        xs = copy(out.x)
+        x_in = xs[out.active[j]] / c
+        xs[e] += x_in
+        xs[out.active[j]] = 0.0
+        for (a, k) in enumerate(out.active_phases)
+            iszero(d[a]) && continue
+            r = prob.phases[k].members[prob.phases[k].j_ref]
+            xs[r] -= d[a] * x_in
+        end
+        all(>=(0), xs) && return xs
+    end
+    return nothing
+end
+
 function _dual_newton_attempt(
         prob, bv, y_init, W0, act_ph0, refs0, active0, xB0, x_buf, dead, degenerate, m, opts, cap,
     )

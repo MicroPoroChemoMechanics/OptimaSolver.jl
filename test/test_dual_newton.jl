@@ -1612,6 +1612,55 @@ end
     @test all(getfield(o2, k) == getfield(o, k) for k in fieldnames(DualNewtonOptions) if k !== :lp_fallback)
 end
 
+@testset "a start in the wrong one of two phases the solvent relates is swapped" begin
+    # Water, a solute X, and two solids whose columns differ by two waters, a
+    # hydrate X·2H₂O and the anhydrous X: with water the reference of the
+    # solution, the two cannot both be stationary but at the one water potential
+    # where they coexist. The anhydrous solid is the more stable, and the start
+    # holds every X in the hydrate. From it the search admits the anhydrous
+    # solid beside the hydrate, the inner inversion cannot hold both, and the
+    # entrant is refused at every round, the hydrate, stationary, never leaving.
+    # Restarted from the best answer with the anhydrous solid in the hydrate's
+    # place, the amounts moved exactly, the solve certifies.
+    A = Float64[1 0 2 0; 0 1 1 1]
+    h(x, _) = [log(x[1] / (x[1] + x[2])), log(max(x[2], 1.0e-300) / x[1]), 0.0, 0.0]
+    g = [0.0, -5.0, -10.0, -10.5]
+    prob = DualNewtonProblem(
+        A, g, h; phases = [SolutionPhase([1, 2], 1; always_present = true)], idx_bounded = [3, 4],
+    )
+    b = [55.0, 1.0]
+    start = [53.0, 1.0e-3, 1.0, 1.0e-12]
+    res = dual_newton_solve(prob, b, start)
+    @test res.converged && kkt_certificate(prob, res.x, b).optimal
+    # The answer by hand: the anhydrous solid fixes the potential of X, the
+    # solute follows by mass action over the water, which holds all the water
+    # with no hydrate left.
+    x_aq = b[1] * exp(g[4] - g[2])
+    @test res.x[3] < 1.0e-12
+    @test res.x[2] ≈ x_aq rtol = 1.0e-8
+    @test res.x[4] ≈ b[2] - x_aq rtol = 1.0e-8
+    # The restart is what certified, the search from the hydrate having failed
+    # (it says so).
+    @test_logs (:info, r"with a phase swapped") match_mode = :any dual_newton_solve(
+        prob, b, start; opts = DualNewtonOptions(verbose = true),
+    )
+    # The dependence the swap reads: the anhydrous solid is the hydrate less two
+    # waters, and nothing else in place carries X.
+    j, c, d = OptimaSolver._dependent_incumbent(prob, [3], [1], 4, Int[])
+    @test j == 1 && c ≈ 1.0 && d ≈ [-2.0]
+    # No swap where the entrant depends on no incumbent, or on two of them: an
+    # X₂ solid over two solids of one X each.
+    @test OptimaSolver._dependent_incumbent(prob, Int[], [1], 4, Int[]) === nothing
+    A2 = Float64[1 0 2 0 0 0; 0 1 1 1 2 1]
+    prob2 = DualNewtonProblem(
+        A2, [g; -21.0; -10.4], (x, _) -> [h(x, nothing); 0.0; 0.0];
+        phases = [SolutionPhase([1, 2], 1; always_present = true)], idx_bounded = [3, 4, 5, 6],
+    )
+    @test OptimaSolver._dependent_incumbent(prob2, [4, 5], Int[], 3, Int[]) === nothing
+    @test OptimaSolver._dependent_incumbent(prob2, [4, 6], Int[], 5, Int[]) === nothing
+    @test OptimaSolver._dependent_incumbent(prob2, [4], Int[], 5, Int[])[1:2] == (1, 2.0)
+end
+
 @testset "a phase admitted on a full active set sends an incumbent out" begin
     # Water and two solutes, three pure solids (Ca, X, CaW) and a binary solid
     # solution of composition CaX. The start holds the three solids, which use
