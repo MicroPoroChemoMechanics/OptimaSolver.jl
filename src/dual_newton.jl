@@ -2063,7 +2063,8 @@ dual numbers.
 function _outer_jacobian(prob, v, W, act_ph, active, bv; dead, degenerate)
     unk = _inner_unknowns(prob, W, v, act_ph, dead, _log_bounds(bv))
     z0 = vcat(v, Float64[W[k][j] for (_, k, j, _, _) in unk])
-    Jz = ForwardDiff.jacobian(z -> _implicit_system(prob, z, unk, W, act_ph, active, bv; dead, degenerate), z0)
+    fz = z -> _implicit_system(prob, z, unk, W, act_ph, active, bv; dead, degenerate)
+    Jz = ForwardDiff.jacobian(fz, z0, ForwardDiff.JacobianConfig(fz, z0, _outer_chunk(prob)))
     Nv = length(v)
     nG = length(unk)
     Gv = Jz[1:nG, 1:Nv]
@@ -2104,8 +2105,18 @@ function _swept_jacobian(prob, v, W_ref, act_ph, active, bv; dead, degenerate, i
             dead, degenerate, inner_maxit, max_fall,
         )
     end
-    return ForwardDiff.jacobian(f, v)
+    return ForwardDiff.jacobian(f, v, ForwardDiff.JacobianConfig(f, v, _outer_chunk(prob)))
 end
+
+# The chunk of the forward-mode differentiation of the outer system: as wide as
+# the conservation rows, at most ForwardDiff's default. Every set the search visits
+# has at least that many unknowns, the multipliers among them, so the dual numbers
+# have one width per problem, and the inversion and the activity model under them
+# are compiled once. Left to ForwardDiff, the width followed the number of
+# unknowns, which changes with the set: measured on a chloride-bearing cement,
+# the first solve compiled the inversion for widths 10, 11 and 12, 41 s against
+# 19 s, for the same answer.
+_outer_chunk(prob) = ForwardDiff.Chunk{min(size(prob.A, 1), ForwardDiff.DEFAULT_CHUNK_THRESHOLD)}()
 
 # ── the balance, judged row by row ────────────────────────────────────────────
 #
@@ -2217,6 +2228,12 @@ function _amount_scales(prob, b, dead)
     return κ
 end
 
+# What the start holds of a mixing phase, before any seeding: its total, or the
+# amount of its reference member for a phase with a solvent. Read against the
+# phase's undersaturation, it says whether the start holds the phase at all; the
+# seeded amount would make every phase the start holds a trace of look present.
+_start_amount(ph, n0) = ph.mole_fraction ? sum(i -> n0[i], ph.members) : n0[ph.members[ph.j_ref]]
+
 # The scale of a mixing phase's total: the largest of its live members' scales.
 _phase_scale(κ, ph, dead) = maximum(i -> i in dead ? 0.0 : κ[i], ph.members)
 
@@ -2300,6 +2317,27 @@ function _pivot_in(prob, active, xB, e, λ)
     xB2[jb] = 0.0
     keep = setdiff(eachindex(active), jb)
     return vcat(active[keep], e), vcat(max.(xB2[keep], 0.0), t)
+end
+
+# The bound-constrained variable `e` taken off its bound: added at zero when its
+# column is independent of the free ones, an incumbent making room where the
+# conditions `y` can meet are spent (`_exchange_incumbent`); or in the place of the
+# incumbent the ratio test empties when it depends on them (`_pivot_in`). Returns
+# the set, its amounts, and whether it changed.
+function _release(prob, active, xB, act_ph, e, bv, dead, degenerate)
+    λ = _dependence(prob, active, e)
+    if λ === nothing
+        a2 = vcat(active, e)
+        x2 = vcat(xB, 0.0)
+        if !_active_set_supports_a_solution(prob, a2, act_ph)
+            a2, x2 = _exchange_incumbent(prob, a2, x2, act_ph, 1:(length(a2) - 1), bv, dead, degenerate)
+        end
+        _active_set_supports_a_solution(prob, a2, act_ph) || return (active, xB, false)
+        return (a2, x2, true)
+    end
+    pivoted = _pivot_in(prob, active, xB, e, λ)
+    pivoted === nothing && return (active, xB, false)
+    return (pivoted[1], pivoted[2], true)
 end
 
 # The scale on which the removal of an amount is judged, row by row: the budget
@@ -2595,6 +2633,17 @@ function _newton_step!(
     res = maximum(abs, wR .* R)
     φ = sum(abs2, wR .* R)
     pred = sum(abs2, wR .* (J * δ))
+    # Where the linearization can remove no more than a fraction `tol` of the
+    # squared residual, the iterate is the least-squares point of its set and no
+    # step is taken: the relative-reduction test of nonlinear least squares, the
+    # same tolerance the residual is judged on. Without it, steps that each removed
+    # a few ulps were accepted until `maxit`: measured on an aqueous solve of a
+    # glass dissolving at fixed pH, 190 iterations at a residual unchanged to
+    # eleven digits, where the next starting point converged in 27.
+    if pred <= opts.tol * φ
+        copyto!(x_buf, x_iterate)
+        return (v_in, active_in, false)
+    end
     cand_resid = Ref(Inf)
     accepted = false
     v_t = similar(v)
@@ -2628,9 +2677,15 @@ function _newton_step!(
             only_runaway = false
             runaway_streak = 0
             mx = maximum(abs, wR .* R_t)
-            decrease = mx < res || (
+            # A decrease is one beyond the rounding of the residual itself: at the
+            # least-squares point of a set that has no solution, the linearization
+            # predicts nothing, and steps that move the last bits were accepted as
+            # descents for as long as `maxit` allowed (190 iterations at a residual
+            # of 0.2917, unchanged to eleven digits, on an aqueous system that the
+            # next starting point solved at once).
+            decrease = mx < res * (1 - 8 * eps()) || (
                 pred > opts.tol^2 && mx <= res * (1 + 1.0e-12) &&
-                    sum(abs2, wR .* R_t) <= φ - 2.0e-4 * α * pred
+                    sum(abs2, wR .* R_t) <= φ - max(2.0e-4 * α * pred, 8 * eps() * φ)
             )
             if decrease && (!strict || !current_converged || cand_resid[] <= opts.inner_tol)
                 v = copy(v_t)
@@ -2705,16 +2760,27 @@ function _dual_newton_attempt(prob, bv, y_init, W0, act_ph0, refs0, n0, x_guess,
     # kept when its total as a fraction of its scale is no smaller than its
     # undersaturation (`_phase_saturation`, in RT, at the composition the start
     # gives it). An interior-point answer holds an absent solid solution near its
-    # barrier, a small fraction against an undersaturation of order one.
+    # barrier, a small fraction against an undersaturation of order one. A mixing
+    # phase is kept only if no balance row would miss what the start holds of it
+    # besides: unlike a pure phase it has no bound to leave by, and kept at a
+    # trace because fitted multipliers read it as supersaturated, it held a
+    # cement solve at a residual of 0.19 for 200 iterations, undersaturated at the
+    # answer; held out, the tangent plane admits it once the set is solved if it
+    # is supersaturated there.
     u0 = _potentials(prob.A, y)
     g0 = current_g(prob, q)
     h0 = current_h(prob, x_guess, q)
     active, xB = _initial_free_set(prob, n0, g0 .+ h0 .- u0, κ, act_ph, dead)
     keep0 = Int[]
+    σb0 = _budget_scales(bv)
     for (a, k) in enumerate(act_ph)
+        ph = prob.phases[k]
+        held = _start_amount(ph, n0)
         (
-            prob.phases[k].always_present ||
-                refs[a] / _phase_scale(κ, prob.phases[k], dead) >= -_phase_saturation(prob, k, u0, h0, x_guess, g0, dead)
+            ph.always_present || (
+                !_phase_negligible(prob, ph, held, σb0, opts.tol, dead) &&
+                    held / _phase_scale(κ, ph, dead) >= -_phase_saturation(prob, k, u0, h0, x_guess, g0, dead)
+            )
         ) && push!(keep0, a)
     end
     if !isempty(keep0)
@@ -2744,6 +2810,10 @@ function _dual_newton_attempt(prob, bv, y_init, W0, act_ph0, refs0, n0, x_guess,
     # rule against cycling of an active-set method.
     stalled = Set{Int}()
     stalled_ph = Set{Int}()
+    # The sets the search has left since it last improved on its best. Coming
+    # back to one of them without improving is a cycle, and ends the search:
+    # with finitely many sets, the search either improves or ends.
+    left = Set{Tuple{Vector{Int}, Vector{Int}}}()
     # The tangent-plane measure of each absent phase at the current iterate, `NaN`
     # until asked for.
     admission = fill(NaN, length(prob.phases))
@@ -2778,7 +2848,7 @@ function _dual_newton_attempt(prob, bv, y_init, W0, act_ph0, refs0, n0, x_guess,
 
         # The bound-constrained variable held out that is the most supersaturated,
         # beyond `si_tol`; ties to the smallest index.
-        e = 0
+        e_cand = 0
         viol_b = 0.0
         s_e = opts.si_tol
         for i in prob.idx_bounded
@@ -2787,9 +2857,15 @@ function _dual_newton_attempt(prob, bv, y_init, W0, act_ph0, refs0, n0, x_guess,
             viol_b = max(viol_b, si)
             if si > s_e && !(i in stalled)
                 s_e = si
-                e = i
+                e_cand = i
             end
         end
+        # A supersaturation is acted on once it exceeds the error of the iterate,
+        # the residual of its own set: below that its sign says nothing. Taken
+        # off its bound at every iteration from a start far from its answer
+        # (a residual of 475), the most supersaturated phase of a cement went in
+        # and out by turns with two others for 200 iterations.
+        e = s_e > judged ? e_cand : 0
         # The mixing phases held out, tested once the set is solved and no pure
         # phase waits: their test is a search, the pure phases' a subtraction.
         fill!(admission, NaN)
@@ -2814,7 +2890,7 @@ function _dual_newton_attempt(prob, bv, y_init, W0, act_ph0, refs0, n0, x_guess,
         complete = (judged <= opts.tol && e == 0) || !_any_absent_phase(prob, act_ph, dead)
         if complete
             if _improves(kkt, judged2, best_res, best_judged)
-                kkt < best_res * (1 - 1.0e-9) && (empty!(stalled); empty!(stalled_ph))
+                kkt < best_res * (1 - 1.0e-9) && (empty!(stalled); empty!(stalled_ph); empty!(left))
                 best_res, best_judged = kkt, judged2
                 best_state = (copy(act_ph), copy(active), copy(v), [copy(w) for w in W], max(viol_b, viol_ph))
             end
@@ -2834,26 +2910,8 @@ function _dual_newton_attempt(prob, bv, y_init, W0, act_ph0, refs0, n0, x_guess,
         before = (copy(active), copy(xB), copy(act_ph), copy(refs))
         moved = false
         if e != 0
-            λ = _dependence(prob, active, e)
-            if λ === nothing
-                push!(active, e)
-                push!(xB, 0.0)
-                # Independent, it may still exceed the conditions `y` can meet when
-                # mole-fraction phases spend them: an incumbent makes room.
-                if !_active_set_supports_a_solution(prob, active, act_ph)
-                    active, xB = _exchange_incumbent(prob, active, xB, act_ph, 1:(length(active) - 1), bv, dead, degenerate)
-                end
-                moved = _active_set_supports_a_solution(prob, active, act_ph)
-                moved || ((active, xB) = (before[1], before[2]))
-                opts.verbose && @info "dual-newton move" released = e admitted = moved
-            else
-                pivoted = _pivot_in(prob, active, xB, e, λ)
-                if pivoted !== nothing
-                    active, xB = pivoted
-                    moved = true
-                end
-                opts.verbose && @info "dual-newton move" pivoted = e admitted = moved
-            end
+            active, xB, moved = _release(prob, active, xB, act_ph, e, bv, dead, degenerate)
+            opts.verbose && @info "dual-newton move" released = e admitted = moved
         elseif k_new != 0
             push!(act_ph, k_new)
             push!(refs, PHASE_ADMISSION_SEED * _phase_scale(κ, prob.phases[k_new], dead))
@@ -2921,6 +2979,19 @@ function _dual_newton_attempt(prob, bv, y_init, W0, act_ph0, refs0, n0, x_guess,
         # others (more conditions on `y` than it has dimensions, which the
         # least-squares step leaves spread over all of them). Where none is,
         # the search has ended.
+        # A set no step improves cannot be solved as it is; where a variable held at
+        # its bound is supersaturated, the set may lack it, whatever the error of
+        # the iterate, and it comes off its bound before anything leaves.
+        if !accepted && e_cand != 0 && e == 0
+            active2, xB2, released = _release(prob, active, xB, act_ph, e_cand, bv, dead, degenerate)
+            if released
+                opts.verbose && @info "dual-newton stall" released = e_cand
+                push!(left, (sort(act_ph), sort(active)))
+                active, xB = active2, xB2
+                (sort(act_ph), sort(active)) in left && break
+                continue
+            end
+        end
         if !accepted
             a_out = 0
             j_out = 0
@@ -2943,6 +3014,7 @@ function _dual_newton_attempt(prob, bv, y_init, W0, act_ph0, refs0, n0, x_guess,
                 end
             end
             opts.verbose && @info "dual-newton stall" leaves = j_out != 0 ? active[j_out] : 0 phase_leaves = a_out != 0 ? act_ph[a_out] : 0
+            push!(left, (sort(act_ph), sort(active)))
             if j_out != 0
                 push!(stalled, active[j_out])
                 keep = setdiff(eachindex(active), j_out)
@@ -2956,6 +3028,7 @@ function _dual_newton_attempt(prob, bv, y_init, W0, act_ph0, refs0, n0, x_guess,
             else
                 break
             end
+            (sort(act_ph), sort(active)) in left && break
             continue
         end
         nph = length(act_ph)
@@ -2966,6 +3039,14 @@ function _dual_newton_attempt(prob, bv, y_init, W0, act_ph0, refs0, n0, x_guess,
         y = v[(nph + 1):(nph + m)]
         xB = na == 0 ? Float64[] : v[(nph + m + 1):(nph + m + na)]
         q = nq == 0 ? Float64[] : v[(nph + m + na + 1):(nph + m + na + nq)]
+        # A set changed for good: the one left is recorded, and coming back to one
+        # left before is a cycle.
+        old_set = (sort(before[3]), sort(before[1]))
+        new_set = (sort(act_ph), sort(active))
+        if new_set != old_set
+            push!(left, old_set)
+            new_set in left && break
+        end
     end
 
     # The best iterate whose set was not solved, now tested for the mixing phases

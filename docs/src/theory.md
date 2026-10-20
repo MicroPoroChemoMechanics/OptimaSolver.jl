@@ -664,9 +664,14 @@ derivatives are exact as well.
 The search is a single Newton iteration bounded by `maxit`. Each iteration takes
 at most one variable off its bound, and a variable that left because no step
 could meet its condition is held out until the error of the whole problem
-improves: the rule that keeps an active-set method from cycling. The search ends
-when that error is within the tolerances, or when its set is solved and nothing is
-left to move.
+improves: the rule that keeps an active-set method from cycling. Coming back,
+without improving, to a set it has left ends the search: there are finitely many
+sets, so it either improves or ends. So does an iterate at which the
+linearization can remove no more than a fraction `tol` of the squared residual,
+the least-squares point of its set (the relative-reduction test of nonlinear
+least squares), and a step is accepted only on a decrease beyond the rounding of
+the residual itself. The search ends when the error is within the tolerances, or
+when its set is solved and nothing is left to move.
 
 ### The starting multipliers
 
@@ -728,8 +733,11 @@ reclassified at **every** Newton iteration, not once the current set is solved:
   crosses, brings it there, or when it sits at zero and the step would take it
   lower. It is then held, its row removed, and the step solved again without it;
 - a variable at its bound comes off it when it is supersaturated,
-  ``u_i - g_i - h_i > \texttt{si\_tol}`` in RT: one per iteration, the most
-  supersaturated, ties to the smallest index;
+  ``u_i - g_i - h_i > \texttt{si\_tol}`` in RT, by more than the error of the
+  iterate, the residual of its own set: below that the sign of the
+  supersaturation says nothing. One per iteration, the most supersaturated, ties
+  to the smallest index; and where no step improves the set, the most
+  supersaturated comes off whatever that error, the set lacking it perhaps;
 - a mixing phase held out is tested by the tangent plane once the current set is
   solved and no pure phase waits, and the most violated enters; a present one
   leaves when no balance row would miss it.
@@ -790,7 +798,12 @@ at zero undersaturation, and is read as it stands. An interior-point answer hold
 an absent phase where ``x_i\,(g_i + h_i - u_i)`` is its barrier parameter, a small
 fraction against an undersaturation of order one, and starts without it. A trace
 in equilibrium, a small fraction against no undersaturation, stays. Mixing phases
-are read alike, on their total and their saturation.
+are read alike, on their total and their saturation, with one more condition:
+the start must hold an amount of the phase that some balance row would miss. A
+mixing phase has no bound it can reach, its total being carried in logarithm, so
+one the start holds at a trace, which fitted multipliers happen to read as
+supersaturated, could not leave; held out, it is admitted by the tangent plane
+once the set is solved, if it is supersaturated there.
 
 ### The certificate
 
