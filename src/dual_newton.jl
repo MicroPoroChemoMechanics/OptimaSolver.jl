@@ -48,15 +48,32 @@ that component will do; the solution does not depend on it.
 """
 const DEGENERATE_POTENTIAL = 500.0
 
-# Bounds on a log-molality. The floor is where `exp` underflows; the ceiling is
-# far above any physical molality and exists only to keep a diverging iterate
-# finite. Both are ACTIVE BOUNDS, not tolerances: see `_invert_phases!`.
-const W_FLOOR = -700.0
+# Bounds on the log-amount `w = ln x` of a member, RELATIVE to the logarithm of the
+# scale `S` of the budget (`_system_scale`): a member holds between `S·e⁻⁶⁹⁰` and
+# `S·e²⁰`, whatever the amount of matter the system holds, so that no bound means
+# one thing for a gram of paste and another for a tonne. The floor is where `exp`
+# nearly underflows (and keeps `S·e⁻⁶⁹⁰` a normal number for `S` down to 1e-8);
+# the ceiling is far above what any budget holds and exists only to keep a
+# diverging iterate finite. Both are ACTIVE BOUNDS, not tolerances: see
+# `_invert_phases!`. `_log_bounds` gives them for a budget.
+const W_FLOOR = -690.0
 
 # The floor of the vertex of the linear program as a start (`lp_fallback` of
 # `DualNewtonOptions`): what the vertex leaves at zero starts there.
 const LP_FALLBACK_FLOOR = 1.0e-16
 const W_CEIL = 20.0
+
+# The floor of the log-fraction of a member within its phase, a dimensionless
+# quantity: `_newton_phase_composition` works on `z = ln f`.
+const LOG_FRACTION_FLOOR = -700.0
+
+# The largest log-amount a `Float64` holds: a guard on representability, not a bound
+# of the chemistry.
+const LOG_FLOATMAX = log(floatmax(Float64))
+
+# The amount of a member the start holds none of, relative to `S`: where its
+# log-amount starts.
+const W_START = log(1.0e-30)
 
 # Sweeps without a new smallest step after which `_invert_phases!` stops.
 #
@@ -172,7 +189,7 @@ while the same paste without its two chloride phases solved at once.
 """
 function degenerate_components(A::AbstractMatrix, b::AbstractVector)
     m = size(A, 1)
-    scale = max(maximum(abs, b; init = 0.0), 1.0)
+    scale = maximum(abs, b; init = 0.0)
     out = Int[]
     forced = falses(size(A, 2))
     changed = true
@@ -717,6 +734,27 @@ end
 _primal_value(x) = x
 _primal_value(x::ForwardDiff.Dual) = _primal_value(ForwardDiff.value(x))
 
+# The amount of a phase on trial in a stability test: the one given, or 1e-6 of
+# the largest amount of the composition `x`, the same fraction of any system.
+_trial_total(total::Float64, x) = total
+_trial_total(::Nothing, x) = 1.0e-6 * _system_scale(x)
+
+# The scale of the budget `b`, its largest entry in magnitude: the unit in which
+# every amount the solver compares is expressed, so that no threshold depends on
+# how much matter the system holds. A budget that holds nothing has no scale, and
+# any unit will do.
+function _system_scale(b)
+    S = maximum(x -> abs(_primal_value(x)), b; init = 0.0)
+    return S > 0 ? S : 1.0
+end
+
+# The bounds on the log-amount of a member for the budget `b` (`W_FLOOR`,
+# `W_CEIL`).
+function _log_bounds(b)
+    lS = log(_system_scale(b))
+    return (lo = lS + W_FLOOR, hi = lS + W_CEIL)
+end
+
 function _logsumexp(d)
     M = maximum(d)
     isfinite(M) || return oftype(M, -Inf)
@@ -742,7 +780,7 @@ a decrease of the squared residual, halving it otherwise.
 
 A member at the floor whose residual is positive asks for less than the floor
 allows. It is held there and left out of the system, which is what the
-substitution does too: its fraction is `exp(W_FLOOR)`, zero to the precision
+substitution does too: its fraction is `exp(LOG_FRACTION_FLOOR)`, zero to the precision
 of everything it enters.
 
 A bounded member (`bounded_members`) whose residual is positive, and would
@@ -786,9 +824,9 @@ function _newton_phase_composition(
         end
         return lh(xm)[live]
     end
-    z = [log(max(f0[j], exp(W_FLOOR))) for j in live]
+    z = [log(max(f0[j], exp(LOG_FRACTION_FLOOR))) for j in live]
     z .-= _logsumexp(z)
-    held(zz, r) = [zz[a] <= W_FLOOR + 1 && r[a] > 0 for a in 1:K]
+    held(zz, r) = [zz[a] <= LOG_FRACTION_FLOOR + 1 && r[a] > 0 for a in 1:K]
     function state(zz)
         hz = hfun(zz)
         L = _logsumexp(cl .- hz .+ zz)
@@ -822,9 +860,9 @@ function _newton_phase_composition(
         snapped = false
         for a in bnd
             (st.out[a] || st.r[a] <= 0) && continue
-            _primal_value(st.r[a]) - _primal_value(H[a, a]) * (_primal_value(z[a]) - W_FLOOR) > 0 || continue
+            _primal_value(st.r[a]) - _primal_value(H[a, a]) * (_primal_value(z[a]) - LOG_FRACTION_FLOOR) > 0 || continue
             zt = copy(z)
-            zt[a] = W_FLOOR
+            zt[a] = LOG_FRACTION_FLOOR
             zt .-= _logsumexp(zt)
             stt = state(zt)
             if stt.r[a] > 0
@@ -849,7 +887,7 @@ function _newton_phase_composition(
         for _ in 1:30
             zt = copy(z)
             for (p, a) in enumerate(free)
-                zt[a] = clamp(z[a] + α * δ[p], W_FLOOR, 0.0)
+                zt[a] = clamp(z[a] + α * δ[p], LOG_FRACTION_FLOOR, 0.0)
             end
             zt .-= _logsumexp(zt)
             stt = state(zt)
@@ -911,7 +949,7 @@ function _potentials(A, y)
 end
 
 """
-    _invert_phases!(prob, W, y, refs, act_ph, active, xB, x_buf; dead) -> x_buf
+    _invert_phases!(prob, W, y, refs, act_ph, active, xB, x_buf; wb, dead) -> x_buf
 
 Recover the members of every ACTIVE mixing phase from their own stationarity,
 `hᵢ(x) = uᵢ − gᵢ`, at fixed multipliers and fixed phase references.
@@ -921,14 +959,15 @@ is what a logarithm of a mole fraction is — `∂hᵢ/∂wᵢ = 1`, so `w += r`
 exact Newton step; the coupling through the phase total and the activity
 coefficients is what makes the loop iterative rather than one-shot.
 
-The floor is `exp(-700)` (`W_FLOOR`) and not higher: a variable whose
-stationarity demands `hᵢ = −200` could never reach a floor of `−80`, its residual
-would stay at 120 for ever, and the loop could never report convergence — which
-would then make the OUTER Jacobian meaningless.
+The log-amounts are held within `wb = _log_bounds(b)`. The floor is `S·e⁻⁶⁹⁰`
+(`W_FLOOR`) and not higher: a variable whose stationarity demands `hᵢ = −200`
+could never reach a floor of `−80`, its residual would stay at 120 for ever, and
+the loop could never report convergence — which would then make the OUTER
+Jacobian meaningless.
 """
 function _invert_phases!(
         prob, W, y, refs, act_ph, active, xB, x_buf;
-        dead = Set{Int}(), g = prob.g, q = prob.q0,
+        wb::NamedTuple{(:lo, :hi), Tuple{Float64, Float64}}, dead = Set{Int}(), g = prob.g, q = prob.q0,
         resid::Union{Nothing, Base.RefValue{Float64}} = nothing, maxsweeps::Int = 200,
         max_fall::Float64 = 30.0, trial::Bool = false,
         composed::Union{Nothing, AbstractVector{Bool}} = nothing,
@@ -1002,10 +1041,10 @@ function _invert_phases!(
             end
             for (j, i) in enumerate(ph.members)
                 (j == ph.j_ref || i in dead) && continue
-                w = clamp(wn[j], W_FLOOR, W_CEIL)
+                w = clamp(wn[j], wb.lo, wb.hi)
                 worst = max(worst, abs(_primal_value(w - W[k][j])))
                 W[k][j] = w
-                trial && w >= W_CEIL && (runaway = true)
+                trial && w >= wb.hi && (runaway = true)
             end
         end
         if !(trial && runaway)
@@ -1023,7 +1062,7 @@ function _invert_phases!(
                     f0 = [exp(W[k][j]) / N for j in eachindex(ph.members)]
                     f, _, _ = _newton_phase_composition(prob, ph, c, x_buf, f0, N, q, dead)
                     for j in eachindex(ph.members)
-                        w = f[j] > 0 ? clamp(log(N) + log(f[j]), W_FLOOR, 700.0) : W_FLOOR
+                        w = f[j] > 0 ? clamp(log(N) + log(f[j]), wb.lo, LOG_FLOATMAX) : wb.lo
                         worst = max(worst, abs(_primal_value(w - W[k][j])))
                         W[k][j] = w
                     end
@@ -1044,7 +1083,7 @@ function _invert_phases!(
                     isfinite(M) || continue          # every member of the phase is dead
                     lZ = M + log(sum(exp(dj - M) for dj in d))
                     for (j, _) in enumerate(ph.members)
-                        w = clamp(log(Nf) + d[j] - lZ, W_FLOOR, 700.0)
+                        w = clamp(log(Nf) + d[j] - lZ, wb.lo, LOG_FLOATMAX)
                         worst = max(worst, abs(_primal_value(w - W[k][j])))
                         W[k][j] = w
                     end
@@ -1056,14 +1095,14 @@ function _invert_phases!(
                     for (j, i) in enumerate(ph.members)
                         (j == ph.j_ref || i in dead) && continue
                         r = (u[i] - g[i]) - hv[i]
-                        w = clamp(W[k][j] + clamp(r, -max_fall, W_MAX_RISE), W_FLOOR, W_CEIL)
+                        w = clamp(W[k][j] + clamp(r, -max_fall, W_MAX_RISE), wb.lo, wb.hi)
                         # THE MEASURE IS THE STEP, NOT THE RESIDUAL, and that is what
                         # `inner_tol` actually asks for: "re-running this loop from
                         # its own output changes nothing". That is a statement about
                         # how far the STATE moves, and the residual is not it.
                         #
                         # The two differ exactly where it matters. `W` is a
-                        # log-molality clamped to `[W_FLOOR, W_CEIL]`, and a species
+                        # log-amount clamped to `[wb.lo, wb.hi]`, and a species
                         # whose stationarity asks for less than the floor can never
                         # reach it: the update is clamped, the state does not move,
                         # and the residual stays where it is FOR EVER. Measured on a
@@ -1082,13 +1121,13 @@ function _invert_phases!(
                         # before it comes off.
                         worst = max(worst, abs(_primal_value(w - W[k][j])))
                         W[k][j] = w
-                        trial && w >= W_CEIL && (runaway = true)
+                        trial && w >= wb.hi && (runaway = true)
                     end
                 end
             end
         end
 
-        # A solute at the ceiling, `e^20` mol, is an inversion running away and
+        # A solute at the ceiling, `S·e²⁰`, is an inversion running away and
         # not one converging: the potentials ask for more of it than any budget
         # holds. Measured on cement pastes under the limiting law past its range,
         # 91 % of 200 000 inversions ended unconverged, cycling with a period of
@@ -1164,7 +1203,7 @@ function _outer_residual(
     g = current_g(prob, q)
 
     _invert_phases!(
-        prob, W, y, refs, act_ph, active, xB, x_buf; dead = dead, g = g, q = q,
+        prob, W, y, refs, act_ph, active, xB, x_buf; wb = _log_bounds(b), dead = dead, g = g, q = q,
         resid = resid, maxsweeps = inner_maxit, max_fall, trial, composed,
     )
     # A trial whose inversion ran away holds no composition, and the line search
@@ -1250,7 +1289,7 @@ function _admission_measure!(memo, prob, k, u, x_buf, q, dead)
 end
 
 """
-    phase_tangent_trial(prob, k, u, x; maxit = 50, tol = nothing, total = 1e-6,
+    phase_tangent_trial(prob, k, u, x; maxit = 50, tol = nothing, total = nothing,
                         g = prob.g, q = prob.q0, start = nothing, dead = Set{Int}())
         -> (measure, fractions)
 
@@ -1279,16 +1318,20 @@ saturation index: a solution phase has no single index, and its members are neve
 exactly zero while it exists — which is why `kkt_certificate` cannot test them
 one by one and needs this instead.
 
-`total` is the trial phase amount. The measure is independent of it for an ideal
-phase, and for a non-ideal one it sets the composition at which `γ` is read; a
-small value is the right choice, since the question is whether an *infinitesimal*
-amount of the phase is stable.
+`total` is the trial phase amount, by default 1e-6 of the largest amount of `x`
+(1e-6 for an empty composition), so that the trial is the same fraction of any
+system. The measure is
+independent of it for an ideal phase, and for a non-ideal one it sets the
+composition at which `γ` is read; a small value is the right choice, since the
+question is whether an *infinitesimal* amount of the phase is stable.
 """
 function phase_tangent_trial(
         prob::DualNewtonProblem, k::Int, u::AbstractVector, x::AbstractVector;
-        maxit::Int = 50, tol::Union{Nothing, Float64} = nothing, total::Float64 = 1.0e-6,
+        maxit::Int = 50, tol::Union{Nothing, Float64} = nothing,
+        total::Union{Nothing, Float64} = nothing,
         g = prob.g, q = prob.q0, start = nothing, dead = Set{Int}(),
     )
+    amount = _trial_total(total, x)
     ph = prob.phases[k]
     nm = length(ph.members)
     nm == 0 && return (-Inf, Float64[])
@@ -1337,15 +1380,15 @@ function phase_tangent_trial(
     if ph.newton
         c = Float64[_primal_value(u[i] - g[i]) for i in ph.members]
         f, L, _ = tol === nothing ?
-            _newton_phase_composition(prob, ph, c, xt, frac, total, q, dead; maxit = maxit) :
-            _newton_phase_composition(prob, ph, c, xt, frac, total, q, dead; maxit = maxit, tol = tol)
+            _newton_phase_composition(prob, ph, c, xt, frac, amount, q, dead; maxit = maxit) :
+            _newton_phase_composition(prob, ph, c, xt, frac, amount, q, dead; maxit = maxit, tol = tol)
         return (_primal_value(L), Float64[_primal_value(v) for v in f])
     end
     lnZ = -Inf
     d = Vector{Float64}(undef, nm)
     for _ in 1:maxit
         for (j, i) in enumerate(ph.members)
-            xt[i] = total * frac[j]
+            xt[i] = amount * frac[j]
         end
         hv = current_h(prob, xt, q)
         for (j, i) in enumerate(ph.members)
@@ -1355,7 +1398,7 @@ function phase_tangent_trial(
             end
             # `hᵢ` is `ln aᵢ = ln(xᵢ/N) + lnγᵢ`, so `lnγ` is what remains once the
             # ideal part is removed.
-            lnγ = xt[i] > 0 ? _primal_value(hv[i]) - log(xt[i] / total) : 0.0
+            lnγ = xt[i] > 0 ? _primal_value(hv[i]) - log(xt[i] / amount) : 0.0
             d[j] = _primal_value(u[i] - g[i]) - lnγ
         end
         M = maximum(d)
@@ -1426,7 +1469,8 @@ dual numbers among them are taken by value.
 """
 function phase_split_trial(
         prob::DualNewtonProblem, k::Int, u::AbstractVector, x::AbstractVector;
-        maxit::Int = 50, tol::Union{Nothing, Float64} = nothing, total::Float64 = 1.0e-6,
+        maxit::Int = 50, tol::Union{Nothing, Float64} = nothing,
+        total::Union{Nothing, Float64} = nothing,
         g = prob.g, q = prob.q0, corner::Float64 = 0.98, dead = Set{Int}(),
         starts = (),
     )
@@ -1597,14 +1641,17 @@ function _element_potential_start(
     alive = [i for i in eachindex(g) if !(i in dead)]
     Aa = Matrix(@view A[:, alive])
     ga = collect(float.(g[alive]))
-    bscale = max(1.0, maximum(abs, b))
+    # In units of the scale of the budget, so that the ideal activity `x/S` and
+    # the potentials it gives are those of the same system whatever its size.
+    S = _system_scale(b)
+    bh = b ./ S
 
     xa = similar(ga)
     φ(yv) = begin
         u = -(transpose(Aa) * yv)
         # `exp` is clamped only against overflow; the line search below is what
         # keeps the iterates in a range where that clamp is never reached.
-        -dot(b, yv) - sum(exp(clamp(u[j] - ga[j], -700.0, 300.0)) for j in eachindex(ga))
+        -dot(bh, yv) - sum(exp(clamp(u[j] - ga[j], -700.0, 300.0)) for j in eachindex(ga))
     end
 
     φ_cur = φ(y)
@@ -1613,8 +1660,8 @@ function _element_potential_start(
         @inbounds for j in eachindex(ga)
             xa[j] = exp(clamp(u[j] - ga[j], -700.0, 300.0))
         end
-        r = Aa * xa .- b
-        maximum(abs, r) <= tol * bscale && break
+        r = Aa * xa .- bh
+        maximum(abs, r) <= tol && break
 
         H = Aa * Diagonal(xa) * transpose(Aa)
         dmax = maximum(abs, diag(H))
@@ -1728,9 +1775,11 @@ function _dual_newton_solve_values(
 
     # One log-vector per phase, whether or not the phase is active: an inactive
     # phase keeps its last state, so readmitting it costs nothing.
-    W = [Float64[log(max(n0[i], 1.0e-30)) for i in ph.members] for ph in prob.phases]
+    wb = _log_bounds(bv)
+    w_start = log(_system_scale(bv)) + W_START
+    W = [Float64[n0[i] > 0 ? max(log(n0[i]), w_start) : w_start for i in ph.members] for ph in prob.phases]
     for (k, ph) in pairs(prob.phases), (j, i) in pairs(ph.members)
-        i in dead && (W[k][j] = W_FLOOR)
+        i in dead && (W[k][j] = wb.lo)
     end
 
     # A phase starts active if it is always present or if the guess holds it — and
@@ -1864,7 +1913,7 @@ function _dual_newton_solve_values(
     # 1.4e-11 — for no gain, because the fits it displaced were the better guess.
     y_starts = Vector{Vector{Float64}}()
 
-    let wgt = [sqrt(max(x_buf[i], 1.0e-30)) for i in all_members]
+    let wgt = [sqrt(max(x_buf[i], exp(w_start))) for i in all_members]
         push!(y_starts, qr(transpose(A_all * Diagonal(wgt)), ColumnNorm()) \ (gh_fit .* wgt))
     end
     let order = sortperm([x_buf[i] for i in all_members]; rev = true),
@@ -1994,7 +2043,7 @@ end
 # The unknowns of the inversion at a converged state: `(a, k, j, i, mf)` for each
 # member it determines, `a` the phase's place in `act_ph`, `mf` whether the phase
 # is a mole-fraction one. A member at a bound it cannot leave is not one of them.
-function _inner_unknowns(prob, W, v, act_ph, dead)
+function _inner_unknowns(prob, W, v, act_ph, dead, wb)
     m = size(prob.A, 1)
     nph = length(act_ph)
     y = v[(nph + 1):(nph + m)]
@@ -2004,11 +2053,11 @@ function _inner_unknowns(prob, W, v, act_ph, dead)
         for (j, i) in enumerate(ph.members)
             i in dead && continue
             if ph.mole_fraction
-                W[k][j] <= W_FLOOR + 1.0e-9 && continue
+                W[k][j] <= wb.lo + 1.0e-9 && continue
                 push!(out, (a, k, j, i, true))
             else
                 j == ph.j_ref && continue
-                (W[k][j] <= W_FLOOR + 1.0e-9 || W[k][j] >= W_CEIL - 1.0e-9) && continue
+                (W[k][j] <= wb.lo + 1.0e-9 || W[k][j] >= wb.hi - 1.0e-9) && continue
                 push!(out, (a, k, j, i, false))
             end
         end
@@ -2109,7 +2158,7 @@ of the problem (`h`, and `gq`, `hq`, `cq` when it has parameters) must accept
 dual numbers.
 """
 function _outer_jacobian(prob, v, W, act_ph, active, bv; dead, degenerate)
-    unk = _inner_unknowns(prob, W, v, act_ph, dead)
+    unk = _inner_unknowns(prob, W, v, act_ph, dead, _log_bounds(bv))
     z0 = vcat(v, Float64[W[k][j] for (_, k, j, _, _) in unk])
     Jz = ForwardDiff.jacobian(z -> _implicit_system(prob, z, unk, W, act_ph, active, bv; dead, degenerate), z0)
     Nv = length(v)
@@ -2157,12 +2206,13 @@ end
 
 # ── the balance, judged row by row ────────────────────────────────────────────
 #
-# A balance row is judged against what it holds, `Σⱼ |Aₖⱼ xⱼ| + Σₗ |Aqₖₗ qₗ|`,
-# and in moles once that exceeds a mole: `|rₖ| ≤ tol·min(scaleₖ, 1)`. A trace is
-# then held to its own amount, as PHREEQC and GEMS hold a mass balance to its
-# element total, and a large row to the absolute tolerance it always had, so no
-# answer is accepted that was refused before. Judged in moles alone, a trace of
-# 1e-9 mol could be 10 % wrong and pass.
+# A balance row is judged against what it holds, `Σⱼ |Aₖⱼ xⱼ| + Σₗ |Aqₖₗ qₗ|`:
+# `|rₖ| ≤ tol·scaleₖ`, a relative measure whatever the size of the row, so that the
+# verdict on an answer does not change when every amount is multiplied by the same
+# factor. A trace is held to its own amount, and a row of 55 mol to the same
+# relative tolerance as a row of 1e-9 mol. Judged in moles, a trace of 1e-9 mol
+# could be 10 % wrong and pass, and a row of a tonne of paste would be held to a
+# precision no data has.
 #
 # The scale never falls below a floor: `eps²` of the budget for a row that has
 # one, so that a row whose carriers have all vanished is refused, and `eps` of
@@ -2172,14 +2222,15 @@ end
 # Only a row with a budget is judged relative to what it holds. A row whose
 # budget is zero within rounding has no total to be a fraction of (the electron
 # row of a redox pair, a coupled site family, the extents of a kinetic step), and
-# is judged in moles, as a degenerate row is. Judged against its floor, the
-# electron row of a cement paste, whose carriers held 8e-15 mol, read 1.24e-24
-# mol as 1.5e-10 of it, and held the Newton of a certified replay for 5033 of its
-# 6283 evaluations: three and a half times the time, for nothing.
+# is judged relative to the scale of the whole budget (`_system_scale`). Judged
+# against its floor, the electron row of a cement paste, whose carriers held
+# 8e-15 mol, read 1.24e-24 mol as 1.5e-10 of it, and held the Newton of a
+# certified replay for 5033 of its 6283 evaluations: three and a half times the
+# time, for nothing.
 
 function _balance_scales(prob, x, q, b, degenerate)
     m = size(prob.A, 1)
-    bscale = max(1.0, maximum(abs, b; init = 0.0))
+    bscale = _system_scale(b)
     scales = ones(m)
     for k in 1:m
         k in degenerate && continue
@@ -2196,21 +2247,26 @@ function _balance_scales(prob, x, q, b, degenerate)
     return scales
 end
 
-# The scale a balance row is judged on: what it holds, for a row with a
-# budget; one, in moles, for a row whose budget is zero within rounding.
-function _judged_scales(scales, b)
-    bscale = max(1.0, maximum(abs, b; init = 0.0))
-    return [abs(b[k]) > eps() * bscale ? scales[k] : 1.0 for k in eachindex(scales)]
+# The scale a balance row of the Newton residual is judged on: what it holds,
+# for a row with a budget; the scale of the budget for a row whose budget is
+# zero within rounding; one for a degenerate row, whose residual is the pinned
+# multiplier and not a balance.
+function _judged_scales(scales, b, degenerate)
+    bscale = _system_scale(b)
+    return [
+        k in degenerate ? 1.0 : abs(b[k]) > eps() * bscale ? scales[k] : bscale
+            for k in eachindex(scales)
+    ]
 end
 
-# The worst row of `R`, its balance rows (from `off + 1`) divided by
-# `min(scale, 1)` and every other row as it is.
+# The worst row of `R`, its balance rows (from `off + 1`) divided by their judged
+# scale and every other row as it is.
 function _judged_residual(R, scales, off)
     worst = 0.0
     for i in eachindex(R)
         r = abs(_primal_value(R[i]))
         k = i - off
-        (1 <= k <= length(scales)) && (r /= min(scales[k], 1.0))
+        (1 <= k <= length(scales)) && (r /= scales[k])
         worst = max(worst, r)
     end
     return worst
@@ -2390,7 +2446,7 @@ function _newton_on_active_set!(W, prob, v, xB, act_ph, active, bv, x_buf, dead,
         scales = _balance_scales(
             prob, x_buf, @view(v[(nph + m + na + 1):(nph + m + na + nq)]), bv, degenerate,
         )
-        judged = _judged_residual(R, _judged_scales(scales, bv), nph)
+        judged = _judged_residual(R, _judged_scales(scales, bv, degenerate), nph)
         if opts.verbose
             # Split by block: the three carry different units — log-activities
             # for the phase and stationarity rows, moles for the balance — and
@@ -2807,7 +2863,7 @@ function _dual_newton_attempt(
                     dead, degenerate, inner_maxit = opts.inner_maxit,
                     max_fall = opts.inner_fall_bound,
                 ),
-                _judged_scales(_balance_scales(prob, x_buf, q, bv, degenerate), bv), nph,
+                _judged_scales(_balance_scales(prob, x_buf, q, bv, degenerate), bv, degenerate), nph,
             )
             viol = 0.0
             for i in prob.idx_bounded
@@ -3098,13 +3154,13 @@ function _dual_newton_attempt(
                 prob, v, W, act_ph, active, bv, x_buf;
                 dead, degenerate, inner_maxit = opts.inner_maxit, max_fall = opts.inner_fall_bound,
             ),
-            _judged_scales(_balance_scales(prob, x_buf, q, bv, degenerate), bv), nph,
+            _judged_scales(_balance_scales(prob, x_buf, q, bv, degenerate), bv, degenerate), nph,
         ) <= opts.tol && best_viol <= opts.si_tol
     end
 
     _invert_phases!(
         prob, W, y, refs, act_ph, active, xB, x_buf;
-        dead = dead, g = current_g(prob, q), q = q, maxsweeps = opts.inner_maxit,
+        wb = _log_bounds(bv), dead = dead, g = current_g(prob, q), q = q, maxsweeps = opts.inner_maxit,
         max_fall = opts.inner_fall_bound,
     )
     x = copy(x_buf)
@@ -3139,9 +3195,11 @@ wants to split), `n_interior`, `n_forced_zero` and `param_residual`.
 
 # What is checked, and on which variables
 
-A variable is INTERIOR when `xᵢ > floor`. There the condition is the equality
-`∇fᵢ + (Aᵀy)ᵢ = 0`, and `y` is obtained from those variables by least squares.
-Below `floor` a variable is at its bound, where the condition is the INEQUALITY
+A variable is INTERIOR when `xᵢ > floor·S`, `S` the scale of the budget (its
+largest entry), so that the verdict does not depend on how much matter the system
+holds. There the condition is the equality `∇fᵢ + (Aᵀy)ᵢ = 0`, and `y` is obtained
+from those variables by least squares. Below that amount a variable is at its
+bound, where the condition is the INEQUALITY
 `∇fᵢ + (Aᵀy)ᵢ ≥ 0`:
 
   - for a pure phase and a bounded member, as a saturation index
@@ -3166,12 +3224,13 @@ component nobody supplies is determined by nothing.
 # The balance
 
 Each row of `A x = b` that has a budget is judged against what it holds,
-`Σⱼ |Aₖⱼ xⱼ|`, and in moles once that exceeds a mole; a row whose budget is zero
-within rounding, and a degenerate one, in moles. `feasibility` is the worst
-`|rₖ| / min(scaleₖ, 1)`, the larger of `feasibility_abs` (moles) and
-`feasibility_rel` (relative, over the rows with a budget), and `optimal` asks it
-below `tol`. A trace is held to its own amount, and a large row to the tolerance
-in moles it always had.
+`Σⱼ |Aₖⱼ xⱼ|`; a row whose budget is zero within rounding, and a degenerate one,
+against the scale `S` of the budget. `feasibility` is the worst `|rₖ|` over its
+scale (`feasibility_rel`), and `optimal` asks it below `tol`: a trace is held to
+its own amount, and a large row to the same relative tolerance, so that the
+verdict does not change when every amount is multiplied by the same factor.
+`feasibility_abs`, the worst `|rₖ|` in the units of `b`, is reported and decides
+nothing.
 """
 function kkt_certificate(
         prob::DualNewtonProblem, x::AbstractVector, b::AbstractVector;
@@ -3189,6 +3248,10 @@ function kkt_certificate(
 
     degenerate = _degenerate_conservation_rows(prob, bv)
     dead = _dead_variables(prob.A, degenerate)
+    # The floor in units of the scale of the budget, so that what counts as present
+    # does not depend on how much matter the system holds.
+    bscale = _system_scale(bv)
+    fl = floor * bscale
 
     # WHICH TEST APPLIES TO WHICH VARIABLE.
     #
@@ -3218,16 +3281,16 @@ function kkt_certificate(
     # obeys. Left excluded, a gel missing a member it should hold would pass.
     bounded = Set{Int}()
     for ph in prob.phases
-        any(xv[i] > floor for i in ph.members) || continue
+        any(xv[i] > fl for i in ph.members) || continue
         for j in ph.bounded_members
             push!(bounded, ph.members[j])
         end
     end
 
-    interior = [i for i in eachindex(xv) if xv[i] > floor && !(i in dead)]
+    interior = [i for i in eachindex(xv) if xv[i] > fl && !(i in dead)]
     at_bound = [
         i for i in eachindex(xv)
-            if xv[i] <= floor && !(i in dead) && (!(i in in_phase) || i in bounded)
+            if xv[i] <= fl && !(i in dead) && (!(i in in_phase) || i in bounded)
     ]
 
     Ai = Matrix(@view prob.A[:, interior])
@@ -3259,9 +3322,11 @@ function kkt_certificate(
     # out at exactly `Δξ`.
     resid = prob.nq == 0 ? (prob.A * xv .- bv) :
         (prob.A * xv .+ prob.Aq * collect(q) .- bv)
-    # Each row judged against what it holds, in moles above one mole: the
-    # measure the solver converges on (`_balance_scales`). Judged in moles alone,
-    # a trace of 1e-9 mol could be 10 % wrong and certified.
+    # Each row judged against what it holds, the measure the solver converges on
+    # (`_balance_scales`), and a row without a budget, or a degenerate one, against
+    # the scale of the whole budget: relative everywhere, so that the verdict does
+    # not change when every amount is multiplied by the same factor. Judged in
+    # moles, a trace of 1e-9 mol could be 10 % wrong and certified.
     #
     # A relative measure might be feared to refuse correct answers: the charge
     # row of a dilute solution, `b = 0` and a flux of 1e-6, would turn 7.6e-7
@@ -3270,17 +3335,15 @@ function kkt_certificate(
     # 3e-15 of it; a residual of 76 % of a row's flux is no rounding. The rows
     # whose relative residual is large at a correct answer are those of a
     # component nobody supplies, its carriers at the floor: degenerate rows,
-    # judged in moles.
+    # judged against the scale of the budget.
     scales = _balance_scales(prob, xv, q, bv, degenerate)
-    bscale = max(1.0, maximum(abs, bv; init = 0.0))
     feas_abs = maximum(abs, resid; init = 0.0)
     feas_rel = 0.0
     for k in eachindex(resid)
-        # Relative only where the row has a total: see `_judged_scales`.
-        (k in degenerate || abs(bv[k]) <= eps() * bscale) && continue
-        feas_rel = max(feas_rel, abs(resid[k]) / scales[k])
+        σ = (k in degenerate || abs(bv[k]) <= eps() * bscale) ? bscale : scales[k]
+        feas_rel = max(feas_rel, abs(resid[k]) / σ)
     end
-    feasibility = max(feas_abs, feas_rel)
+    feasibility = feas_rel
 
     # The NONLINEAR residual of the parameter block. Leaving it out was a hole,
     # not an omission of detail: a kinetic step whose mineral is dropped from the
@@ -3322,9 +3385,9 @@ function kkt_certificate(
     end
     floored = Int[]
     for ph in prob.phases
-        any(xv[i] > floor && !(i in dead) for i in ph.members) || continue
+        any(xv[i] > fl && !(i in dead) for i in ph.members) || continue
         for i in ph.members
-            xv[i] <= floor && !(i in dead) && !(i in bounded) && determined(i) && push!(floored, i)
+            xv[i] <= fl && !(i in dead) && !(i in bounded) && determined(i) && push!(floored, i)
         end
     end
     # The one-sided form of the SAME condition the interior obeys, so it is
@@ -3344,7 +3407,7 @@ function kkt_certificate(
     worst_phase = -Inf
     absent_phases = Int[]
     for (k, ph) in pairs(prob.phases)
-        all(xv[i] <= floor || i in dead for i in ph.members) || continue
+        all(xv[i] <= fl || i in dead for i in ph.members) || continue
         all(i in dead for i in ph.members) && continue   # cannot exist at all
         push!(absent_phases, k)
         worst_phase = max(
@@ -3379,7 +3442,7 @@ function kkt_certificate(
         # cannot unmix: there is one solvent.
         ph.mole_fraction || continue
         ph.always_present && continue
-        any(xv[i] > floor && !(i in dead) for i in ph.members) || continue
+        any(xv[i] > fl && !(i in dead) for i in ph.members) || continue
         m, trial = phase_split_trial(prob, k, u, xv; g = gq, q = q, dead = dead)
         m, trial = _primal_value(m), _primal_value.(trial)
         if m > worst_split

@@ -812,9 +812,9 @@ end
     @test c.stationarity ≈ c.stationarity_abs / c.stationarity_scale rtol = 1.0e-12
     @test c.stationarity <= c.stationarity_abs
 
-    # The balance is judged row by row, in moles above one mole and relative to
-    # what the row holds below it: the larger of the two measures.
-    @test c.feasibility == max(c.feasibility_abs, c.feasibility_rel)
+    # The balance is judged row by row, relative to what each row holds; the
+    # residual in moles is reported beside it and decides nothing.
+    @test c.feasibility == c.feasibility_rel
 
 end
 
@@ -1071,7 +1071,7 @@ end
         resid = Ref(NaN)
         OptimaSolver._invert_phases!(
             prob, W, [0.0], [1.0], [1], Int[], Float64[], zeros(2);
-            resid = resid, maxsweeps = 200,
+            wb = OptimaSolver._log_bounds([1.0]), resid = resid, maxsweeps = 200,
         )
         return (calls = calls[], w = W[1][2], step = resid[])
     end
@@ -1118,7 +1118,7 @@ end
         resid = Ref(NaN)
         OptimaSolver._invert_phases!(
             prob, W, [0.0], [1.0], [1], Int[], Float64[], zeros(2);
-            resid = resid, maxsweeps = 200, max_fall,
+            wb = OptimaSolver._log_bounds([1.0]), resid = resid, maxsweeps = 200, max_fall,
         )
         return (calls = calls[], w = W[1][2], step = resid[])
     end
@@ -1285,19 +1285,19 @@ end
         prob, b, [1.0, 0.1, 1.0e-12]; opts = DualNewtonOptions(verbose = true),
     )
 
-    # The certificate judges each row the same way: in moles above one mole,
-    # relative to what the row holds below it. A composition that accounts for
-    # the trace to 10 % is refused, though it is 1e-12 mol off.
+    # The certificate judges each row the same way, relative to what it holds. A
+    # composition that accounts for the trace to 10 % is refused, though it is
+    # 1e-12 mol off.
     x = copy(out.x)
     x[3] *= 0.9
     c = kkt_certificate(prob, x, b)
     @test c.feasibility_abs < 1.0e-11
     @test c.feasibility_rel ≈ 0.1 / 0.9 rtol = 1.0e-9
-    @test c.feasibility == max(c.feasibility_abs, c.feasibility_rel)
+    @test c.feasibility == c.feasibility_rel
     @test !c.optimal
     @test kkt_certificate(prob, out.x, b).optimal
-    # Large rows keep their absolute tolerance: a solvent 1e-9 mol off is
-    # refused, though that is 2e-11 of it.
+    # Every row is held to the same relative tolerance: the solvent 1e-9 mol off
+    # is 1e-9 of its row, and is refused.
     y = copy(out.x)
     y[1] += 1.0e-9
     @test !kkt_certificate(prob, y, b).optimal

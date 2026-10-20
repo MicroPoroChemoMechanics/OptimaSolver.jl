@@ -825,25 +825,27 @@ reason above.
 ``s_k = \sum_j |A_{kj}\, x_j| + \sum_l |A^q_{kl}\, q_l|``, the balance is met when
 
 ```math
-|r_k| \;\le\; \texttt{tol}\cdot \min(s_k,\, 1~\text{mol})
+|r_k| \;\le\; \texttt{tol}\cdot s_k
 ```
 
-for every row: relative to the row below one mole, in moles above it. A trace is
-then held to its own amount, as PHREEQC and GEMS hold a mass balance to its
-element total, and a large row keeps the tolerance in moles it had before, so no
-answer is accepted that was refused. Judged in moles alone, as until 0.7.8, a
-trace of `1e-9` mol could be 10 % wrong and certified. The dual Newton converges
-on the same measure, and its rows are weighted by the same scales in the step.
-The scale is floored at ``\epsilon^2 |b_k|`` for a row that has a budget, so that
-a row whose carriers have all vanished is refused, and at
-``\epsilon \max(1, \|b\|_\infty)`` for a row whose budget is zero within
-rounding. Only a row with a budget is judged relative to what it holds: a row
-whose budget is zero within rounding, such as the electron row of a redox pair,
-has no total to be a fraction of, and is judged in moles. So is a degenerate row:
-a component whose budget is below ``10^{-12}`` of the largest is one nobody
-supplies, its carriers held at the floor. The certificate reports
-`feasibility_abs` in moles and `feasibility_rel` relative to each row;
-`feasibility`, the larger of the two, is what it judges.
+for every row that has a budget: a relative measure, the same for a trace and for
+a row of 55 mol, so that the verdict does not change when every amount is
+multiplied by the same factor. A trace is then held to its own amount, as PHREEQC
+and GEMS hold a mass balance to its element total. Judged in moles alone, as until
+0.7.8, a trace of `1e-9` mol could be 10 % wrong and certified; judged in moles
+above one mole, as until 0.8.8, a row of a tonne of paste was held to a precision
+no data has, and the verdict depended on the size of the system. The dual Newton
+converges on the same measure, and its rows are weighted by the same scales in
+the step. The scale is floored at ``\epsilon^2 |b_k|`` for a row that has a
+budget, so that a row whose carriers have all vanished is refused, and at
+``\epsilon S`` for a row whose budget is zero within rounding, with
+``S = \|b\|_\infty`` the scale of the budget. Such a row, the electron row of a
+redox pair for one, has no total to be a fraction of, and is judged relative to
+``S``; so is a degenerate row: a component whose budget is below ``10^{-12}`` of
+the largest is one nobody supplies, its carriers held at the floor. The
+certificate judges `feasibility`, the worst of these relative measures
+(`feasibility_rel`), and reports beside it `feasibility_abs`, the worst residual
+in the units of the budget, which decides nothing.
 
 ## The linear program over pure phases
 
