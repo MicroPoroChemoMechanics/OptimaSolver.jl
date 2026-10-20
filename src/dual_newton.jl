@@ -1770,7 +1770,7 @@ function dual_newton_solve(
         ),
     )
     opts.max_active_updates == 200 || Base.depwarn(
-        "`max_active_updates` is no longer used: the active set is reclassified at " *
+        "`max_active_updates` is deprecated and no longer used: the active set is reclassified at " *
             "every Newton iteration, which `maxit` bounds.",
         :DualNewtonOptions,
     )
