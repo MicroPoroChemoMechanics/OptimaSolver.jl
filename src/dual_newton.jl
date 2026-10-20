@@ -2677,8 +2677,12 @@ end
 # two thresholds or more. Below that mean sit the amounts an interior point
 # leaves absent phases at (1e-8 to 3e-8 mol where the retry kept losing); the
 # monocarbonate of the CEM I paste at 1.22 days held 7e-7 mol, supersaturated by
-# 4.3 RT.
+# 4.3 RT. And only from a best answer whose KKT error is under 10: a phase more or
+# less in the initial set does not bring within reach an answer farther from any
+# optimum (over ChemistryLab's tests the retry won from answers at 5.2 at most,
+# and lost from 38 and beyond).
 function _traces_worth_seeding(prob, n0, seed, out, dead, si_tol)
+    out.kkt_error < 10 || return false
     si = _potentials(prob.A, out.y) .- (current_g(prob, out.q) .+ current_h(prob, out.x, out.q))
     present = sqrt(si_tol * seed)
     return any(prob.idx_bounded) do i

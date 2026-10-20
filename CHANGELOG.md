@@ -50,10 +50,13 @@ not help, returns what it returned before, to the bit.
   a pure phase of the start the best answer holds active, or reads as
   supersaturated while the start holds it at the geometric mean of `si_tol`
   and the seeding amount or more (1e-7 mol by default), above the amounts an
-  interior point leaves absent phases at. Run for every failed solve holding
+  interior point leaves absent phases at; and only from a best answer whose KKT
+  error is under 10, a phase more or less in the initial set not bringing a
+  farther one within reach. Run for every failed solve holding
   some trace, it made ChemistryLab's tests 1.6 % slower (+14 % on some files):
   over the semi-adiabatic cells, it won 193 of 323 failed solves and lost 130
-  for 17 s. Restricted so, it wins the same 193 and runs 4 of the 130.
+  for 17 s. Restricted so, it wins the same 193 and runs 4 of the 130 (its
+  answers at a KKT error of 5.2 at most, the losses from 38 and beyond).
 
 ## v0.8.8 — the step it takes, and the phase that takes another's place
 
