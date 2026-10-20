@@ -1223,7 +1223,7 @@ end
         out = OptimaSolver._dual_newton_attempt(
             prob, b, [0.0, -log(x2 / 55.5)], [[log(55.5), log(x2)]], [1], [55.5], [55.5, x2],
             [55.5, x2], zeros(2), Set{Int}(), Int[], 2, DualNewtonOptions(),
-            OptimaSolver._amount_scales(prob, b, Set{Int}()),
+            OptimaSolver._amount_scales(prob, b, Set{Int}()), Int[],
         )
         @test out.converged
         # To the tolerance relative to what the row holds.
@@ -1583,11 +1583,13 @@ end
     end
 
     # Cut short by `maxit`, the search falls back once on the vertex of the linear
-    # program, with the same budget; and only when asked to.
+    # program, with the same budget, from the vertex's own multipliers, and
+    # converges there within it; and only when asked to.
     records, short = Test.collect_test_logs() do
         dual_newton_solve(prob, b, wrong; opts = DualNewtonOptions(maxit = 3, verbose = true))
     end
-    @test !short.converged && fellback(records)
+    @test fellback(records) && short.converged && short.route === :lp
+    @test short.x ≈ ref.x rtol = 1.0e-10
     records, _ = Test.collect_test_logs() do
         dual_newton_solve(prob, b, wrong; opts = DualNewtonOptions(maxit = 3, lp_fallback = false, verbose = true))
     end
@@ -1727,6 +1729,212 @@ end
             @test out.y ≈ ref.y atol = 1.0e-10
         end
     end
+end
+
+@testset "a solve resumes from the state of the one before" begin
+    # The answer of a solve and its multipliers are the state the next solve of a
+    # sequence starts from: re-solved from them, the same problem takes only the
+    # final step, and a neighbor takes a few, in one attempt, where the fits would
+    # try in turn.
+    A = Float64[1 0 0 0 0 0; 0 1 0 1 1 0; 0 0 1 0 1 1]
+    h(x, _) = [
+        log(x[1] / (x[1] + x[2] + x[3])), log(max(x[2], 1.0e-300) / x[1]),
+        log(max(x[3], 1.0e-300) / x[1]), 0.0, 0.0, 0.0,
+    ]
+    prob = DualNewtonProblem(
+        A, [0.0, 5.0, 5.0, -2.0, -6.0, -1.0], h;
+        phases = [SolutionPhase([1, 2, 3], 1; always_present = true)], idx_bounded = [4, 5, 6],
+    )
+    b = [55.0, 1.0, 0.6]
+    cold = dual_newton_solve(prob, b, [55.0, 1.0e-3, 1.0e-3, 1.0, 1.0e-12, 0.6])
+    @test cold.converged && cold.route === :fit && cold.iterations > 0
+    again = dual_newton_solve(prob, b, cold.x; y0 = cold.y)
+    @test again.converged && again.route === :start && again.iterations == 1
+    @test again.x ≈ cold.x rtol = 1.0e-12
+    # A neighbor, CaX reaching its bound on the way: from the state before.
+    b2 = [55.0, 1.0, 0.62]
+    next = dual_newton_solve(prob, b2, cold.x; y0 = cold.y)
+    ref = dual_newton_solve(prob, b2, [55.0, 1.0e-3, 1.0e-3, 1.0, 1.0e-12, 0.6])
+    @test next.converged && next.route === :start
+    @test next.x ≈ ref.x rtol = 1.0e-10
+    @test kkt_certificate(prob, next.x, b2).optimal
+    @test next.iterations <= ref.iterations
+    # Multipliers of another problem: the wrong size is refused, and the
+    # sentinel of an absent component on a row the budget now supplies sends the
+    # search to the fits.
+    @test_throws DimensionMismatch dual_newton_solve(prob, b, cold.x; y0 = cold.y[1:2])
+    stale = copy(cold.y)
+    stale[3] = OptimaSolver.DEGENERATE_POTENTIAL
+    out = dual_newton_solve(prob, b, cold.x; y0 = stale)
+    @test out.converged && out.route === :fit
+    # Differentiated through a resumed solve: the derivative is that of the answer.
+    dres = ForwardDiff.derivative(c -> dual_newton_solve(prob, [55.0, 1.0, c], cold.x; y0 = cold.y).x, 0.6)
+    dref = ForwardDiff.derivative(c -> dual_newton_solve(prob, [55.0, 1.0, c], cold.x).x, 0.6)
+    @test dres ≈ dref rtol = 1.0e-10
+    @test A * dres ≈ [0.0, 0.0, 1.0] atol = 1.0e-12
+    # A neighbor nearer than the tolerance, 1e-11 on a row of 0.6: the start is
+    # already within it, and the answer still follows the budget, to first order,
+    # by one step, rather than staying where the start was.
+    ε = 1.0e-11
+    near = dual_newton_solve(prob, [55.0, 1.0, 0.6 + ε], cold.x; y0 = cold.y)
+    @test near.converged && near.iterations == 1
+    @test near.x .- cold.x ≈ ε .* dres rtol = 1.0e-2
+    # `max_active_updates` is no longer used, and says so; the answer is the
+    # same, to rounding, whatever the path that reached it.
+    dep = @test_deprecated dual_newton_solve(prob, b, cold.x; opts = DualNewtonOptions(max_active_updates = 10))
+    @test dep.converged
+    @test dep.x ≈ again.x rtol = 1.0e-12
+end
+
+@testset "a mineral on a row only it carries starts as the start holds it" begin
+    # A mineral M dissolving at an imposed rate into water, as an implicit kinetic
+    # step poses it: the reactivity row `−x_M − q = −n₀` is carried by M alone, and
+    # the rate fixes the extent, `q = Δ`. The multipliers fitted to the members of
+    # the solution leave that row's at zero, against which M, holding the matter
+    # the solution lacks, reads as undersaturated by tens of RT. Read so, it
+    # started on its bound; with two minerals and two pathways (ChemistryLab's C3A
+    # with gypsum) the search then never recovered.
+    A = Float64[1 0 0; 0 1 1; 0 0 -1]        # water, Ca, M = Ca with the row R
+    h(x, _) = [log(x[1] / (x[1] + x[2])), log(max(x[2], 1.0e-300) / x[1]), 0.0]
+    Δ = 0.003
+    mineral(g_M) = DualNewtonProblem(
+        A, [0.0, 0.0, g_M], h;
+        phases = [SolutionPhase([1, 2], 1; always_present = true)], idx_bounded = [3],
+        Aq = reshape([0.0, 0.0, -1.0], 3, 1), cq = (x, q, _) -> [q[1] - Δ], q0 = [0.0],
+    )
+    budget(n₀) = [55.0, n₀, -n₀]
+    n₀ = 0.01
+    # The reading: M, undersaturated by g_M + y_Ca = 30 − ln(1e-16/55) RT at the
+    # fitted multipliers, far beyond its amount as a fraction of its scale (one),
+    # starts free on the row the fit leaves unread, and on its bound otherwise.
+    x0 = [55.0, 1.0e-16, n₀]
+    κ = OptimaSolver._amount_scales(mineral(30.0), budget(n₀), Set{Int}())
+    s0 = [0.0, 0.0, 30.0 - log(1.0e-16 / 55.0)]
+    @test OptimaSolver._uncarried_rows(mineral(30.0), [1, 2], Int[]) == [3]
+    @test first(OptimaSolver._initial_free_set(mineral(30.0), x0, s0, κ, [1], Set{Int}(), [3])) == [3]
+    @test isempty(first(OptimaSolver._initial_free_set(mineral(30.0), x0, s0, κ, [1], Set{Int}(), Int[])))
+    res = dual_newton_solve(mineral(30.0), budget(n₀), x0)
+    @test res.converged
+    @test res.x ≈ [55.0, Δ, n₀ - Δ] rtol = 1.0e-10
+    @test res.q ≈ [Δ] rtol = 1.0e-10
+    # The mineral's multiplier is that of the reaction it holds: g_M + y_Ca − y_R = 0.
+    @test 30.0 + res.y[2] - res.y[3] ≈ 0 atol = 1.0e-8
+    # Its amount follows the budget one for one, the dissolved calcium the rate.
+    d = ForwardDiff.derivative(n -> dual_newton_solve(mineral(30.0), budget(n), [55.0, 1.0e-16, n]).x, n₀)
+    @test d ≈ [0.0, 0.0, 1.0] atol = 1.0e-10
+end
+
+@testset "a step ends where a bound is met, exactly" begin
+    # Water, dissolved calcium and a calcium solid P whose saturation is 5e-3 mol.
+    # With 3e-3 mol of calcium in all, P dissolves entirely. Started with P holding
+    # most of it, the first Newton step would take it below zero: the step is cut
+    # where P meets its bound, which it then holds. Started with a trace of P the
+    # budget would not miss, the step is not cut for it: the trace is set to zero.
+    A = Float64[1 0 0; 0 1 1]
+    h(x, _) = [log(x[1] / (x[1] + x[2])), log(max(x[2], 1.0e-300) / x[1]), 0.0]
+    prob = DualNewtonProblem(
+        A, [0.0, 0.0, log(5.0e-3 / 55)], h;
+        phases = [SolutionPhase([1, 2], 1; always_present = true)], idx_bounded = [3],
+    )
+    b = [55.0, 3.0e-3]
+    for x0 in ([55.0, 1.0e-3, 9.0e-3], [55.0, 1.0e-2, 1.0e-14])
+        res = dual_newton_solve(prob, b, x0)
+        @test res.converged
+        @test res.x[3] === 0.0
+        @test res.x[2] ≈ 3.0e-3 rtol = 1.0e-12
+        @test isempty(res.active)
+    end
+end
+
+@testset "a pinned amount the first step would empty keeps a tenth of itself" begin
+    # A mineral M of amount n₀ held by a linear row, `x_M + q = n₀`, where `q` is
+    # tied to it by `q = c √x_M`. From x_M = n₀ the first Newton step lands below
+    # zero; a pinned variable keeps a tenth of its amount instead, and the
+    # iteration reaches the root, √x_M = (−c + √(c² + 4n₀))/2.
+    A = Float64[1 0 0; 0 1 1; 0 0 1]
+    h(x, _) = [log(x[1] / (x[1] + x[2])), log(max(x[2], 1.0e-300) / x[1]), 0.0]
+    c, n₀ = 1.0, 0.01
+    prob = DualNewtonProblem(
+        A, [0.0, 0.0, -30.0], h;
+        phases = [SolutionPhase([1, 2], 1; always_present = true)], idx_bounded = [3],
+        Aq = reshape([0.0, 0.0, 1.0], 3, 1), cq = (x, q, _) -> [q[1] - c * sqrt(max(x[3], 0.0))],
+        q0 = [0.0], always_active = [3],
+    )
+    res = dual_newton_solve(prob, [55.0, n₀, n₀], [55.0, 1.0e-12, n₀])
+    root = ((-c + sqrt(c^2 + 4n₀)) / 2)^2
+    @test res.converged
+    @test res.x[3] ≈ root rtol = 1.0e-10
+    @test res.q[1] ≈ c * sqrt(root) rtol = 1.0e-10
+end
+
+@testset "a mixing phase beside its end-members, each more stable, is absent" begin
+    # A binary solid solution beside its two end-members as pure phases, each pure
+    # phase more stable than the member of its composition by one RT. The pure
+    # phases fix both potentials, at which the members' fractions sum to 2/e < 1:
+    # the phase is undersaturated at the answer, which the start holding it and
+    # none of the pure phases must still reach.
+    A = Float64[1 0 0 0 0 0 0; 0 1 0 1 0 1 0; 0 0 1 0 1 0 1]
+    h(x, _) = [
+        log(x[1] / sum(x[1:3])), log(max(x[2], 1.0e-300) / x[1]), log(max(x[3], 1.0e-300) / x[1]),
+        log(max(x[4], 1.0e-300) / max(x[4] + x[5], 1.0e-300)),
+        log(max(x[5], 1.0e-300) / max(x[4] + x[5], 1.0e-300)), 0.0, 0.0,
+    ]
+    gP = log(1.0e-3 / 55)
+    prob = DualNewtonProblem(
+        A, [0.0, 0.0, 0.0, gP + 1, gP + 1, gP, gP], h;
+        phases = [
+            SolutionPhase([1, 2, 3], 1; always_present = true), SolutionPhase([4, 5], 1; mole_fraction = true),
+        ],
+        idx_bounded = [6, 7],
+    )
+    b = [55.0, 0.5, 0.5]
+    res = dual_newton_solve(prob, b, [55.0, 1.0e-3, 1.0e-3, 0.25, 0.25, 0.0, 0.0])
+    @test res.converged
+    @test res.active_phases == [1]
+    @test res.x[4] == 0 && res.x[5] == 0
+    @test res.x[6] ≈ 0.5 - 1.0e-3 rtol = 1.0e-8
+    @test res.x[7] ≈ 0.5 - 1.0e-3 rtol = 1.0e-8
+end
+
+@testset "a polymorph enters in the place of the one it depends on" begin
+    # Calcite and aragonite are one composition, aragonite less stable by half an
+    # RT. Started with aragonite holding the calcium, calcite reads as
+    # supersaturated; its column is aragonite's, so it comes off its bound in the
+    # place of aragonite, the matter moved exactly by the ratio test.
+    A = Float64[1 0 0 0; 0 1 1 1]
+    h(x, _) = [log(x[1] / (x[1] + x[2])), log(max(x[2], 1.0e-300) / x[1]), 0.0, 0.0]
+    g = log(1.0e-3 / 55)
+    prob = DualNewtonProblem(
+        A, [0.0, 0.0, g, g + 0.5], h;
+        phases = [SolutionPhase([1, 2], 1; always_present = true)], idx_bounded = [3, 4],
+    )
+    res = dual_newton_solve(prob, [55.0, 1.0], [55.0, 1.0e-3, 0.0, 0.999])
+    @test res.converged
+    @test res.active == [3]
+    @test res.x[3] ≈ 1.0 - 1.0e-3 rtol = 1.0e-10
+    @test res.x[4] === 0.0
+end
+
+@testset "a mixing phase the budget no longer needs leaves" begin
+    # A binary solid solution two RT less stable than the solution it would form
+    # from, held by the start: its total falls at each step, and the phase leaves
+    # once no balance row would miss it.
+    A = Float64[1 0 0 0; 0 1 1 1]
+    h(x, _) = [
+        0.0, log(max(x[2], 1.0e-300) / x[1]), log(max(x[3], 1.0e-300) / max(x[3] + x[4], 1.0e-300)),
+        log(max(x[4], 1.0e-300) / max(x[3] + x[4], 1.0e-300)),
+    ]
+    g = log(1.0e-3 / 55) + 2
+    prob = DualNewtonProblem(
+        A, [0.0, 0.0, g, g], h;
+        phases = [SolutionPhase([1, 2], 1; always_present = true), SolutionPhase([3, 4], 1; mole_fraction = true)],
+        idx_bounded = Int[],
+    )
+    res = dual_newton_solve(prob, [55.0, 1.0e-3], [55.0, 1.0e-3, 0.5, 0.5])
+    @test res.converged
+    @test res.active_phases == [1]
+    @test res.x[3] == 0 && res.x[4] == 0
+    @test res.x[2] ≈ 1.0e-3 rtol = 1.0e-10
 end
 
 @testset "a phase admitted on a full active set sends an incumbent out" begin

@@ -80,14 +80,14 @@ function _full_primal_problem(prob::DualNewtonProblem)
 end
 
 """
-    _dual_newton_solve_ad(prob, b, x0; opts) -> NamedTuple
+    _dual_newton_solve_ad(prob, b, x0; opts, y0) -> NamedTuple
 
 `dual_newton_solve` where the budget `b` or the data of `prob` (`A`, `g`,
 `params`) carry dual numbers: the answer of the values, with `x`, `y` and `q` in
 duals of the caller's tag (`dual_newton_tangent`).
 """
-function _dual_newton_solve_ad(prob, b, x0; opts)
-    res = dual_newton_solve(_primal_problem(prob), _values(b), _values(x0); opts)
+function _dual_newton_solve_ad(prob, b, x0; opts, y0)
+    res = dual_newton_solve(_primal_problem(prob), _values(b), _values(x0); opts, y0 = _values(y0))
     t = dual_newton_tangent(
         prob, b, res.x;
         y = res.y, q = res.q, active_phases = res.active_phases, active = res.active,

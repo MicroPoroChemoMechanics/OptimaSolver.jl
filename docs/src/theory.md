@@ -673,6 +673,18 @@ least squares), and a step is accepted only on a decrease beyond the rounding of
 the residual itself. The search ends when the error is within the tolerances, or
 when its set is solved and nothing is left to move.
 
+The first iterate within the tolerances takes one more Newton step, a single trial
+kept if it stays within them, and the answer is the iterate it reaches. From there
+the convergence is quadratic, and the answer is the solution to rounding wherever
+in the tolerance the search entered it. Without that step the answer depends on the
+path: two starts of one problem give answers apart by up to the tolerance, and a
+start that is the answer of a nearby problem, the solve before in a sequence, stays
+where it was until the budget has moved by the tolerance, a staircase that an
+integrator calling the solve along a trajectory reads as noise. The step is kept on
+the tolerance rather than on a decrease, and its iterate is returned rather than
+the best of the last ones: near the solution both comparisons are decided at the
+rounding of the residual, and the search would then depend on the last bits.
+
 ### The starting multipliers
 
 A least-squares fit of ``A^\mathsf{T} y \approx -(g+h)`` minimizes a stationarity
@@ -797,7 +809,17 @@ An answer of this solver holds an absent phase at exactly zero and a present one
 at zero undersaturation, and is read as it stands. An interior-point answer holds
 an absent phase where ``x_i\,(g_i + h_i - u_i)`` is its barrier parameter, a small
 fraction against an undersaturation of order one, and starts without it. A trace
-in equilibrium, a small fraction against no undersaturation, stays. Mixing phases
+in equilibrium, a small fraction against no undersaturation, stays.
+
+The multipliers fitted to the members of the phases say nothing of a row that no
+member carries, such as the reactivity row of an implicit kinetic step, which only
+its minerals hold: the fit leaves that row's multiplier at zero, and a mineral
+reaching the row would be read against a potential nobody fitted. Such a phase is
+taken as the start holds it, free wherever its amount is positive, which is how an
+amount is read where no multiplier reads it. The multipliers of an earlier solve,
+and those of the ideal problem below, determine every row, and leave nothing so.
+
+Mixing phases
 are read alike, on their total and their saturation, with one more condition:
 the start must hold an amount of the phase that some balance row would miss. A
 mixing phase has no bound it can reach, its total being carried in logarithm, so

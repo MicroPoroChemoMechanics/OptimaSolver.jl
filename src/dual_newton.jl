@@ -722,6 +722,22 @@ _primal_value(x::ForwardDiff.Dual) = _primal_value(ForwardDiff.value(x))
 _trial_total(total::Float64, x) = total
 _trial_total(::Nothing, x) = 1.0e-6 * _system_scale(x)
 
+# The rows no species of `members` carries, degenerate rows aside: those whose
+# multiplier a fit to the stationarity of `members` does not determine.
+_uncarried_rows(prob, members, degenerate) =
+    [k for k in axes(prob.A, 1) if !(k in degenerate) && all(j -> iszero(prob.A[k, j]), members)]
+
+# Whether `y0` can be the multipliers of the problem whose degenerate rows are
+# `degenerate`: no row the budget now supplies holds the sentinel of an absent
+# component, which would put a whole component a potential of 500 out.
+function _same_problem_multipliers(y0, degenerate)
+    for k in eachindex(y0)
+        k in degenerate && continue
+        _primal_value(y0[k]) == DEGENERATE_POTENTIAL && return false
+    end
+    return true
+end
+
 # The scale of the budget `b`, its largest entry in magnitude: the unit in which
 # every amount the solver compares is expressed, so that no threshold depends on
 # how much matter the system holds. A budget that holds nothing has no scale, and
@@ -1686,14 +1702,37 @@ function _refuse_captured_duals(name, v)
 end
 
 """
-    dual_newton_solve(prob, b, x0; opts) -> (; x, y, q, active_phases, active, converged, kkt_error)
+    dual_newton_solve(prob, b, x0; opts, y0 = nothing)
+        -> (; x, y, q, active_phases, active, converged, kkt_error, iterations, route)
 
-Solve `prob` for the right-hand side `b`, starting from `x0`.
+Solve `prob` for the right-hand side `b`, starting from `x0`, and from the
+multipliers `y0` when they are given.
 
-`x0` supplies a neighborhood, not a feasible point: this is a Newton method, and
-the intended use is to hand it the answer of an interior-point solve. Verify the
-result with [`kkt_certificate`](@ref); for a convex problem that certificate is a
-proof of **global** optimality.
+`x0` supplies a neighborhood, not a feasible point: this is a Newton method.
+Verify the result with [`kkt_certificate`](@ref); for a convex problem that
+certificate is a proof of **global** optimality.
+
+# A start, and the state of an earlier solve
+
+An amount of exactly zero in `x0` is a variable on its bound, and any other is
+read against the multipliers (see *What an active set must satisfy* in the
+theory): a bound-constrained variable starts free when its amount, as a fraction
+of its scale, is no smaller than its undersaturation, or when it reaches a row
+whose multiplier the start does not determine. The answer of an earlier solve of
+the same system is therefore a start as it stands, and with its `y` as `y0` the
+search resumes where that solve ended, in one attempt: the state of the solver
+carried from one solve of a sequence to the next. Without `y0`, the multipliers
+are fitted to the stationarity of the phase members at `x0`, in turn by four
+fits until one converges. Multipliers that hold the sentinel of a component
+absent from their own budget (`DEGENERATE_POTENTIAL`) on a row that `b` now
+supplies are those of another problem, and the fits are used instead. The first
+iterate within the tolerances takes one more Newton step, kept if it stays within
+them, so that the answer is the solution to rounding whatever the start, and a
+start that is the answer of a nearby problem follows `b`.
+
+`route` says which start the answer came from: `:start` (`y0`), `:fit`, or `:lp`
+(the fallback below); `iterations` how many Newton steps it took, the final one
+included: one when the start is already the answer.
 
 With `opts.lp_fallback`, when no start converges and the problem has no unknown
 parameters, the solve is tried once more from the vertex of the linear program
@@ -1722,6 +1761,13 @@ driven negative, dropped and readmitted.
 function dual_newton_solve(
         prob::DualNewtonProblem, b::AbstractVector, x0::AbstractVector;
         opts::DualNewtonOptions = DualNewtonOptions(),
+        y0::Union{Nothing, AbstractVector{<:Real}} = nothing,
+    )
+    y0 === nothing || length(y0) == size(prob.A, 1) || throw(
+        DimensionMismatch(
+            "`y0` holds $(length(y0)) multipliers and the problem has $(size(prob.A, 1)) " *
+                "conservation rows: pass the `y` of an answer of the same problem.",
+        ),
     )
     opts.max_active_updates == 200 || Base.depwarn(
         "`max_active_updates` is no longer used: the active set is reclassified at " *
@@ -1732,7 +1778,7 @@ function dual_newton_solve(
     # derivatives of the answer from the implicit-function theorem
     # (`_dual_newton_solve_ad`).
     (_is_dual_data(b) || _is_dual_data(prob.A) || _is_dual_data(prob.g) || _is_dual_data(prob.params)) &&
-        return _dual_newton_solve_ad(prob, b, x0; opts)
+        return _dual_newton_solve_ad(prob, b, x0; opts, y0)
     # Duals captured by the callbacks themselves cannot be stripped from here:
     # say so, rather than fail on the first buffer of the solve. `h` and, when
     # the problem has unknown parameters, `gq`, `cq` and `hq` alike.
@@ -1741,7 +1787,7 @@ function dual_newton_solve(
         prob.gq === nothing || _refuse_captured_duals("gq", prob.gq(prob.q0, prob.params))
         _refuse_captured_duals("cq", prob.cq(x0, prob.q0, prob.params))
     end
-    return _dual_newton_solve_values(prob, b, x0, opts)
+    return _dual_newton_solve_values(prob, b, x0, opts; y0)
 end
 
 # The solve on plain numbers: from each starting set of multipliers in turn, the
@@ -1749,7 +1795,8 @@ end
 # (`_dual_newton_attempt`), and when none converges, once from the vertex of the
 # linear program.
 function _dual_newton_solve_values(
-        prob::DualNewtonProblem, b::AbstractVector, x0::AbstractVector, opts::DualNewtonOptions,
+        prob::DualNewtonProblem, b::AbstractVector, x0::AbstractVector, opts::DualNewtonOptions;
+        y0::Union{Nothing, AbstractVector{<:Real}} = nothing,
     )
     bv = Vector{Float64}(b)
     n0 = Vector{Float64}(x0)
@@ -1862,22 +1909,35 @@ function _dual_newton_solve_values(
     # the cold-start device and is then never even run. Putting it first cost a
     # warm-started replay three digits of element balance — 5.7e-10 against
     # 1.4e-11 — for no gain, because the fits it displaced were the better guess.
+    # With each, the rows its fit leaves unread (`_initial_free_set`): none for
+    # multipliers of a solve or of the element-potential start, which every live
+    # species informs.
     y_starts = Vector{Vector{Float64}}()
-
-    let wgt = [sqrt(max(x_buf[i], exp(w_start))) for i in all_members]
-        push!(y_starts, qr(transpose(A_all * Diagonal(wgt)), ColumnNorm()) \ (gh_fit .* wgt))
+    unread = Vector{Vector{Int}}()
+    route = :fit
+    if y0 !== nothing && _same_problem_multipliers(y0, degenerate)
+        push!(y_starts, Float64[_primal_value(v) for v in y0])
+        push!(unread, Int[])
+        route = :start
     end
-    let order = sortperm([x_buf[i] for i in all_members]; rev = true),
+
+    route === :fit && let wgt = [sqrt(max(x_buf[i], exp(w_start))) for i in all_members]
+        push!(y_starts, qr(transpose(A_all * Diagonal(wgt)), ColumnNorm()) \ (gh_fit .* wgt))
+        push!(unread, _uncarried_rows(prob, all_members, degenerate))
+    end
+    route === :fit && let order = sortperm([x_buf[i] for i in all_members]; rev = true),
             nfit = min(length(all_members), max(3 * m, m + 4))
         sel = order[1:nfit]
         push!(y_starts, qr(transpose(A_all[:, sel]), ColumnNorm()) \ gh_fit[sel])
+        push!(unread, _uncarried_rows(prob, all_members[sel], degenerate))
     end
-    push!(y_starts, qr(transpose(A_all), ColumnNorm()) \ gh_fit)
+    route === :fit && push!(y_starts, qr(transpose(A_all), ColumnNorm()) \ gh_fit)
+    route === :fit && push!(unread, _uncarried_rows(prob, all_members, degenerate))
 
     # Last candidate: the concave dual of the ideal problem, solved globally. See
     # `_element_potential_start` — it is the only one of these that knows the
     # element budget exists, and the only one that does not depend on the guess.
-    let y_ls = copy(y_starts[end])
+    route === :fit && let y_ls = copy(y_starts[end])
         for k in degenerate
             y_ls[k] = DEGENERATE_POTENTIAL
         end
@@ -1885,6 +1945,7 @@ function _dual_newton_solve_values(
             y_starts,
             _element_potential_start(prob.A, prob.g, bv, y_ls; dead = dead),
         )
+        push!(unread, Int[])
     end
 
     for yk in y_starts
@@ -1898,15 +1959,16 @@ function _dual_newton_solve_values(
     # answer whenever none converges: a start that lands at 1e8 was returned in
     # preference to one at 20, because neither had crossed the tolerance.
     best = nothing
-    for y0 in y_starts
+    for (y0, unread0) in zip(y_starts, unread)
         out = _dual_newton_attempt(
-            prob, bv, y0, W, act_ph, refs, n0, x_guess, x_buf, dead, degenerate, m, opts, κ,
+            prob, bv, y0, W, act_ph, refs, n0, x_guess, x_buf, dead, degenerate, m, opts, κ, unread0,
         )
         if best === nothing || out.kkt_error < best.kkt_error
             best = out
         end
         out.converged && break
     end
+    best = merge(best, (; route))
     best.converged && return best
 
     # No start converged: once more from the vertex of the linear program over
@@ -1925,8 +1987,8 @@ function _dual_newton_solve_values(
         lp = lp_start(prob, bv)
         if lp.status === :optimal
             opts.verbose && @info "dual-newton: no start converged; from the vertex of the linear program"
-            again = _dual_newton_solve_values(prob, bv, lp.x, _without_lp_fallback(opts))
-            (again.converged || again.kkt_error < best.kkt_error) && return again
+            again = _dual_newton_solve_values(prob, bv, lp.x, _without_lp_fallback(opts); y0 = lp.y)
+            (again.converged || again.kkt_error < best.kkt_error) && return merge(again, (; route = :lp))
         end
     end
     return best
@@ -2250,10 +2312,20 @@ _phase_scale(κ, ph, dead) = maximum(i -> i in dead ? 0.0 : κ[i], ph.members)
 # fraction against `s = 0`, stays: on a CEM I paste at 1.22 days, the 7e-7 mol of
 # monocarbonate that holds the aluminum the other phases leave over.
 #
+# The multipliers fitted to the members of the phases say nothing of a row no
+# member carries (`unread`): the reactivity row of a kinetic step, which only its
+# minerals hold. The fit leaves its multiplier at zero, and a phase reaching it
+# would be read against a potential nobody fitted: the minerals holding the
+# matter of two C3A pathways with gypsum then read as undersaturated by the whole
+# energy of their reactions, started on their bound, and the search held the
+# reactivity rows with a negative ettringite until `maxit`, from every start. A
+# phase the start holds that reaches such a row is taken as the start holds it,
+# free, as any amount is where no multiplier reads it.
+#
 # Candidates are taken in decreasing fraction, each only while the set still
 # supports a solution (the phase rule): the abundant phases are the surest.
 # Pinned variables go in first and unconditionally: a linear row determines them.
-function _initial_free_set(prob, n0, s0, κ, act_ph, dead)
+function _initial_free_set(prob, n0, s0, κ, act_ph, dead, unread)
     active = Int[]
     xB = Float64[]
     for i in prob.always_active
@@ -2263,7 +2335,8 @@ function _initial_free_set(prob, n0, s0, κ, act_ph, dead)
     end
     cand = [
         i for i in prob.idx_bounded
-            if !(i in dead) && !(i in prob.always_active) && n0[i] > 0 && s0[i] <= n0[i] / κ[i]
+            if !(i in dead) && !(i in prob.always_active) && n0[i] > 0 &&
+            (any(k -> !iszero(prob.A[k, i]), unread) || s0[i] <= n0[i] / κ[i])
     ]
     sort!(cand; by = i -> -n0[i] / κ[i])
     for i in cand
@@ -2472,7 +2545,7 @@ held at its bound first, and the step taken without it. `W` is updated in place.
 """
 function _newton_step!(
         W, prob, v, R, act_ph, active, bv, x_buf, x_iterate, dead, degenerate, m, opts,
-        scales, σb, κ, inner_resid, composed,
+        scales, σb, κ, inner_resid, composed; polish::Bool = false,
     )
     nph = length(act_ph)
     # What a step that is not taken leaves as it was.
@@ -2659,7 +2732,9 @@ function _newton_step!(
         # nine trials in ten were such, and each pass ran its forty.
         only_runaway = true
         runaway_streak = 0
-        for _ in 1:40
+        # The final step from within the tolerances is one trial, kept if it stays
+        # within them (`_dual_newton_attempt`).
+        for _ in 1:(polish ? 1 : 40)
             v_t .= v .+ α .* δ
             foreach(copyto!, W_t, W_ref)
             R_t = _outer_residual(
@@ -2683,10 +2758,14 @@ function _newton_step!(
             # descents for as long as `maxit` allowed (190 iterations at a residual
             # of 0.2917, unchanged to eleven digits, on an aqueous system that the
             # next starting point solved at once).
-            decrease = mx < res * (1 - 8 * eps()) || (
-                pred > opts.tol^2 && mx <= res * (1 + 1.0e-12) &&
-                    sum(abs2, wR .* R_t) <= φ - max(2.0e-4 * α * pred, 8 * eps() * φ)
-            )
+            decrease = if polish
+                mx <= opts.tol
+            else
+                mx < res * (1 - 8 * eps()) || (
+                    pred > opts.tol^2 && mx <= res * (1 + 1.0e-12) &&
+                        sum(abs2, wR .* R_t) <= φ - max(2.0e-4 * α * pred, 8 * eps() * φ)
+                )
+            end
             if decrease && (!strict || !current_converged || cand_resid[] <= opts.inner_tol)
                 v = copy(v_t)
                 for kk in eachindex(W)
@@ -2721,8 +2800,8 @@ function _newton_step!(
 end
 
 """
-    _dual_newton_attempt(prob, bv, y_init, W0, act_ph0, refs0, n0, x_guess, x_buf, dead, degenerate, m, opts, κ)
-        -> (; x, y, q, active_phases, active, converged, kkt_error, iterations)
+    _dual_newton_attempt(prob, bv, y_init, W0, act_ph0, refs0, n0, x_guess, x_buf, dead, degenerate, m, opts, κ,
+                         unread) -> (; x, y, q, active_phases, active, converged, kkt_error, iterations)
 
 The search from one set of multipliers: a single Newton iteration whose active set
 is reclassified at every step. Called once per starting point by
@@ -2744,7 +2823,9 @@ The answer is the best iterate by the error of the whole problem (the residual
 of its own equations, the supersaturation of what it holds out), and `converged`
 is that error within the tolerances.
 """
-function _dual_newton_attempt(prob, bv, y_init, W0, act_ph0, refs0, n0, x_guess, x_buf, dead, degenerate, m, opts, κ)
+function _dual_newton_attempt(
+        prob, bv, y_init, W0, act_ph0, refs0, n0, x_guess, x_buf, dead, degenerate, m, opts, κ, unread,
+    )
     # The sets, amounts and parameters below are rebound as the search moves, and
     # a comprehension or a closure that captured them directly would box them —
     # every later use dispatched at run time. Each one is therefore handed over
@@ -2770,7 +2851,7 @@ function _dual_newton_attempt(prob, bv, y_init, W0, act_ph0, refs0, n0, x_guess,
     u0 = _potentials(prob.A, y)
     g0 = current_g(prob, q)
     h0 = current_h(prob, x_guess, q)
-    active, xB = _initial_free_set(prob, n0, g0 .+ h0 .- u0, κ, act_ph, dead)
+    active, xB = _initial_free_set(prob, n0, g0 .+ h0 .- u0, κ, act_ph, dead, unread)
     keep0 = Int[]
     σb0 = _budget_scales(bv)
     for (a, k) in enumerate(act_ph)
@@ -2803,6 +2884,8 @@ function _dual_newton_attempt(prob, bv, y_init, W0, act_ph0, refs0, n0, x_guess,
     open_judged = Inf
     open_state = nothing
     iterations = 0
+    # Whether the search has taken its step from within the tolerances.
+    polished = false
     # What left the set because no step could meet its condition (the leaving rule
     # below), held out until the search improves on its best: let back at once, a
     # supersaturated incumbent of an over-determined set comes back at the next
@@ -2827,7 +2910,6 @@ function _dual_newton_attempt(prob, bv, y_init, W0, act_ph0, refs0, n0, x_guess,
     σb = _budget_scales(bv)
 
     for it in 1:(opts.maxit)
-        iterations = it
         nph = length(act_ph)
         v = vcat([log(r) for r in refs], y, xB, q)
         R = _outer_residual(
@@ -2898,13 +2980,34 @@ function _dual_newton_attempt(prob, bv, y_init, W0, act_ph0, refs0, n0, x_guess,
             open_res, open_judged = kkt, judged2
             open_state = (copy(act_ph), copy(active), copy(v), [copy(w) for w in W], viol_b)
         end
-        if judged <= opts.tol && viol_b <= opts.si_tol && viol_ph <= opts.si_tol
+        # The first iterate within the tolerances takes one more Newton step, a
+        # single trial kept if it stays within them, and the answer is the
+        # iterate it reaches: from there the convergence is quadratic, and the
+        # answer is the solution to rounding wherever in the tolerance the search
+        # entered it. Returned as it stood, it depended on the path: two starts of
+        # the same problem gave answers apart by up to the tolerance, and a start
+        # that was the answer of a nearby problem stayed where it was until the
+        # budget had moved by the tolerance, a staircase a sequence of solves
+        # reads as noise. Resumed from the multipliers of the solve before, the
+        # semi-adiabatic cell of ChemistryLab (a CEM I paste, its temperature the
+        # root of an enthalpy balance over solved partitions) agreed with the
+        # replay of its own heat to 1.1e-7 instead of 2.1e-8, though both solved
+        # every partition within the tolerance. The step is kept on the
+        # tolerance, not on a decrease, and the answer is not chosen among the
+        # last iterates by their residual: both are decided at the rounding of the
+        # residual there, so by the last bits, and the number of steps then
+        # changed with the size of the system.
+        within = judged <= opts.tol && viol_b <= opts.si_tol && viol_ph <= opts.si_tol
+        polish = within && !polished
+        if within && polished
+            best_res, best_judged = kkt, judged2
+            best_state = (copy(act_ph), copy(active), copy(v), [copy(w) for w in W], max(viol_b, viol_ph))
             converged = true
             break
         end
         # Solved, with nothing left to move but what the rule against cycling holds
         # out: the search has ended, short of a solution.
-        judged <= opts.tol && e == 0 && k_new == 0 && break
+        !within && judged <= opts.tol && e == 0 && k_new == 0 && break
 
         # ── the moves of this iteration ──
         before = (copy(active), copy(xB), copy(act_ph), copy(refs))
@@ -2952,7 +3055,7 @@ function _dual_newton_attempt(prob, bv, y_init, W0, act_ph0, refs0, n0, x_guess,
         end
         v, active, accepted = _newton_step!(
             W, prob, v, R, act_ph, active, bv, x_buf, x_iterate, dead, degenerate, m, opts,
-            scales, σb, κ, inner_resid, composed,
+            scales, σb, κ, inner_resid, composed; polish,
         )
         # No step under the new classification: the step under the one before is
         # the other direction there is, not a retry.
@@ -2971,6 +3074,12 @@ function _dual_newton_attempt(prob, bv, y_init, W0, act_ph0, refs0, n0, x_guess,
                 W, prob, v, R, act_ph, active, bv, x_buf, x_iterate, dead, degenerate, m, opts,
                 scales, σb, κ, inner_resid, composed,
             )
+        end
+        accepted && (iterations += 1)
+        polished |= polish
+        if polish && !accepted
+            converged = true
+            break
         end
         # Nothing reduces the residual of this set: it holds a condition no step can
         # meet, and the one furthest from holding leaves, the leaving rule of an
