@@ -46,7 +46,14 @@ not help, returns what it returned before, to the bit.
   it does not converge, and those instants certify, monocarbonate growing
   from 6.96e-7 to 9.77e-7 mol over three seconds and the AFm phase
   undersaturated, as the same equilibrium solved without the competing
-  phases says.
+  phases says. The retry runs only when a trace may be what the search missed:
+  a pure phase of the start the best answer holds active, or reads as
+  supersaturated while the start holds it at the geometric mean of `si_tol`
+  and the seeding amount or more (1e-7 mol by default), above the amounts an
+  interior point leaves absent phases at. Run for every failed solve holding
+  some trace, it made ChemistryLab's tests 1.6 % slower (+14 % on some files):
+  over the semi-adiabatic cells, it won 193 of 323 failed solves and lost 130
+  for 17 s. Restricted so, it wins the same 193 and runs 4 of the 130.
 
 ## v0.8.8 — the step it takes, and the phase that takes another's place
 

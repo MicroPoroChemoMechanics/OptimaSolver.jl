@@ -1604,6 +1604,17 @@ end
     end
     @test !any(r -> occursin("traces of the start", string(r.message)), records)
     @test dual_newton_solve(prob, b, wrong; opts = one).x == stuck.x
+    # The same CaX held at 3e-8 mol, where an interior point leaves absent phases:
+    # below the geometric mean of `si_tol` and the seeding amount, and not active
+    # in the best answer, it is not taken for a trace the search missed. The
+    # retry is not tried, and the search ends unconverged, as without it.
+    @test 1.0e-8 < 3.0e-8 < sqrt(1.0e-8 * OptimaSolver.INITIAL_SEED_AMOUNT)
+    floor_trace = [55.0, 1.0e-3, 1.0e-3, 1.0, 3.0e-8, 1.0e-12]
+    records, below = Test.collect_test_logs() do
+        dual_newton_solve(prob, b, floor_trace; opts = v)
+    end
+    @test !any(r -> occursin("traces of the start", string(r.message)), records)
+    @test !below.converged
 
     # The fallback is run without a fallback of its own, the other options kept.
     o = DualNewtonOptions(tol = 1.0e-9, inner_fall_bound = Inf, lp_fallback = true, verbose = true)

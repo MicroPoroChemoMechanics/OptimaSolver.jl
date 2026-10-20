@@ -1942,8 +1942,12 @@ function _dual_newton_solve_values(
     # monocarbonate seeded the solve certifies, the AFm phase undersaturated.
     # Only a solve that did not converge pays for this, and only its converged
     # answer is kept: a search that converged, or one this does not help, returns
-    # what it returned before.
-    if seed > opts.si_tol && any(i -> opts.si_tol < n0[i] <= seed && !(i in dead), prob.idx_bounded)
+    # what it returned before. It pays only when a trace may be what the search
+    # missed (`_traces_worth_seeding`): over the tests of ChemistryLab's
+    # semi-adiabatic cells, 323 failed solves held some trace, the retry won 193
+    # of them and lost 130 for 17 s; restricted so, it wins the same 193 and runs
+    # 4 of the 130.
+    if seed > opts.si_tol && _traces_worth_seeding(prob, n0, seed, best, dead, opts.si_tol)
         opts.verbose && @info "dual-newton: no start converged; with the traces of the start in the initial set"
         again = _dual_newton_solve_values(prob, b, x0, _without_lp_fallback(opts), opts.si_tol)
         again.converged && return again
@@ -2667,6 +2671,21 @@ end
 # incumbent's place. The phase may be absent or held at a trace: a search that
 # admitted it beside the incumbent ends with both active, the entrant at its
 # admission amount, and the two cannot be stationary together.
+# Whether the start holds a trace the search without it may have needed: a pure
+# phase between `si_tol` and `seed` moles that the best answer holds active, or
+# reads as supersaturated while the start holds it at the geometric mean of the
+# two thresholds or more. Below that mean sit the amounts an interior point
+# leaves absent phases at (1e-8 to 3e-8 mol where the retry kept losing); the
+# monocarbonate of the CEM I paste at 1.22 days held 7e-7 mol, supersaturated by
+# 4.3 RT.
+function _traces_worth_seeding(prob, n0, seed, out, dead, si_tol)
+    si = _potentials(prob.A, out.y) .- (current_g(prob, out.q) .+ current_h(prob, out.x, out.q))
+    present = sqrt(si_tol * seed)
+    return any(prob.idx_bounded) do i
+        si_tol < n0[i] <= seed && !(i in dead) && (i in out.active || (si[i] > si_tol && n0[i] >= present))
+    end
+end
+
 function _swapped_start(prob, out, dead, si_tol)
     q = out.q
     u = _potentials(prob.A, out.y)
