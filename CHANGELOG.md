@@ -1,5 +1,24 @@
 # Changelog
 
+## v0.9.1 — nothing released at an iterate that ran away
+
+A patch release of the dual Newton method.
+
+### Fixed
+
+- **A search could raise from LAPACK where it should have ended an attempt.**
+  When no step reduces the residual of a set, the search takes a
+  supersaturated phase off its bound, and asks whether it depends on the
+  phases present from their compositions at the iterate. At an iterate whose
+  inner inversion ran away, the amounts, or their products, were not finite:
+  the columns of the phases were Inf over Inf, and the rank test raised
+  `ArgumentError: invalid argument #4 to LAPACK call`. ChemistryLab's
+  semi-adiabatic run of a CEM I mortar with 5 % of silica fume stopped there.
+  Nothing is released at such an iterate: the attempt ends as one whose line
+  search finds no decrease, for another start or the vertex of the linear
+  program. A solve that did not reach such an iterate returns what it
+  returned before.
+
 ## v0.9.0 — an active set reclassified at every iteration, and no amount in moles
 
 A minor release, on the dual Newton method. Its active-set search no longer

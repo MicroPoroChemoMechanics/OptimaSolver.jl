@@ -474,6 +474,15 @@ end
     @test sort(res.active) == [4, 5]
     @test A * res.x ≈ b rtol = 1.0e-6
 
+    # At an iterate whose inner inversion ran away, the solution holds an
+    # infinite amount and its column is Inf over Inf: nothing is released
+    # there, and the set is handed back as it was, where the rank test of its
+    # columns used to raise from LAPACK.
+    for runaway in ([0.5, Inf, 0.0, 0.1, 0.0], [0.5, NaN, 0.0, 0.1, 0.0], [floatmax(), floatmax(), 0.0, 0.1, 0.0])
+        out = OptimaSolver._release(prob, [4], [0.1], [1], [1.0], 3, b, Set{Int}(), Int[], runaway, Float64[])
+        @test out == ([4], [0.1], [1], [1.0], false)
+    end
+
 end
 
 @testset "the certificate tests a mixing phase held absent" begin
