@@ -90,6 +90,13 @@ tonne. A solve can resume from the multipliers of the one before.
   multiplied and the multipliers unchanged.
 - The forward-mode chunk of the outer Jacobians is fixed at the number of
   conservation rows (at most 12), so that the inversion compiles once.
+- **Faster on ChemistryLab's slowest tests.** On its three slowest test files,
+  in fresh processes, alternated with 0.8.8 on the same machine (the minimum of
+  two runs): 401 s against 517 s. A quaternary cement hydration takes 280 s
+  against 386 s, the binding of chloride by the AFm phases 50 s against 63 s,
+  and the dissolution of glasses 72 s against 68 s, the one file slower on
+  ChemistryLab 0.40.0; on ChemistryLab 0.41.0, which resumes each solve of a
+  run from the one before, it takes 55 s.
 
 ### Fixed
 
