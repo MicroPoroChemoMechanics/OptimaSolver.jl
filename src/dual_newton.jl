@@ -2499,7 +2499,15 @@ function _release(prob, active, xB, act_ph, refs, e, bv, dead, degenerate, x, q)
     # far from the answer the first can hold a negative amount of a component,
     # and a ratio test along them emptied the pore solution of a cell into a
     # hydrate it had no water for.
+    # An iterate whose inner inversion ran away holds amounts that are not
+    # finite, or whose products are not, and its compositions say nothing of a
+    # dependence: nothing is released there, and the attempt ends as a line
+    # search without a decrease does. Its columns, Inf over Inf, made the rank
+    # test fail in LAPACK on a CEM I mortar with silica fume in a semi-adiabatic
+    # cell.
+    all(isfinite, x) || return (active, xB, act_ph, refs, false)
     C, ks, Ns, Cb = _phase_columns(prob, act_ph, x, dead, _balance_residual(prob, x, q, bv, dead))
+    (all(isfinite, C) && all(isfinite, Cb)) || return (active, xB, act_ph, refs, false)
     if _dependence(prob, active, e, Cb) === nothing
         a2 = vcat(active, e)
         x2 = vcat(xB, 0.0)
