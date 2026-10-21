@@ -456,6 +456,24 @@ end
     # Matter is conserved whatever the active set.
     @test A * r.x ≈ b rtol = 1.0e-6
 
+    # From the default start the search stalls on the way, at an iterate whose
+    # error (2.0) exceeds the supersaturation of phase 3 (0.45 RT): no step
+    # reduces the residual of the set, and phase 3 comes off its bound before
+    # anything leaves. Whether a step is accepted before that iterate depends on
+    # the rounding of the machine, so the search resumes here from the
+    # multipliers of that iterate, which stalls at once. It ends on phases 4
+    # and 5, the vertex of least g·x (−7/6, against −1 for phase 3 alone).
+    records, res = Test.collect_test_logs() do
+        dual_newton_solve(
+            prob, b, [0.5, 0.5, 0.0, 0.1, 0.0];
+            y0 = [1.1278, -0.5781], opts = DualNewtonOptions(verbose = true),
+        )
+    end
+    released = [Dict(r.kwargs) for r in records if r.message == "dual-newton stall" && haskey(Dict(r.kwargs), :released)]
+    @test !isempty(released) && all(d -> d[:released] == 3, released)
+    @test sort(res.active) == [4, 5]
+    @test A * res.x ≈ b rtol = 1.0e-6
+
 end
 
 @testset "the certificate tests a mixing phase held absent" begin
