@@ -80,14 +80,14 @@ function _full_primal_problem(prob::DualNewtonProblem)
 end
 
 """
-    _dual_newton_solve_ad(prob, b, x0; opts) -> NamedTuple
+    _dual_newton_solve_ad(prob, b, x0; opts, y0) -> NamedTuple
 
 `dual_newton_solve` where the budget `b` or the data of `prob` (`A`, `g`,
 `params`) carry dual numbers: the answer of the values, with `x`, `y` and `q` in
 duals of the caller's tag (`dual_newton_tangent`).
 """
-function _dual_newton_solve_ad(prob, b, x0; opts)
-    res = dual_newton_solve(_primal_problem(prob), _values(b), _values(x0); opts)
+function _dual_newton_solve_ad(prob, b, x0; opts, y0)
+    res = dual_newton_solve(_primal_problem(prob), _values(b), _values(x0); opts, y0 = _values(y0))
     t = dual_newton_tangent(
         prob, b, res.x;
         y = res.y, q = res.q, active_phases = res.active_phases, active = res.active,
@@ -109,11 +109,12 @@ answer given by the implicit-function theorem with the active set frozen.
 `dual_newton_solve` returns it on the values of the data, whatever route
 produced it. What is not given is recovered from `x`:
 
-- the active phases are those holding more than `floor`, and the active bounded
-  variables those above it: an interior-point answer leaves an absent pure phase
-  at a negligible amount rather than at zero;
-- `y` solves the stationarity of the species above `floor` by least squares, as
-  `kkt_certificate` does.
+- the active phases are those holding more than `floor` times the scale of the
+  budget (its largest entry), and the active bounded variables those above it:
+  an interior-point answer leaves an absent pure phase at a negligible amount
+  rather than at zero;
+- `y` solves the stationarity of the species above that amount by least squares,
+  as `kkt_certificate` does.
 
 The answer must be one: the derivative of a point that is not an equilibrium is
 not the derivative of anything. Audit it with `kkt_certificate` first.
@@ -141,6 +142,9 @@ function dual_newton_tangent(
     P = ForwardDiff.npartials(D)
     pprob = primal === nothing ? _primal_problem(prob) : primal
     bv = _values(b)
+    # The floor relative to the scale of the budget, so that what is present does
+    # not depend on how much matter the system holds.
+    present = floor * _system_scale(bv)
     # The number type of the answer: `Float64`, or the duals of a differentiation
     # enclosing this one, which the whole computation below carries.
     V = promote_type(eltype(x), eltype(q), eltype(pprob.g), eltype(pprob.A))
@@ -157,15 +161,15 @@ function dual_newton_tangent(
     can_exist(k) = !all(i in dead for i in pprob.phases[k].members)
     act_ph = active_phases !== nothing ? Int[k for k in active_phases if can_exist(k)] : Int[
             k for (k, ph) in pairs(pprob.phases)
-            if can_exist(k) && (ph.always_present || sum(x[i] for i in ph.members) > floor)
+            if can_exist(k) && (ph.always_present || sum(x[i] for i in ph.members) > present)
         ]
     active = active !== nothing ? active : [
-            i for i in pprob.idx_bounded if !(i in dead) && (x[i] > floor || i in pprob.always_active)
+            i for i in pprob.idx_bounded if !(i in dead) && (x[i] > present || i in pprob.always_active)
         ]
     if y === nothing
         ∇f = current_g(pprob, q) .+ current_h(pprob, x, q)
         interior = vcat(
-            [i for k in act_ph for i in pprob.phases[k].members if !(i in dead) && x[i] > floor],
+            [i for k in act_ph for i in pprob.phases[k].members if !(i in dead) && x[i] > present],
             active,
         )
         rows = [k for k in 1:m if !(k in degenerate)]
@@ -173,9 +177,10 @@ function dual_newton_tangent(
         y[rows] .= qr(transpose(pprob.A[rows, interior]), ColumnNorm()) \ (-∇f[interior])
     end
 
+    wb = _log_bounds(bv)
     W = [
         V[
-            (i in dead) ? W_FLOOR : clamp(log(max(x[i], exp(W_FLOOR))), W_FLOOR, W_CEIL)
+            (i in dead) ? wb.lo : clamp(log(max(x[i], exp(wb.lo))), wb.lo, wb.hi)
                 for i in ph.members
         ] for ph in pprob.phases
     ]
@@ -185,7 +190,7 @@ function dual_newton_tangent(
         end for k in act_ph
     ]
     v = vcat(log.(refs), y, x[active], q)
-    unk = _inner_unknowns(pprob, W, v, act_ph, dead)
+    unk = _inner_unknowns(pprob, W, v, act_ph, dead, wb)
     z0 = vcat(v, V[W[k][j] for (_, k, j, _, _) in unk])
 
     # `Φ_z` by forward mode under a tag of its own; `Φ_θ θ̇`, the dual part of `Φ`

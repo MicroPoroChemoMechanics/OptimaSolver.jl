@@ -661,13 +661,29 @@ derivatives are exact as well.
 
 ### Termination
 
-The outer loop admits **one** variable per round, the most violated, and records
-the active sets it has visited. Since there are finitely many subsets and each
-round either terminates or visits a new one, the loop terminates. Admitting a
-batch instead feeds a cycle in which a variable is admitted, driven negative,
-dropped, and readmitted — observed on a cement without limestone as a solve
-converged to `2e-12` of the *wrong* subproblem, with an excluded variable
-violated by 10.9.
+The search is a single Newton iteration bounded by `maxit`. Each iteration takes
+at most one variable off its bound, and a variable that left because no step
+could meet its condition is held out until the error of the whole problem
+improves: the rule that keeps an active-set method from cycling. Coming back,
+without improving, to a set it has left ends the search: there are finitely many
+sets, so it either improves or ends. So does an iterate at which the
+linearization can remove no more than a fraction `tol` of the squared residual,
+the least-squares point of its set (the relative-reduction test of nonlinear
+least squares), and a step is accepted only on a decrease beyond the rounding of
+the residual itself. The search ends when the error is within the tolerances, or
+when its set is solved and nothing is left to move.
+
+The first iterate within the tolerances takes one more Newton step, a single trial
+kept if it stays within them, and the answer is the iterate it reaches. From there
+the convergence is quadratic, and the answer is the solution to rounding wherever
+in the tolerance the search entered it. Without that step the answer depends on the
+path: two starts of one problem give answers apart by up to the tolerance, and a
+start that is the answer of a nearby problem, the solve before in a sequence, stays
+where it was until the budget has moved by the tolerance, a staircase that an
+integrator calling the solve along a trajectory reads as noise. The step is kept on
+the tolerance rather than on a decrease, and its iterate is returned rather than
+the best of the last ones: near the solution both comparisons are decided at the
+rounding of the residual, and the search would then depend on the last bits.
 
 ### The starting multipliers
 
@@ -692,12 +708,19 @@ nothing to stall in. This is Brinkley's method (White, Johnson & Dantzig, 1958),
 and its solution is the `y` for which the ideal composition conserves matter
 exactly.
 
-It is tried **last**, not first. A caller replaying a trajectory hands over a
-composition that is nearly the answer, the fits built from it converge on the first
-attempt, and this solve is then never run; ordered the other way it costs a
-warm-started replay three digits of element balance for no gain. The attempts are
-ranked by the KKT error each reaches, so the answer returned is the best of them
-whether or not any crossed the tolerance.
+It is tried **last**, not first: after two least-squares fits (weighted by the
+square root of the amounts, then on the largest members only) and after the vertex
+of the linear program over the pure phases. A caller replaying a trajectory hands
+over a composition that is nearly the answer, the fits built from it converge on
+the first attempt, and this solve is then never run; ordered the other way it costs
+a warm-started replay three digits of element balance for no gain. The vertex goes
+before it because it costs a twentieth of it and converges more often: measured on
+the files of ChemistryLab's suite where both served, 199 times in 215 at 0.007 s
+against 90 times in 186 at 0.09 s. A third fit, every member weighted equally,
+converged in 36 of the 551 solves that reached it at 1.2 s each, the starts after
+it converging where it did, and is gone. The attempts are ranked by the KKT error
+each reaches, so the answer returned is the best of them whether or not any
+crossed the tolerance.
 
 ### What an active set must satisfy, and how it is searched
 
@@ -707,105 +730,180 @@ both are consequences of the KKT system rather than choices.
 A bound-constrained variable held active imposes `u_i = g_i`, i.e.
 ``a_i^\mathsf{T} y = -g_i`` — one **linear** equation in `y`. A mole-fraction
 mixing phase imposes ``\log\sum_i e^{u_i-g_i} = 0``, one more, nonlinear but still
-a condition on `y` alone. A phase with a solvent does not, since its reference
-equation involves the composition. Hence
+a condition on `y` alone. Counting these,
 
 ```math
 \#\{\text{active bounded}\} + \#\{\text{active mole-fraction phases}\} \;\le\; m ,
 ```
 
-which is Gibbs' phase rule in the form the dual system takes, and in addition
-``\operatorname{rank} A[:,\text{active}] = |\text{active}|`` — two dependent
-columns demand a fixed relation between their `g_i` that no database satisfies,
-which is exactly what two polymorphs of one composition amount to. An active set
-breaking either condition has no solution: the residual cannot reach zero for any
-iterate, and the least-squares step spreads the violation over the rows instead of
-removing it.
+which is Gibbs' phase rule in the form the dual system takes, and in addition the
+columns must be independent: those of the active bounded variables, and for each
+phase present the column ``A f`` of its composition `f`. By the Gibbs-Duhem
+relation, the condition a phase sets varies with `y` along that column alone,
+whether it is the condition of a mixing phase above or that of a solution, its
+solvent at the potential its activity gives: a solution counts as a solid
+solution does. Two dependent columns demand a fixed relation between their
+potentials that no database satisfies, which is exactly what two polymorphs of
+one composition amount to, a pure end-member beside a solid solution of it and
+of another end-member already present, or portlandite, gypsum and anhydrite
+beside a pore solution of nothing but their components, which coexist at one
+temperature only. An active set breaking either condition has no solution: the
+residual cannot reach zero for any iterate, and the least-squares step spreads
+the violation over the rows instead of removing it.
 
-Complementarity supplies the leaving rule. For a bound-constrained variable the
-conditions are ``x_i \ge 0``, ``s_i \le 0``, ``x_i s_i = 0`` with
-``s_i = u_i - g_i - h_i``. Testing only ``x_i \to 0`` covers one half: a variable
-held active while **undersaturated** violates complementarity as plainly, and no
-Newton iteration repairs it, because its own equation ``s_i = 0`` is the one that
-cannot hold. That test is meaningful only on a point that solves the current
-subproblem — while the inner Newton is still working, ``s_i`` is a transient.
+The question is asked of the compositions at the answer. Away from it, a
+solution read as it stands is off by what the balance misses (the pore solution
+of a cell of lime and gypsum carried a charge of ``9\times10^{-6}`` of its matter),
+and anhydrite read as independent of gypsum and of it sent the search after a
+coexistence the temperature did not allow. Each column is therefore taken as the
+composition its phase would hold with the budget met, each row's residual taken
+off the phases that carry the row in proportion to what they hold of it, the
+pure phases holding exact stoichiometries.
 
-The search over sets is a **descent method**, and the quantity it descends is the
-KKT error of the whole problem — stationarity, element balance, and the worst
-violation among the phases held absent — not the residual of the subproblem the
-current set defines. The distinction decides the outcome: a set that omits a phase
-the solution needs solves its own equations exactly, so ranking states on that
-residual rewards leaving phases out. The best state visited is what the solver
-returns.
+A bound-constrained variable is free or held exactly at zero, and the set is
+reclassified at **every** Newton iteration, not once the current set is solved:
 
-### Exchange, not rejection
+- a free variable goes to its bound when a step, cut at the first bound it
+  crosses, brings it there, or when it sits at zero and the step would take it
+  lower. It is then held, its row removed, and the step solved again without it;
+- a variable at its bound comes off it when it is supersaturated,
+  ``u_i - g_i - h_i > \texttt{si\_tol}`` in RT, by more than the error of the
+  iterate, the residual of its own set: below that the sign of the
+  supersaturation says nothing. One per iteration, the most supersaturated, ties
+  to the smallest index; and where no step improves the set, the most
+  supersaturated comes off whatever that error, the set lacking it perhaps;
+- a mixing phase held out is tested by the tangent plane once the current set is
+  solved and no pure phase waits, and the most violated enters. The total `N` of
+  a present one that may be absent moves linearly, `N(1 + αδ)` for the step `δ`
+  of `ln N`, which is Newton's step in `N`, the balance rows being linear in it: a
+  step that would empty it is cut where it meets zero, or empties it at once when
+  no balance row would miss it, and the phase leaves at zero, as a pure phase
+  reaches its bound. Carried in its logarithm with a step capped at one unit, a
+  phase came in and went out by a factor `e` per iteration, and held every other
+  unknown to the same short step.
 
-An admission that fails to converge is not evidence against the variable
-admitted. The inner Newton stops the moment an active variable falls below its
-bound, and that is the *departing* variable announcing itself: the entrant stays,
-the drop list removes the other, and the two together are the active-set
-exchange. A mixing phase whose amount falls below `si_tol` stops it the same
-way, so that the round drops it. A phase that is always present is never
-dropped and does not stop it: a surface site family may hold a trace, and a
-family started far below its budget, whose amount a step multiplies by `e` at
-most, would otherwise rise by one step per round.
+A set whose conditions cannot all hold together shows it in its linearization
+before any step: the system is square, and of full rank its least-squares step
+leaves nothing of the linear model's residual but rounding, whereas the pivoted
+factorization of a singular one drops the direction its conditions share and
+leaves their conflict, ``\lVert W(J\delta + R)\rVert^2``, in place. Where that is
+more than a fraction `tol` of ``\lVert W R\rVert^2`` at an iterate not yet within
+the tolerance, each condition that may leave (a mixing phase that may be absent,
+a free pure phase) is taken out with its matter, which the balance rows, linear
+in the amounts, take off exactly, and the linearization solved again: those
+whose removal alone makes it consistent are the ones the set cannot hold beside
+the others, and of them the one furthest from holding leaves at once, provided
+it fails to hold beyond the floor of the leaving rule below; a condition that
+holds is not the one the set should not have. The least
+squares spread the violation over every row, and the condition no step can meet
+does not stand out in the residual; crept along by steps each removing 3e-8 of
+it, a chlorinated cement paste stayed 37 iterations at a residual of 0.4545
+before reaching the least-squares point of such a set.
 
-### The scale of an amount
+Where no single removal makes it consistent, and where the linearization can no
+longer reduce the residual of the current set, removing no more than a fraction
+`tol` of it, the iterate is the least-squares point of a set that holds a
+condition no step can meet: a present phase undersaturated, or more stationarity
+conditions than `y` has dimensions, which the least-squares step leaves spread
+over all of them. The condition furthest from holding leaves. A line search that finds no decrease where the linearization
+predicts one shows no such thing (an inner inversion running away, a model past
+its range), and nothing leaves on it: the search from that start ends, for the
+next start or the vertex of the linear program. Taken for an inconsistent set,
+it emptied a chlorinated cement paste of its solids one by one under the limiting
+law.
 
-"Below `si_tol`" compares an amount with a number of moles, and a phase made of
-a trace can never pass that test: the ettringite of a portlandite suspension
-whose aluminum is a ``10^{-9}`` mol seed holds at most ``10^{-9}`` mol. Judged
-in moles, it was dropped below ``10^{-8}`` at every round, admitted again because
-it was supersaturated, and the search ended when its active set repeated, with
-the aluminum row four times out.
+The step and the line search are taken in the metric the convergence test uses,
+each balance row relative to what it holds and a row without a budget relative
+to the whole budget, and each trial is judged on what its own rows hold, as the
+next iteration will judge it: on the iterate's holdings, a trial that emptied a
+row of its carriers looked balanced. For the same reason a trial whose inner
+inversion has not converged is compared by the residual that the inversion,
+carried on, gives it: under the limiting law a chlorinated cement paste accepted
+a trial at 0.72 that the next iteration read at ``5\times10^{13}``. A trial outside
+the domain of the model (a temperature at which water is a vapor) is refused as
+a runaway inversion is, and a shorter step comes back inside.
 
-Such a variable shows itself by that cycle. Its capacity, the most the budget
-lets it hold,
+The answer is the best iterate by the KKT error of the whole problem
+(stationarity, element balance, and the worst violation among what is held
+absent), not by the residual of the subproblem the current set defines, which a
+set omitting a phase the solution needs solves exactly. Ties go to the smaller
+squared residual.
+
+### Exchange by the ratio test
+
+When the composition of an entering pure phase is a combination of those already
+free, ``a_e = \sum_j \lambda_j a_j``, the phase rule asks for an exchange, and the
+ratio test of the simplex makes it exactly: ``t = \min_{\lambda_j > 0} x_j/\lambda_j``
+of matter moves from the incumbents to the entrant, every balance kept and the
+Gibbs energy lowered by ``t`` times the entrant's supersaturation, and the
+incumbent that reaches zero leaves. Two polymorphs of one composition are the
+case. A phase present is an incumbent too, of column ``A f`` and amount its
+total: an end-member entering beside a solid solution of it and of another
+end-member already free empties the solution into the two pure phases, and
+anhydrite entering beside gypsum and a pore solution of nothing but their
+components takes the place of gypsum, its water going to the solution. A mixing
+phase the tangent plane admits is an entrant too, of column ``A f`` at the trial
+composition `f` that the tangent plane finds: a solid solution supersaturated
+beside its two end-members as pure phases is a combination of them, and takes
+the place of the one the ratio test empties, where admitted beside both it
+made a set with one condition more than it can meet, on which every start
+crawled until `maxit`. The
+matter moves along the composition each phase holds, not the one it would hold
+with the budget met, which far from the answer can hold a negative amount of a
+component; and a phase that is always present, the solution, is never the one
+emptied. Where the solution holds a component the solids do not, a dissolved
+salt, a hydrate and its anhydrous solid are independent: they coexist at the one
+water activity where both are stable, and the dilution of the salt reaches it.
+
+### No amount in moles
+
+No test of the search compares an amount with a number of moles. Presence is the
+exact bound and a sign in RT; an amount enters a test only as a fraction of its
+scale,
 
 ```math
-c_i = \min_k \frac{b_k}{A_{ki}}
+\kappa_i = \min_k \frac{|b_k|}{|A_{ki}|}
 ```
 
-over the conservation rows whose entries, over the variables not dead, carry one
-sign, is below `si_tol`; it was dropped as vanishing; and the set the search is
-about to repeat holds it again. If the search has no solution yet at that point,
-the variable, or the mixing phase, is judged from then on on the scale
+over the rows with a budget, the most one row lets it hold; and each balance row
+is judged relative to what it holds. A system multiplied by any factor is
+therefore the same search: the same sets, the same number of iterations, the
+amounts multiplied and the potentials unchanged, which the tests check from
+``10^{-6}`` to ``10^{6}``. Until 0.8.8 a phase entered above ``10^{-6}`` mol, the
+barrier parameter of the interior point whose answers the solver was first
+written to polish, and left below ``10^{-8}`` mol, so that a phase made of a trace
+(the ettringite of a portlandite suspension whose aluminum is a ``10^{-9}`` mol
+seed) could never stay.
+
+A start is read the same way. A pure phase starts free when its amount, as a
+fraction of its scale, is no smaller than its undersaturation at the starting
+multipliers:
 
 ```math
-\sigma_i = \min\!\left(1,\ \max\!\left(10^{-6},\ \frac{c_i}{c_\mathrm{ref}}\right)\right),
-\qquad c_\mathrm{ref} = 10^{-4}\ \text{mol}:
+\frac{x_i}{\kappa_i} \;\ge\; g_i + h_i - u_i .
 ```
 
-it leaves when ``x_i < \texttt{si\_tol}\,\sigma_i``, enters at
-``10^{-9}\sigma_i``, and a phase is admitted at ``10^{-6}\sigma_i`` — a
-ten-thousandth, a hundred-thousandth and a hundredth of what it can hold. The
-rescue makes the repeated set a new state of the search, which goes on, and
-nothing is rescued twice, which keeps the search finite. The suspension then
-certifies, with the gypsum where a seed of ``10^{-6}`` mol puts it. The floor
-``10^{-6}`` keeps every threshold above ``10^{-16}``, the amount the solver
-gives an absent variable.
+An answer of this solver holds an absent phase at exactly zero and a present one
+at zero undersaturation, and is read as it stands. An interior-point answer holds
+an absent phase where ``x_i\,(g_i + h_i - u_i)`` is its barrier parameter, a small
+fraction against an undersaturation of order one, and starts without it. A trace
+in equilibrium, a small fraction against no undersaturation, stays.
 
-Every other search is the search in moles, to the bit. Scaling every variable
-on its capacity from the start was tried and refused: a cement given
-``10^{-9}`` mol of carbon, for its carbonate phases to be able to form, holds
-thousands of carbonate variables of that capacity, which the search rightly
-sends away for good at their first drop; kept on their own scale, they slowed
-the search and left uncertified an equilibrium that certified before.
+The multipliers fitted to the members of the phases say nothing of a row that no
+member carries, such as the reactivity row of an implicit kinetic step, which only
+its minerals hold: the fit leaves that row's multiplier at zero, and a mineral
+reaching the row would be read against a potential nobody fitted. Such a phase is
+taken as the start holds it, free wherever its amount is positive, which is how an
+amount is read where no multiplier reads it. The multipliers of an earlier solve,
+and those of the ideal problem below, determine every row, and leave nothing so.
 
-Reading that failure as the entrant's fault is what an earlier version did, and
-the consequence was silent. On a cement, ettringite and monosulphate compete for
-the same sulfate, so admitting one necessarily drives the other out; rejecting
-ettringite permanently let the solve converge — to `2e-12` stationarity and
-`5e-12` element balance — onto an assemblage in which ettringite was **absent and
-supersaturated by 14.8**. Only the certificate caught it.
-
-The entrant is reconsidered only when the Newton failed with *nothing* leaving,
-which is the genuine over-determination this guard was written for: two bound
-variables declared stationary whose formulas are dependent modulo the mixing
-phases, where the residual cannot reach zero at all. Even then the veto lasts
-only as long as the context that produced it, and a vetoed variable that is still
-supersaturated prevents the run from being reported as converged — the candidate
-list is filtered, the KKT conditions are not.
+Mixing phases
+are read alike, on their total and their saturation, with one more condition:
+the start must hold an amount of the phase that some balance row would miss. A
+mixing phase has no bound it can reach, its total being carried in logarithm, so
+one the start holds at a trace, which fitted multipliers happen to read as
+supersaturated, could not leave; held out, it is admitted by the tangent plane
+once the set is solved, if it is supersaturated there.
 
 ### The certificate
 
@@ -825,25 +923,27 @@ reason above.
 ``s_k = \sum_j |A_{kj}\, x_j| + \sum_l |A^q_{kl}\, q_l|``, the balance is met when
 
 ```math
-|r_k| \;\le\; \texttt{tol}\cdot \min(s_k,\, 1~\text{mol})
+|r_k| \;\le\; \texttt{tol}\cdot s_k
 ```
 
-for every row: relative to the row below one mole, in moles above it. A trace is
-then held to its own amount, as PHREEQC and GEMS hold a mass balance to its
-element total, and a large row keeps the tolerance in moles it had before, so no
-answer is accepted that was refused. Judged in moles alone, as until 0.7.8, a
-trace of `1e-9` mol could be 10 % wrong and certified. The dual Newton converges
-on the same measure, and its rows are weighted by the same scales in the step.
-The scale is floored at ``\epsilon^2 |b_k|`` for a row that has a budget, so that
-a row whose carriers have all vanished is refused, and at
-``\epsilon \max(1, \|b\|_\infty)`` for a row whose budget is zero within
-rounding. Only a row with a budget is judged relative to what it holds: a row
-whose budget is zero within rounding, such as the electron row of a redox pair,
-has no total to be a fraction of, and is judged in moles. So is a degenerate row:
-a component whose budget is below ``10^{-12}`` of the largest is one nobody
-supplies, its carriers held at the floor. The certificate reports
-`feasibility_abs` in moles and `feasibility_rel` relative to each row;
-`feasibility`, the larger of the two, is what it judges.
+for every row that has a budget: a relative measure, the same for a trace and for
+a row of 55 mol, so that the verdict does not change when every amount is
+multiplied by the same factor. A trace is then held to its own amount, as PHREEQC
+and GEMS hold a mass balance to its element total. Judged in moles alone, as until
+0.7.8, a trace of `1e-9` mol could be 10 % wrong and certified; judged in moles
+above one mole, as until 0.8.8, a row of a tonne of paste was held to a precision
+no data has, and the verdict depended on the size of the system. The dual Newton
+converges on the same measure, and its rows are weighted by the same scales in
+the step. The scale is floored at ``\epsilon^2 |b_k|`` for a row that has a
+budget, so that a row whose carriers have all vanished is refused, and at
+``\epsilon S`` for a row whose budget is zero within rounding, with
+``S = \|b\|_\infty`` the scale of the budget. Such a row, the electron row of a
+redox pair for one, has no total to be a fraction of, and is judged relative to
+``S``; so is a degenerate row: a component whose budget is below ``10^{-12}`` of
+the largest is one nobody supplies, its carriers held at the floor. The
+certificate judges `feasibility`, the worst of these relative measures
+(`feasibility_rel`), and reports beside it `feasibility_abs`, the worst residual
+in the units of the budget, which decides nothing.
 
 ## The linear program over pure phases
 
@@ -879,10 +979,18 @@ a method in ``\ln x`` cannot start from the others at zero. Raised to
 vertex (the ideal dilute amount at those potentials), the vertex becomes a start.
 Measured on two cold cement pastes, 107 and 109 species, a certified cascade that
 took 4.7 s and 4.2 s from the recipe took 0.37 s and 0.26 s from it, to the same
-composition. Handed to `dual_newton_solve` alone, as a point, as multipliers or as
-an initial active set, it converged in none of the six cases, which is why the
-package returns it as a start for a caller's own route rather than seeding the
-dual Newton with it.
+composition. The dual Newton reads the vertex as it stands instead: its zeros are
+exact bounds, the species it leaves out start absent, and its multipliers are the
+starting potentials. It is a start of `dual_newton_solve` when the fitted
+multipliers do not converge, before the element-potential start, and the one
+fallback of a solve resumed from the multipliers of another (`lp_fallback`, on by
+default): a start that carries the wrong
+assemblage can hold the search, and the vertex holds the new one, as at the
+instant a Portland paste exchanges its hydrogarnet for monosulfate (Lerch and
+Ford's cement c13 at 4.2 h), where every start ended at a KKT error of 1.5e-4 or
+worse and the vertex certified at once. A problem with unknown parameters poses
+the program at their start, on the budget ``b - A_q q_0`` with the standard
+potentials there, and the search moves the parameters from it.
 
 ## Newton step via Schur complement
 

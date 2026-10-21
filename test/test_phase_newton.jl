@@ -122,7 +122,8 @@ using LinearAlgebra
             prob = DualNewtonProblem(A, g, h; phases = phase(newton = true, bounded_members = [2]))
             r = dual_newton_solve(prob, b, x0)
             @test r.converged
-            @test r.x[2] < 1.0e-300
+            # At the floor of a log-amount, `S·e⁻⁶⁹⁰` for the scale `S` of the budget.
+            @test r.x[2] <= exp(OptimaSolver._log_bounds(b).lo) * (1 + 1.0e-9)
             @test r.x ≈ [0.5, 0.0, 0.5] atol = 1.0e-12
             @test kkt_certificate(prob, r.x, b).optimal
         end

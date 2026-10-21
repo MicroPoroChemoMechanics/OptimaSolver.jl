@@ -47,7 +47,7 @@ The answer of [`lp_start`](@ref).
   - `redundant_rows`: rows that are linear combinations of the others.
   - `farkas`: when `:infeasible`, a `z` with `Aᵀz ≥ 0` and `bᵀz < 0`; empty
     otherwise.
-  - `balance`: `‖A x − b‖∞ / max(1, ‖b‖∞)`.
+  - `balance`: `‖A x − b‖∞ / ‖b‖∞`, relative to the budget whatever its size.
   - `iterations`: simplex pivots, both phases.
 
 `y` is unique only where the basis is; on a redundant row it is the
@@ -181,7 +181,9 @@ function lp_start(
     scale = [(s = _inf_norm(@view Af[i, alive]); iszero(s) ? one(F) : inv(s)) for i in 1:m]
     As = scale .* Af
     bs = scale .* bf
-    bnorm = max(one(F), _inf_norm(bs))
+    # Relative to the budget, whatever amount of matter it holds; a budget of zero
+    # has no scale, and any unit will do.
+    bnorm = (bn = _inf_norm(bs); iszero(bn) ? one(F) : bn)
     ptol = 1.0e-12
 
     # Phase I: [S A_alive  I | S b] with S making the right-hand side
@@ -256,13 +258,13 @@ function lp_start(
         x[basic] .= R \ (transpose(Q1) * bf)
         y .= -(Q1 * (transpose(R) \ gf[basic]))
     end
-    balance = _inf_norm(Af * x .- bf) / max(one(F), _inf_norm(bf))
+    balance = _inf_norm(Af * x .- bf) / (bn = _inf_norm(bf); iszero(bn) ? one(F) : bn)
     d = gf .+ transpose(Af) * y
     for j in dead
         d[j] = F(NaN)
     end
     gscale = max(one(F), _inf_norm(gf))
-    xscale = max(one(F), _inf_norm(x))
+    xscale = (xn = _inf_norm(x); iszero(xn) ? one(F) : xn)
     ok = balance <= tol && all(>=(-tol * xscale), x) && all(j -> d[j] >= -tol * gscale, alive)
     return LPStart{F}(ok ? :optimal : :undecided, max.(x, zero(F)), y, cols, d, redundant, F[], balance, it1 + it2)
 end
