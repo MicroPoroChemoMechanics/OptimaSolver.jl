@@ -581,7 +581,7 @@ function _n_stationarity_conditions(prob, active, act_ph)
 end
 
 """
-    _active_set_supports_a_solution(prob, active, act_ph) -> Bool
+    _active_set_supports_a_solution(prob, active, act_ph[, C]) -> Bool
 
 Whether the stationarity block of this active set can be satisfied at some `y`.
 
@@ -592,11 +592,19 @@ is solvable for some `y` only then, since two dependent columns demand a fixed
 relation between their `gᵢ` that the database will not happen to satisfy. That
 second test is what catches two polymorphs of one composition — `Gbs` and
 `AlOHmic` are both Al(OH)₃ — which impose `uᵢ = gᵢ` twice on the same vector.
+Given the columns `C` of the phases present (`_phase_columns`), the rank is taken
+with them.
 """
-function _active_set_supports_a_solution(prob, active, act_ph)
+function _active_set_supports_a_solution(prob, active, act_ph, C = nothing)
     _n_stationarity_conditions(prob, active, act_ph) <= stationarity_capacity(prob) ||
         return false
     isempty(active) && return true
+    # With the columns of the phases present (`_phase_columns`), the conditions
+    # they set on `y` count in the rank too: a pure phase whose composition the
+    # others and a solution of them already span adds no direction, and the set
+    # would hold one more condition than it can meet.
+    C === nothing || return LinearAlgebra.rank(hcat(ForwardDiff.value.(prob.A[:, active]), C)) ==
+        length(active) + size(C, 2)
     # The rank is taken on the VALUE part, so that a `ForwardDiff.Dual` matrix — a
     # conservation matrix carrying a stoichiometric parameter, say the Mg/Al ratio
     # of a hydrotalcite or the Si substitution of a katoite — gives the same
@@ -721,6 +729,12 @@ _primal_value(x::ForwardDiff.Dual) = _primal_value(ForwardDiff.value(x))
 # the largest amount of the composition `x`, the same fraction of any system.
 _trial_total(total::Float64, x) = total
 _trial_total(::Nothing, x) = 1.0e-6 * _system_scale(x)
+
+# Whether the total of the phase `ph` is a variable bounded below by zero, which a
+# step moves linearly: a mixing phase that may be absent. The total of a phase
+# always present, which a conservation row holds, and the reference amount of a
+# phase with a solvent are carried in their logarithm.
+_linear_total(ph::SolutionPhase) = ph.mole_fraction && !ph.always_present
 
 # The rows no species of `members` carries, degenerate rows aside: those whose
 # multiplier a fit to the stationarity of `members` does not determine.
@@ -908,8 +922,11 @@ function _fill_x!(x_buf, prob, W, refs, act_ph, active, xB)
     fill!(x_buf, 0.0)
     for (a, k) in enumerate(act_ph)
         ph = prob.phases[k]
+        # A mixing phase a step has emptied holds nothing, whatever its last
+        # composition (`_newton_step!`).
+        empty = ph.mole_fraction && iszero(refs[a])
         for (j, i) in enumerate(ph.members)
-            x_buf[i] = (!ph.mole_fraction && j == ph.j_ref) ? refs[a] : exp(W[k][j])
+            x_buf[i] = empty ? zero(eltype(x_buf)) : (!ph.mole_fraction && j == ph.j_ref) ? refs[a] : exp(W[k][j])
         end
     end
     @inbounds for (j, i) in enumerate(active)
@@ -1051,6 +1068,8 @@ function _invert_phases!(
             for (a, k) in enumerate(act_ph)
                 by_inversion[k] && continue
                 ph = prob.phases[k]
+                # A mixing phase a step has emptied, at its last composition.
+                ph.mole_fraction && iszero(refs[a]) && continue
                 if ph.mole_fraction && ph.newton
                     # The same composition as the substitution below, found by
                     # Newton's method: see `SolutionPhase`. Solved to convergence
@@ -1623,7 +1642,7 @@ composition conserves matter exactly.
 
 That is not the model this solver goes on to solve — the real phases carry mole
 fractions and molalities, not bare amounts — but it is the right place to start
-from, and it is what the three least-squares fits were standing in for. Those fits
+from, and it is what the least-squares fits were standing in for. Those fits
 minimize `‖Aᵀy + g + h‖` over a subset of species, which says nothing about the
 element budget; the potentials they produce are consistent with no composition in
 particular. Measured on an LC³ equilibrium at a quarter of full reaction, the inner
@@ -1722,8 +1741,10 @@ whose multiplier the start does not determine. The answer of an earlier solve of
 the same system is therefore a start as it stands, and with its `y` as `y0` the
 search resumes where that solve ended, in one attempt: the state of the solver
 carried from one solve of a sequence to the next. Without `y0`, the multipliers
-are fitted to the stationarity of the phase members at `x0`, in turn by four
-fits until one converges. Multipliers that hold the sentinel of a component
+are fitted to the stationarity of the phase members at `x0`, by two fits tried in
+turn, then taken from the vertex of the linear program over the pure phases
+([`lp_start`](@ref)), then from the element-potential start, until one
+converges. Multipliers that hold the sentinel of a component
 absent from their own budget (`DEGENERATE_POTENTIAL`) on a row that `b` now
 supplies are those of another problem, and the fits are used instead. The first
 iterate within the tolerances takes one more Newton step, kept if it stays within
@@ -1734,10 +1755,10 @@ start that is the answer of a nearby problem follows `b`.
 (the fallback below); `iterations` how many Newton steps it took, the final one
 included: one when the start is already the answer.
 
-With `opts.lp_fallback`, when no start converges and the problem has no unknown
-parameters, the solve is tried once more from the vertex of the linear program
-over the pure phases ([`lp_start`](@ref)): a neighborhood in the wrong assemblage
-can hold the search, the vertex is in the right one.
+The vertex (with `opts.lp_fallback`) is also the one fallback of a solve resumed
+from `y0` that does not converge: a neighborhood in the wrong assemblage can hold
+the search, the vertex is in the right one. A problem with unknown parameters
+poses the program at their start, on the budget `b − A_q q₀`.
 
 # Two active sets
 
@@ -1753,10 +1774,10 @@ the tangent plane of the current state. That test is what a mixing phase
 requires, since its members are never exactly absent while it exists and it has
 no single saturation index.
 
-Both admit one candidate per round, the most violated, and the sets visited are
-recorded, which bounds the loop by the number of subsets and therefore
-terminates. Admitting a batch feeds a cycle in which a variable is admitted,
-driven negative, dropped and readmitted.
+Both are reclassified at every Newton iteration, one candidate admitted at a
+time, the most violated; a set left is recorded, and coming back to it ends the
+search from that start, which therefore terminates. Admitting a batch fed a cycle
+in which a variable was admitted, driven negative, dropped and readmitted.
 """
 function dual_newton_solve(
         prob::DualNewtonProblem, b::AbstractVector, x0::AbstractVector;
@@ -1887,17 +1908,19 @@ function _dual_newton_solve_values(
     #
     #   * weighting by `√xᵢ` lets the solvent outweigh a trace by fifteen decades,
     #     so the fit becomes a statement about the solvent alone;
-    #   * weighting equally lets a trace the guess got wrong by a factor 1e5 set
-    #     the multipliers;
     #   * fitting on the largest members only is well conditioned but discards
-    #     information the other two keep.
+    #     information the first keeps.
     #
-    # Each is right somewhere and wrong elsewhere: measured on a cement replay,
-    # the first certifies 36 instants of 40 and the third certifies the 4 it
-    # misses while losing 34 of the others. So the solver TRIES them in turn and
-    # keeps the first that converges. That is not a tuning knob — the acceptance
-    # test is the KKT system itself, so a poor start can only cost time, never
-    # correctness.
+    # Each is right somewhere and wrong elsewhere, so the solver TRIES them in
+    # turn and keeps the first that converges, then the vertex of the linear
+    # program and the element-potential start. That is not a tuning knob — the
+    # acceptance test is the KKT system itself, so a poor start can only cost
+    # time, never correctness. Weighting every member equally was a third fit:
+    # measured on ChemistryLab's suite, it converged in 36 of the 551 solves that
+    # reached it, at 1.2 s and 74 iterations each, and the starts after it
+    # converged where it did; without it, a quaternary cement hydration took 49 s
+    # instead of 493 s, with every partition certified alike. It remains the seed
+    # of the element-potential start.
     all_members = vcat([prob.phases[k].members for k in act_ph]...)
     gh_fit = -(prob.g[all_members] .+ h0[all_members])
     A_all = Matrix(@view prob.A[:, all_members])
@@ -1931,13 +1954,13 @@ function _dual_newton_solve_values(
         push!(y_starts, qr(transpose(A_all[:, sel]), ColumnNorm()) \ gh_fit[sel])
         push!(unread, _uncarried_rows(prob, all_members[sel], degenerate))
     end
-    route === :fit && push!(y_starts, qr(transpose(A_all), ColumnNorm()) \ gh_fit)
-    route === :fit && push!(unread, _uncarried_rows(prob, all_members, degenerate))
 
-    # Last candidate: the concave dual of the ideal problem, solved globally. See
-    # `_element_potential_start` — it is the only one of these that knows the
-    # element budget exists, and the only one that does not depend on the guess.
-    route === :fit && let y_ls = copy(y_starts[end])
+    # Last candidate: the concave dual of the ideal problem, solved globally, from
+    # the equally weighted fit. See `_element_potential_start` — it is the only one
+    # of these that knows the element budget exists, and the only one that does
+    # not depend on the guess. Tried after the vertex of the linear program, which
+    # costs a twentieth of it and converges more often (`_lp_attempt`).
+    route === :fit && let y_ls = qr(transpose(A_all), ColumnNorm()) \ gh_fit
         for k in degenerate
             y_ls[k] = DEGENERATE_POTENTIAL
         end
@@ -1959,39 +1982,56 @@ function _dual_newton_solve_values(
     # answer whenever none converges: a start that lands at 1e8 was returned in
     # preference to one at 20, because neither had crossed the tolerance.
     best = nothing
-    for (y0, unread0) in zip(y_starts, unread)
+    tried_lp = false
+    for (k, (y0, unread0)) in enumerate(zip(y_starts, unread))
+        # The vertex of the linear program before the element-potential start
+        # (`_lp_attempt`): measured on the files of ChemistryLab's suite where the
+        # two served, it converged 199 times in 215 at 0.007 s each, where the
+        # element-potential start converged 90 times in 186 at 0.09 s.
+        if route === :fit && k == length(y_starts)
+            again = _lp_attempt(prob, bv, opts)
+            tried_lp = true
+            if again !== nothing
+                (again.converged || again.kkt_error < best.kkt_error) && (best = again)
+                again.converged && return best
+            end
+        end
         out = _dual_newton_attempt(
             prob, bv, y0, W, act_ph, refs, n0, x_guess, x_buf, dead, degenerate, m, opts, κ, unread0,
         )
         if best === nothing || out.kkt_error < best.kkt_error
-            best = out
+            best = merge(out, (; route))
         end
-        out.converged && break
+        out.converged && return best
     end
-    best = merge(best, (; route))
-    best.converged && return best
-
-    # No start converged: once more from the vertex of the linear program over
-    # the pure phases. A start that carries the wrong assemblage can hold the
-    # search there: from it, the phase that should enter is admitted, the inner
-    # inversion fails at once, the entrant is rejected, and the one that should
-    # leave never does. Measured on a Portland paste at the instant hydrogarnet
-    # gives way to monosulfate (Lerch and Ford's cement c13, 4.2 h at 23.9 °C):
-    # from the partition of the instant before, every start ends at a KKT error
-    # of 1.5e-4 or worse; from the vertex, which holds the new assemblage, the
-    # solve certifies at once. The vertex starts from its exact zeros, which the
-    # search reads as absent. Only a solve that did not converge pays for this,
-    # and a problem with unknown parameters is left alone: the program knows
-    # nothing of `Aq`.
-    if opts.lp_fallback && prob.nq == 0
-        lp = lp_start(prob, bv)
-        if lp.status === :optimal
-            opts.verbose && @info "dual-newton: no start converged; from the vertex of the linear program"
-            again = _dual_newton_solve_values(prob, bv, lp.x, _without_lp_fallback(opts); y0 = lp.y)
-            (again.converged || again.kkt_error < best.kkt_error) && return merge(again, (; route = :lp))
-        end
-    end
+    tried_lp && return best
+    # Resumed from the multipliers of a solve, the vertex is the one fallback.
+    again = _lp_attempt(prob, bv, opts)
+    again !== nothing && (again.converged || again.kkt_error < best.kkt_error) && return again
     return best
+end
+
+# The search once more from the vertex of the linear program over the pure
+# phases, when no start converged, `nothing` without a vertex or with the
+# fallback turned off. A start that carries the wrong assemblage can hold the
+# search there: from it, the phase that should enter is admitted, the inner
+# inversion fails at once, the entrant is rejected, and the one that should
+# leave never does. Measured on a Portland paste at the instant hydrogarnet gives
+# way to monosulfate (Lerch and Ford's cement c13, 4.2 h at 23.9 °C): from the
+# partition of the instant before, every start ends at a KKT error of 1.5e-4 or
+# worse; from the vertex, which holds the new assemblage, the solve certifies at
+# once. The vertex starts from its exact zeros, which the search reads as absent.
+# A problem with unknown parameters is posed at their start, on the budget
+# `b − A_q q₀` with the standard potentials there (`lp_start`): the program
+# knows nothing of the parameters, which the search moves from there, so that
+# the fallback serves the kinetic and the adiabatic solves too.
+function _lp_attempt(prob, bv, opts)
+    opts.lp_fallback || return nothing
+    lp = lp_start(prob, prob.nq == 0 ? bv : bv .- _primal_value.(prob.Aq) * _primal_value.(prob.q0))
+    lp.status === :optimal || return nothing
+    opts.verbose && @info "dual-newton: no start converged; from the vertex of the linear program"
+    again = _dual_newton_solve_values(prob, bv, lp.x, _without_lp_fallback(opts); y0 = lp.y)
+    return merge(again, (; route = :lp))
 end
 
 # ── the exact Jacobian of the outer residual ─────────────────────────────────
@@ -2235,6 +2275,20 @@ function _judged_scales(scales, b, degenerate)
     ]
 end
 
+# The weights of the rows of a trial residual, its balance rows divided by the
+# scales they are judged on at the trial's own amounts `x` and parameters (the
+# tail of `v`), every other row as it is.
+function _trial_weights(prob, x, v, nph, m, na, bv, degenerate)
+    nq = prob.nq
+    q = nq == 0 ? Float64[] : _primal_value.(v[(nph + m + na + 1):(nph + m + na + nq)])
+    jsc = _judged_scales(_balance_scales(prob, x, q, bv, degenerate), bv, degenerate)
+    w = ones(length(v))
+    for k in 1:m
+        w[nph + k] = 1.0 / jsc[k]
+    end
+    return w
+end
+
 # The sum of the squares of the rows of `R`, its balance rows (from `off + 1`)
 # divided by their judged scale and every other row as it is.
 function _judged_sumsq(R, scales, off)
@@ -2325,9 +2379,12 @@ _phase_scale(κ, ph, dead) = maximum(i -> i in dead ? 0.0 : κ[i], ph.members)
 # Candidates are taken in decreasing fraction, each only while the set still
 # supports a solution (the phase rule): the abundant phases are the surest.
 # Pinned variables go in first and unconditionally: a linear row determines them.
-function _initial_free_set(prob, n0, s0, κ, act_ph, dead, unread)
+function _initial_free_set(prob, n0, s0, κ, act_ph, dead, unread, r0)
     active = Int[]
     xB = Float64[]
+    # The phases the start holds, along the compositions they would hold with the
+    # budget met (`r0`, what the start misses of it).
+    C = last(_phase_columns(prob, act_ph, n0, dead, r0))
     for i in prob.always_active
         i in active && continue
         push!(active, i)
@@ -2341,7 +2398,7 @@ function _initial_free_set(prob, n0, s0, κ, act_ph, dead, unread)
     sort!(cand; by = i -> -n0[i] / κ[i])
     for i in cand
         push!(active, i)
-        if _active_set_supports_a_solution(prob, active, act_ph)
+        if _active_set_supports_a_solution(prob, active, act_ph, C)
             push!(xB, n0[i])
         else
             pop!(active)
@@ -2351,66 +2408,209 @@ function _initial_free_set(prob, n0, s0, κ, act_ph, dead, unread)
 end
 
 # The coefficients `λ` of the column of the bound-constrained entrant `e` on the
-# columns of `active` when it depends on them, `nothing` when it does not: the
+# columns of `active`, then on the columns `C` of the phases present
+# (`_phase_columns`), when it depends on them, `nothing` when it does not: the
 # phase rule's question about a set `e` would join. Gibbsite and amorphous
-# Al(OH)₃ are the case, one composition twice. Read on values: a set of equations
-# is chosen, not differentiated. The test is relative to the column itself, a
-# stoichiometry, so it is a pure number.
-function _dependence(prob, active, e)
-    isempty(active) && return nothing
-    A = _primal_value.(prob.A)
-    M = A[:, active]
-    a = A[:, e]
-    λ = qr(M, ColumnNorm()) \ a
-    norm(M * λ - a) <= 1.0e-10 * norm(a) || return nothing
+# Al(OH)₃ are the case, one composition twice; a pure end-member beside a solid
+# solution of it and of another end-member already present is another, and
+# anhydrite beside gypsum and a solution of nothing but their components a
+# third. Read on values: a set of equations is chosen, not differentiated. The
+# test is relative to the column itself, a stoichiometry, so it is a pure
+# number.
+function _dependence(prob, active, e, C = zeros(size(prob.A, 1), 0))
+    isempty(active) && size(C, 2) == 0 && return nothing
+    λ, misfit = _combination(prob, active, e, C)
+    misfit <= 1.0e-10 || return nothing
     return λ
 end
 
+# The least-squares coefficients of the column of `e`, a variable or a column
+# itself, on the columns of `active` and `C`, and how far, relative to the
+# column, the combination misses it.
+function _combination(prob, active, e, C)
+    A = _primal_value.(prob.A)
+    M = hcat(A[:, active], C)
+    a = _column(A, e)
+    λ = qr(M, ColumnNorm()) \ a
+    return λ, norm(M * λ - a) / norm(a)
+end
+
+_column(A, e::Integer) = A[:, e]
+_column(A, a::AbstractVector) = a
+
 # The entrant `e` brought into `active` in the place of the incumbent its column
-# depends on, `a_e = Σⱼ λⱼ aⱼ` (`_dependence`): the ratio test of the simplex
-# moves `t = minⱼ xⱼ/λⱼ` over `λⱼ > 0` of matter from the incumbents to `e`, which
-# keeps every balance exact and lowers the Gibbs energy by `t` times the
-# entrant's supersaturation, and the incumbent that reaches zero leaves, ties
-# going to the smallest index (Bland's rule). `nothing` when no incumbent makes
-# room (`λ ≤ 0` throughout) or the one that would is pinned.
-function _pivot_in(prob, active, xB, e, λ)
+# depends on, `a_e = Σⱼ λⱼ aⱼ` (`_dependence`), by the ratio test of the simplex
+# (`_ratio_test`). Returns the set, its amounts, which phases stay, and their
+# totals; `nothing` when no incumbent makes room.
+function _pivot_in(prob, active, xB, e, λ, N = Float64[], fixed = falses(length(N)))
+    test = _ratio_test(prob, active, xB, λ, N, fixed)
+    test === nothing && return nothing
+    t, keep, xB2, stay, N2 = test
+    return vcat(active[keep], e), vcat(xB2[keep], t), stay, N2
+end
+
+# The ratio test of the simplex for an entrant whose column is `Σⱼ λⱼ aⱼ` over
+# the incumbents: `t = minⱼ xⱼ/λⱼ` over `λⱼ > 0` of matter moves from the
+# incumbents to the entrant, which keeps every balance exact and lowers the
+# Gibbs energy by `t` times the entrant's supersaturation, and the incumbent
+# that reaches zero leaves, ties going to the smallest index (Bland's rule). The
+# incumbents are the free bounded variables, then the phases whose columns `λ`
+# continues on, of totals `N` (the matter of a phase moves along its
+# composition, so its total is its amount there); a phase the ratio test
+# empties leaves too, the bounded variables first on a tie. Returns the amount
+# `t`, the incumbents that stay and their amounts, which phases stay and their
+# totals; `nothing` when no incumbent makes room (`λ ≤ 0` throughout), or when
+# the one that would is pinned or a phase marked `fixed`, always present.
+function _ratio_test(prob, active, xB, λ, N, fixed)
+    na = length(active)
     scale = maximum(abs, λ)
     t = Inf
     jb = 0
-    for (j, i) in enumerate(active)
+    for j in eachindex(λ)
         λ[j] > 1.0e-10 * scale || continue
-        r = max(xB[j], 0.0) / λ[j]
-        if r < t || (r == t && i < active[jb])
+        amount = j <= na ? xB[j] : N[j - na]
+        r = max(amount, 0.0) / λ[j]
+        if r < t || (r == t && jb > na && j <= na) || (r == t && j <= na && jb <= na && active[j] < active[jb])
             t = r
             jb = j
         end
     end
-    (jb == 0 || active[jb] in prob.always_active) && return nothing
-    xB2 = xB .- t .* λ
-    xB2[jb] = 0.0
-    keep = setdiff(eachindex(active), jb)
-    return vcat(active[keep], e), vcat(max.(xB2[keep], 0.0), t)
+    (jb == 0 || (jb <= na && active[jb] in prob.always_active)) && return nothing
+    # Nor can a phase that is always present be emptied, alone or tied.
+    any(p -> fixed[p] && λ[na + p] > 1.0e-10 * scale && max(N[p], 0.0) / λ[na + p] <= t, eachindex(N)) &&
+        return nothing
+    xB2 = xB .- t .* λ[1:na]
+    N2 = N .- t .* λ[(na + 1):end]
+    jb <= na ? (xB2[jb] = 0.0) : (N2[jb - na] = 0.0)
+    keep = setdiff(1:na, jb)
+    stay = [jb != na + p for p in eachindex(N)]
+    return t, keep, max.(xB2, 0.0), stay, max.(N2, 0.0)
 end
 
 # The bound-constrained variable `e` taken off its bound: added at zero when its
 # column is independent of the free ones, an incumbent making room where the
 # conditions `y` can meet are spent (`_exchange_incumbent`); or in the place of the
-# incumbent the ratio test empties when it depends on them (`_pivot_in`). Returns
-# the set, its amounts, and whether it changed.
-function _release(prob, active, xB, act_ph, e, bv, dead, degenerate)
-    λ = _dependence(prob, active, e)
-    if λ === nothing
+# incumbent the ratio test empties when it depends on them (`_pivot_in`), the
+# phases present at the amounts `x` and parameters `q` among the incumbents. Returns the set, its
+# amounts, the phases, their reference amounts, and whether anything changed.
+function _release(prob, active, xB, act_ph, refs, e, bv, dead, degenerate, x, q)
+    # Whether `e` depends on the set is asked of the compositions the phases hold
+    # with the budget met, and the matter moves along the compositions they hold:
+    # far from the answer the first can hold a negative amount of a component,
+    # and a ratio test along them emptied the pore solution of a cell into a
+    # hydrate it had no water for.
+    C, ks, Ns, Cb = _phase_columns(prob, act_ph, x, dead, _balance_residual(prob, x, q, bv, dead))
+    if _dependence(prob, active, e, Cb) === nothing
         a2 = vcat(active, e)
         x2 = vcat(xB, 0.0)
-        if !_active_set_supports_a_solution(prob, a2, act_ph)
+        if !_active_set_supports_a_solution(prob, a2, act_ph, Cb)
             a2, x2 = _exchange_incumbent(prob, a2, x2, act_ph, 1:(length(a2) - 1), bv, dead, degenerate)
         end
-        _active_set_supports_a_solution(prob, a2, act_ph) || return (active, xB, false)
-        return (a2, x2, true)
+        _active_set_supports_a_solution(prob, a2, act_ph, Cb) || return (active, xB, act_ph, refs, false)
+        return (a2, x2, act_ph, refs, true)
     end
-    pivoted = _pivot_in(prob, active, xB, e, λ)
-    pivoted === nothing && return (active, xB, false)
-    return (pivoted[1], pivoted[2], true)
+    pos = [findfirst(==(k), act_ph) for k in ks]
+    fixed = [prob.phases[k].always_present for k in ks]
+    pivoted = _pivot_in(prob, active, xB, e, first(_combination(prob, active, e, C)), Ns, fixed)
+    pivoted === nothing && return (active, xB, act_ph, refs, false)
+    a2, x2, stay, N2 = pivoted
+    # The matter of a phase moves along its composition, so its reference amount,
+    # the total of a mixing phase and the solvent of a solution, scales with its
+    # total.
+    refs2 = copy(refs)
+    refs2[pos] .= refs[pos] .* N2 ./ Ns
+    # The phase the ratio test emptied leaves, and with it any tied at zero.
+    out = pos[.!stay .| (N2 .<= 0)]
+    keep = setdiff(eachindex(act_ph), out)
+    return (a2, x2, act_ph[keep], refs2[keep], true)
+end
+
+# What the balance rows miss at the amounts `x` and parameters `q`,
+# `A x + A_q q − b`, over the variables a degenerate row does not hold at zero.
+function _balance_residual(prob, x, q, b, dead)
+    live = [j for j in axes(prob.A, 2) if !(j in dead)]
+    return _primal_value.(prob.A[:, live]) * _primal_value.(x[live]) .+
+        _primal_value.(prob.Aq) * _primal_value.(q) .- _primal_value.(b)
+end
+
+# The mixing phase `k` admitted, supersaturated at the multipliers `u`. Its
+# column is that of the trial composition the tangent plane finds (`f`), and
+# where it depends on the columns present, with the budget met, the phase takes
+# the place of the incumbent the ratio test empties (`_ratio_test`), with the
+# matter it moves: a solid solution supersaturated beside its two end-members
+# as pure phases is a combination of them, and admitted beside both at its seed
+# it made a set with one condition more than it can meet, which the search
+# crawled on until `maxit` from every start. Otherwise it enters at its seed:
+# independent of the columns present, the phase rule holds with it, and no
+# incumbent has to make room. Returns the set, its amounts, the phases, their
+# reference amounts, and whether anything changed.
+function _admit(prob, active, xB, act_ph, refs, k, u, q, bv, dead, x, κ)
+    C, ks, Ns, Cb = _phase_columns(prob, act_ph, x, dead, _balance_residual(prob, x, q, bv, dead))
+    _, f = phase_tangent_trial(prob, k, u, x; g = current_g(prob, q), q = q, dead = dead)
+    a = _primal_value.(prob.A[:, prob.phases[k].members]) * f
+    if _dependence(prob, active, a, Cb) === nothing
+        act2 = vcat(act_ph, k)
+        _active_set_supports_a_solution(prob, active, act2) || return (active, xB, act_ph, refs, false)
+        return (active, xB, act2, vcat(refs, PHASE_ADMISSION_SEED * _phase_scale(κ, prob.phases[k], dead)), true)
+    end
+    pos = [findfirst(==(kk), act_ph) for kk in ks]
+    fixed = [prob.phases[kk].always_present for kk in ks]
+    test = _ratio_test(prob, active, xB, first(_combination(prob, active, a, C)), Ns, fixed)
+    test === nothing && return (active, xB, act_ph, refs, false)
+    t, keep, xB2, stay, N2 = test
+    refs2 = copy(refs)
+    refs2[pos] .= refs[pos] .* N2 ./ Ns
+    out = pos[.!stay .| (N2 .<= 0)]
+    kp = setdiff(eachindex(act_ph), out)
+    return (active[keep], xB2[keep], vcat(act_ph[kp], k), vcat(refs2[kp], t), true)
+end
+
+# The columns of the phases of `act_ph` that hold matter at the amounts `x`:
+# `A f`, `f` the composition of the phase there, with the phases they belong to
+# and their totals. Each is the vector along which the matter of its phase
+# moves, and the gradient in `y` of the condition the phase sets: by the
+# Gibbs-Duhem relation, the condition of a mixing phase,
+# `logsumexp(u − g − lnγ) = 0`, and that of a phase with a solvent, the
+# solvent's potential at its activity, both vary with `y` along `A f` alone. A
+# solution counts in the phase rule as a solid solution does: saturated with
+# portlandite, gypsum and anhydrite, the pore solution of lime and gypsum holds
+# nothing the three do not, and the four phases cannot coexist but at one
+# temperature.
+#
+# Away from the answer a composition is off by what the balance misses, and the
+# phase rule asks about the compositions at the answer. Given the balance
+# residual `r` (`_balance_residual`), the last value returned holds the columns
+# the phases would have with the budget met, each row's residual taken off the
+# phases that carry the row in proportion to what they hold of it (the pure
+# phases hold exact stoichiometries); without `r`, the columns themselves. Read
+# as it stood, the pore solution of the lime and gypsum cell carried a charge of
+# 9e-6 of its matter before its balance held, and anhydrite was taken for
+# independent of it and gypsum: the search then sought a coexistence the
+# temperature did not allow, the solution diluted by a factor e²⁰ to the step.
+function _phase_columns(prob, act_ph, x, dead, r = nothing)
+    A = _primal_value.(prob.A)
+    lives = [[i for i in prob.phases[k].members if !(i in dead)] for k in act_ph]
+    amounts = [_primal_value.(x[live]) for live in lives]
+    held = [abs.(A[:, live]) * xl for (live, xl) in zip(lives, amounts)]
+    total = reduce(+, held; init = zeros(size(A, 1)))
+    cols = Vector{Vector{Float64}}()
+    balanced = Vector{Vector{Float64}}()
+    ks = Int[]
+    Ns = Float64[]
+    for (a, k) in enumerate(act_ph)
+        N = sum(amounts[a]; init = 0.0)
+        N > 0 || continue
+        col = A[:, lives[a]] * amounts[a]
+        push!(cols, col ./ N)
+        push!(
+            balanced, r === nothing ? col ./ N :
+                (col .- [iszero(total[i]) ? 0.0 : r[i] * held[a][i] / total[i] for i in eachindex(col)]) ./ N,
+        )
+        push!(ks, k)
+        push!(Ns, N)
+    end
+    matrix(v) = isempty(v) ? zeros(size(A, 1), 0) : reduce(hcat, v)
+    return matrix(cols), ks, Ns, matrix(balanced)
 end
 
 # The scale on which the removal of an amount is judged, row by row: the budget
@@ -2449,6 +2649,88 @@ end
 # on the best so far: a smaller error, or the same error and a smaller residual.
 _improves(kkt, judged, best_res, best_judged) =
     kkt < best_res * (1 - 1.0e-9) || (kkt <= best_res * (1 + 1.0e-12) && judged < best_judged * (1 - 1.0e-9))
+
+# The conditions of the set whose removal alone makes its linearization at `v`
+# consistent: a mixing phase that may be absent, with its matter (its total set
+# to zero, `−∂R/∂ln N`), or a free pure phase, with its amount (`−xⱼ ∂R/∂xⱼ`),
+# each with its own equation; the system without it solved by least squares in
+# the row weights `w` and the column scales `cs` of the step, and consistent when
+# it leaves no more than a fraction `tol` of its squared residual. The balance
+# rows are linear in the amounts, so the matter taken off is exact. What an
+# inconsistent set lacks, read on the linearization: the least-squares step
+# spreads the violation over every row, and the condition no step can meet does
+# not stand out in the residual. Returns the indices of the phases and of the
+# variables.
+function _restoring_drops(prob, J, R, w, cs, v, act_ph, active, nph, m, tol)
+    phases = Int[]
+    vars = Int[]
+    for (a, k) in enumerate(act_ph)
+        prob.phases[k].always_present && continue
+        _consistent_without(J, R, w, cs, a, 1.0, tol) && push!(phases, k)
+    end
+    for (j, i) in enumerate(active)
+        i in prob.always_active && continue
+        c = nph + m + j
+        _consistent_without(J, R, w, cs, c, _primal_value(v[c]), tol) && push!(vars, i)
+    end
+    return (; phases, vars)
+end
+
+# Whether the linearization `J δ = −R` is consistent without its unknown `c` and
+# the equation of the same index, the unknown first moved by `−shift`: no more
+# than a fraction `tol` of the squared residual left at the least-squares step.
+function _consistent_without(J, R, w, cs, c, shift, tol)
+    keep = setdiff(eachindex(R), c)
+    R2 = R[keep] .- shift .* J[keep, c]
+    J2 = J[keep, keep]
+    δ = cs[keep] .* (qr((w[keep] .* J2) .* transpose(cs[keep]), ColumnNorm()) \ (-(w[keep] .* R2)))
+    return sum(abs2, w[keep] .* (J2 * δ .+ R2)) <= tol * sum(abs2, w[keep] .* R2)
+end
+
+# The leaving rule of an active-set method, at the least-squares point of a set
+# that holds a condition no step can meet: the condition furthest from holding
+# leaves, beyond `floor`. That is a present mixing phase undersaturated (minus
+# its saturation, `_phase_saturation`, in RT) or a free pure phase whose
+# stationarity the set cannot satisfy beside the others (`|gᵢ + hᵢ − uᵢ|`), the
+# mixing phase on a tie. Only the phases of `phases` and the variables of `vars`
+# are candidates. Returns the phases, their reference amounts, the set and its
+# amounts without it, then the phase and the variable that left (zero for none;
+# both zero when no condition exceeds `floor`).
+function _leave(prob, act_ph, refs, active, xB, u, hv, g, x, dead, floor; phases = act_ph, vars = active)
+    worst = floor
+    a_out = 0
+    for (a, k) in enumerate(act_ph)
+        (prob.phases[k].always_present || !(k in phases)) && continue
+        sat = -_phase_saturation(prob, k, u, hv, x, g, dead)
+        sat > worst && ((worst, a_out) = (sat, a))
+    end
+    j_out = 0
+    for (j, i) in enumerate(active)
+        (i in prob.always_active || !(i in vars)) && continue
+        r = abs(g[i] + hv[i] - u[i])
+        r > worst && ((worst, j_out) = (r, j))
+    end
+    j_out == 0 || return (act_ph, refs, _without(active, j_out), _without(xB, j_out), 0, active[j_out])
+    a_out == 0 || return (_without(act_ph, a_out), _without(refs, a_out), active, xB, act_ph[a_out], 0)
+    return (act_ph, refs, active, xB, 0, 0)
+end
+
+# `v` without its entry `j`.
+_without(v, j) = v[setdiff(eachindex(v), j)]
+
+# The phases of `act_ph` that may be absent and hold an amount no balance row
+# would miss (`_phase_negligible`), zero included, taken out of the set with
+# their reference amounts `refs`: a mixing phase a step has emptied, or left at
+# a trace the budget does not see. Returns the phases that stay, their
+# reference amounts, and those that left.
+function _without_negligible(prob, act_ph, refs, scales, tol, dead)
+    gone = [
+        a for (a, k) in enumerate(act_ph)
+            if !prob.phases[k].always_present && _phase_negligible(prob, prob.phases[k], refs[a], scales, tol, dead)
+    ]
+    keep = setdiff(eachindex(act_ph), gone)
+    return act_ph[keep], refs[keep], act_ph[gone]
+end
 
 # Whether a mixing phase of total `N` is negligible: none of its members, each
 # holding at most `N`, would be missed by a balance row (`_negligible`).
@@ -2507,34 +2789,8 @@ function _exchange_incumbent(prob, active, xB, act_ph, candidates, bv, dead, deg
 end
 
 """
-    _exchange_incumbent_phase(prob, active, act_ph, refs, bv, dead, degenerate) -> (act_ph, refs)
-
-The same exchange for a mixing phase just admitted (the last of `act_ph`) when no
-bounded incumbent can make room: an incumbent PHASE leaves, the smallest first and
-never one that is always present. Where the stationarity capacity is spent by
-mole-fraction phases alone, which happens with one row and two phases of its
-component, there is no bounded variable to send out, and without this the entrant
-was withdrawn at every round however supersaturated it was: a phase more stable
-than the one present could never take its place. Decided on values, as the rest
-of the active set is: it is a choice of equations, not a function of the data.
-"""
-function _exchange_incumbent_phase(prob, active, act_ph, refs, bv, dead, degenerate)
-    order = sort(
-        [a for a in 1:(length(act_ph) - 1) if !prob.phases[act_ph[a]].always_present];
-        by = a -> refs[a],
-    )
-    without(v, a) = v[setdiff(eachindex(v), [a])]
-    k = findfirst(
-        a -> _active_set_supports_a_solution(prob, active, without(act_ph, a)) &&
-            !_orphans_a_row(prob, active, act_ph, active, without(act_ph, a), bv, dead, degenerate),
-        order,
-    )
-    return k === nothing ? (act_ph, refs) : (without(act_ph, order[k]), without(refs, order[k]))
-end
-
-"""
     _newton_step!(W, prob, v, R, act_ph, active, bv, x_buf, x_iterate, dead, degenerate, m, opts,
-                  scales, σb, κ, inner_resid, composed) -> (v, active, accepted)
+                  scales, σb, κ, inner_resid, composed; polish, consistency) -> (v, active, accepted, lspoint, restoring)
 
 One Newton step of the outer system on the active set `active`, from `v` where the
 residual is `R`: the exact Jacobian where the inner inversion has converged (the
@@ -2542,10 +2798,17 @@ swept one elsewhere), the balance rows weighted by what they hold and the amount
 columns by their scale `κ`, the step capped, cut at the first bound it crosses,
 and the two-pass line search. A free variable at zero whose step is negative is
 held at its bound first, and the step taken without it. `W` is updated in place.
+`lspoint` says that no step was taken because the iterate is the least-squares
+point of its set, the linearization removing no more than a fraction `tol` of the
+residual: what shows the set inconsistent, as a failed line search does not.
+`restoring`, when not `nothing`, says that no step was taken because the
+linearization of the set is itself inconsistent, and names the phases and the
+variables whose removal alone would make it consistent (`_restoring_drops`); with
+`consistency = false` the step is taken whatever the linearization.
 """
 function _newton_step!(
         W, prob, v, R, act_ph, active, bv, x_buf, x_iterate, dead, degenerate, m, opts,
-        scales, σb, κ, inner_resid, composed; polish::Bool = false,
+        scales, σb, κ, inner_resid, composed; polish::Bool = false, consistency::Bool = true,
     )
     nph = length(act_ph)
     # What a step that is not taken leaves as it was.
@@ -2562,7 +2825,7 @@ function _newton_step!(
             prob, v, W_ref, act_ph, active, bv; dead, degenerate,
             inner_maxit = opts.inner_maxit, max_fall = opts.inner_fall_bound,
         )
-    all(isfinite, J) || return (v_in, active_in, false)
+    all(isfinite, J) || return (v_in, active_in, false, false, nothing)
 
     # Each balance row weighted by the scale it is judged on, what it currently
     # holds, and each amount column by the scale of its variable: the rank of a
@@ -2574,13 +2837,14 @@ function _newton_step!(
     # left that potential where it was and the Newton stopped with the row unmet.
     # On a square system the weights do not change the step; they change which
     # directions count as there.
-    local δ, wR
+    local δ, wR, cs
     while true
         na = length(active)
         N = length(v)
         wR = ones(N)
+        jsc = _judged_scales(scales, bv, degenerate)
         for k in 1:m
-            wR[nph + k] = 1.0 / scales[k]
+            wR[nph + k] = 1.0 / jsc[k]
         end
         cs = ones(N)
         for j in 1:na
@@ -2604,8 +2868,19 @@ function _newton_step!(
     end
     na = length(active)
 
+    # The total of a mixing phase that may be absent moves linearly, `N(1 + αδ)`
+    # for the step `δ` of `ln N`: the step of Newton's method in `N` itself, in
+    # which the balance rows are linear. Taken in the logarithm and capped at one
+    # unit per step, it brought a phase in from its seed and out to where the
+    # budget no longer misses it by a factor `e` at a time, and cut every other
+    # unknown's step to the same length: a binary solid solution two RT less
+    # stable than the solution took 31 to 43 iterations to leave. The reference
+    # amount of a phase with a solvent, and the total of a phase always present,
+    # keep the logarithm and its cap.
+    lin = [_linear_total(prob.phases[k]) for k in act_ph]
     α = 1.0
     for a in 1:nph
+        lin[a] && continue
         abs(δ[a]) > 1.0 && (α = min(α, 1.0 / abs(δ[a])))
     end
     # The potential of a species, `−Aᵀy`, moves by no more per step than the
@@ -2651,6 +2926,17 @@ function _newton_step!(
                 jβ = j
             end
         end
+    end
+    # A mixing phase the full step would empty is cut where it meets zero, and at
+    # zero it leaves the set (`_dual_newton_attempt`). None is negligible here: a
+    # phase no balance row would miss has left the set before the step
+    # (`_without_negligible`).
+    aβ = 0
+    for a in 1:nph
+        (lin[a] && δ[a] < -1 && -1 / δ[a] < β) || continue
+        β = -1 / δ[a]
+        jβ = 0
+        aβ = a
     end
     α0 = min(α, β)
 
@@ -2700,12 +2986,31 @@ function _newton_step!(
     # The slope of `‖R‖²` along the least-squares step is `−2‖Jδ‖²`, the part of
     # the residual the linearization can remove, so that is what the decrease is
     # measured against. Both tests are taken in the metric the step was taken in,
-    # each balance row relative to what it holds: in moles beside rows in RT, the
-    # worst row was a balance row in a large system and a potential in a small
-    # one, and the search took a different path for the same chemistry.
+    # each balance row relative to what it holds, the scale it is judged on: in
+    # moles beside rows in RT, the worst row was a balance row in a large system
+    # and a potential in a small one, and the search took a different path for
+    # the same chemistry.
     res = maximum(abs, wR .* R)
     φ = sum(abs2, wR .* R)
     pred = sum(abs2, wR .* (J * δ))
+    # The linearization's own residual at its least-squares step. A square system
+    # of full rank leaves nothing of it but rounding; a set whose conditions cannot
+    # all hold together leaves its inconsistency there, the pivoted factorization
+    # having dropped the direction they share. Where it is more than a fraction
+    # `tol` of the residual of an iterate not yet within the tolerance, the
+    # conditions whose removal alone makes the linearization consistent are
+    # returned (`_restoring_drops`), for one of them to leave before any step: the
+    # search then needs not reach the least-squares point of a set that has no
+    # solution. Crept along, steps on such a set removing 3e-8 of the squared
+    # residual each, a chlorinated cement paste stayed 37 iterations at a residual
+    # of 0.4545 before reaching it.
+    if consistency && !polish && res > opts.tol && sum(abs2, wR .* (J * δ .+ R)) > opts.tol * φ
+        restoring = _restoring_drops(prob, J, R, wR, cs, v, act_ph, active, nph, m, opts.tol)
+        if !isempty(restoring.phases) || !isempty(restoring.vars)
+            copyto!(x_buf, x_iterate)
+            return (v_in, active_in, false, false, restoring)
+        end
+    end
     # Where the linearization can remove no more than a fraction `tol` of the
     # squared residual, the iterate is the least-squares point of its set and no
     # step is taken: the relative-reduction test of nonlinear least squares, the
@@ -2715,7 +3020,7 @@ function _newton_step!(
     # eleven digits, where the next starting point converged in 27.
     if pred <= opts.tol * φ
         copyto!(x_buf, x_iterate)
-        return (v_in, active_in, false)
+        return (v_in, active_in, false, true, nothing)
     end
     cand_resid = Ref(Inf)
     accepted = false
@@ -2736,14 +3041,28 @@ function _newton_step!(
         # within them (`_dual_newton_attempt`).
         for _ in 1:(polish ? 1 : 40)
             v_t .= v .+ α .* δ
+            for a in 1:nph
+                lin[a] || continue
+                v_t[a] = (a == aβ && α == β) ? -Inf : v[a] + log1p(max(α * δ[a], -1.0))
+            end
             foreach(copyto!, W_t, W_ref)
-            R_t = _outer_residual(
-                prob, v_t, W_t, act_ph, active, bv, x_buf;
-                dead, degenerate, resid = cand_resid,
-                inner_maxit = opts.inner_maxit, max_fall = opts.inner_fall_bound, trial = true,
-                composed,
-            )
-            if isinf(cand_resid[])
+            # A trial outside the domain of the model is no candidate, as one
+            # whose inversion runs away is not: shorter steps come back inside.
+            # An adiabatic solve tried 599 K, where water at one bar is a vapor
+            # and the equations of state of the solutes do not hold.
+            R_t = try
+                _outer_residual(
+                    prob, v_t, W_t, act_ph, active, bv, x_buf;
+                    dead, degenerate, resid = cand_resid,
+                    inner_maxit = opts.inner_maxit, max_fall = opts.inner_fall_bound, trial = true,
+                    composed,
+                )
+            catch err
+                err isa DomainError || rethrow()
+                cand_resid[] = Inf
+                nothing
+            end
+            if R_t === nothing || isinf(cand_resid[])
                 runaway_streak += 1
                 runaway_streak >= 20 && break
                 α /= 2
@@ -2751,7 +3070,13 @@ function _newton_step!(
             end
             only_runaway = false
             runaway_streak = 0
-            mx = maximum(abs, wR .* R_t)
+            # The trial judged on its own scales, what its rows hold there, as the
+            # next iteration judges it: on the scales of the current point, a
+            # trial that emptied a row of its carriers looked balanced and was
+            # accepted, and the next iteration read a residual of 6e19 on a
+            # chlorinated cement paste under the limiting law.
+            wR_t = _trial_weights(prob, x_buf, v_t, nph, m, length(active), bv, degenerate)
+            mx = maximum(abs, wR_t .* R_t)
             # A decrease is one beyond the rounding of the residual itself: at the
             # least-squares point of a set that has no solution, the linearization
             # predicts nothing, and steps that move the last bits were accepted as
@@ -2763,8 +3088,24 @@ function _newton_step!(
             else
                 mx < res * (1 - 8 * eps()) || (
                     pred > opts.tol^2 && mx <= res * (1 + 1.0e-12) &&
-                        sum(abs2, wR .* R_t) <= φ - max(2.0e-4 * α * pred, 8 * eps() * φ)
+                        sum(abs2, wR_t .* R_t) <= φ - max(2.0e-4 * α * pred, 8 * eps() * φ)
                 )
+            end
+            # A trial whose inversion has not converged is compared by the
+            # residual the next iteration will compute from it, the inversion
+            # carried on from where the trial left it: under the limiting law a
+            # chlorinated cement paste accepted a trial at 0.72 whose inversion,
+            # carried on, landed at 5.1e13.
+            if decrease && cand_resid[] > opts.inner_tol
+                W_c = [copy(w) for w in W_t]
+                R_c = _outer_residual(
+                    prob, v_t, W_c, act_ph, active, bv, x_buf;
+                    dead, degenerate, inner_maxit = opts.inner_maxit, max_fall = opts.inner_fall_bound,
+                )
+                wR_c = _trial_weights(prob, x_buf, v_t, nph, m, length(active), bv, degenerate)
+                mx_c = maximum(abs, wR_c .* R_c)
+                decrease = mx_c < res * (1 - 8 * eps()) ||
+                    sum(abs2, wR_c .* R_c) <= φ - max(2.0e-4 * α * pred, 8 * eps() * φ)
             end
             if decrease && (!strict || !current_converged || cand_resid[] <= opts.inner_tol)
                 v = copy(v_t)
@@ -2784,7 +3125,7 @@ function _newton_step!(
     end
     if !accepted
         copyto!(x_buf, x_iterate)
-        return (v_in, active_in, false)
+        return (v_in, active_in, false, false, nothing)
     end
     # On the bound exactly: the variable the full cut brought there, and the
     # negligible ones the step sent through it.
@@ -2796,7 +3137,7 @@ function _newton_step!(
         active[j] in prob.always_active && continue
         v[nph + m + j] < 0 && (v[nph + m + j] = 0.0)
     end
-    return (v, active, true)
+    return (v, active, true, false, nothing)
 end
 
 """
@@ -2851,7 +3192,6 @@ function _dual_newton_attempt(
     u0 = _potentials(prob.A, y)
     g0 = current_g(prob, q)
     h0 = current_h(prob, x_guess, q)
-    active, xB = _initial_free_set(prob, n0, g0 .+ h0 .- u0, κ, act_ph, dead, unread)
     keep0 = Int[]
     σb0 = _budget_scales(bv)
     for (a, k) in enumerate(act_ph)
@@ -2868,6 +3208,11 @@ function _dual_newton_attempt(
         act_ph = act_ph[keep0]
         refs = refs[keep0]
     end
+    # The pure phases after the phases present, whose compositions the phase rule
+    # counts (`_initial_free_set`).
+    active, xB = _initial_free_set(
+        prob, n0, g0 .+ h0 .- u0, κ, act_ph, dead, unread, _balance_residual(prob, n0, q, bv, dead),
+    )
 
     converged = false
     # The best iterate by the error of the whole problem, among those whose set
@@ -3013,34 +3358,20 @@ function _dual_newton_attempt(
         before = (copy(active), copy(xB), copy(act_ph), copy(refs))
         moved = false
         if e != 0
-            active, xB, moved = _release(prob, active, xB, act_ph, e, bv, dead, degenerate)
+            active, xB, act_ph, refs, moved = _release(
+                prob, active, xB, act_ph, refs, e, bv, dead, degenerate, x_iterate, q,
+            )
             opts.verbose && @info "dual-newton move" released = e admitted = moved
         elseif k_new != 0
-            push!(act_ph, k_new)
-            push!(refs, PHASE_ADMISSION_SEED * _phase_scale(κ, prob.phases[k_new], dead))
-            if !_active_set_supports_a_solution(prob, active, act_ph)
-                active, xB = _exchange_incumbent(prob, active, xB, act_ph, eachindex(active), bv, dead, degenerate)
-            end
-            if !_active_set_supports_a_solution(prob, active, act_ph)
-                act_ph, refs = _exchange_incumbent_phase(prob, active, act_ph, refs, bv, dead, degenerate)
-            end
-            moved = _active_set_supports_a_solution(prob, active, act_ph)
-            moved || ((active, xB, act_ph, refs) = before)
+            active, xB, act_ph, refs, moved = _admit(
+                prob, active, xB, act_ph, refs, k_new, u, q, bv, dead, x_iterate, κ,
+            )
             opts.verbose && @info "dual-newton move" phase = k_new admitted = moved
         end
-        # A mixing phase leaves once no balance row would miss it.
-        gone = Int[]
-        for (a, k) in enumerate(act_ph)
-            prob.phases[k].always_present && continue
-            _phase_negligible(prob, prob.phases[k], refs[a], σb, opts.tol, dead) && push!(gone, a)
-        end
-        if !isempty(gone)
-            opts.verbose && @info "dual-newton move" phases_gone = act_ph[gone]
-            keep = setdiff(eachindex(act_ph), gone)
-            act_ph = act_ph[keep]
-            refs = refs[keep]
-            moved = true
-        end
+        # A mixing phase leaves once no balance row would miss it, an exchange
+        # having left it at a trace.
+        act_ph, refs, gone = _without_negligible(prob, act_ph, refs, σb, opts.tol, dead)
+        isempty(gone) || (moved = true)
 
         nph = length(act_ph)
         v = vcat([log(r) for r in refs], y, xB, q)
@@ -3053,13 +3384,38 @@ function _dual_newton_attempt(
             copyto!(x_iterate, x_buf)
             scales = _balance_scales(prob, x_buf, q, bv, degenerate)
         end
-        v, active, accepted = _newton_step!(
+        v, active, accepted, lspoint, restoring = _newton_step!(
             W, prob, v, R, act_ph, active, bv, x_buf, x_iterate, dead, degenerate, m, opts,
             scales, σb, κ, inner_resid, composed; polish,
         )
+        # A set whose linearization is inconsistent: of the conditions whose removal
+        # alone makes it consistent, the one furthest from holding leaves at once,
+        # before any step (`_restoring_drops`, `_leave`), and is held out as the
+        # leaving rule holds out what it removes; none if none of them fails to
+        # hold beyond the floor of that rule. A condition that holds is not the one
+        # the set should not have: in a model whose solution sets every potential
+        # by itself, the pure phases the vertex of the linear program holds were
+        # stationary, and the one removed took its matter with it and left a worse
+        # answer than the step on the set as it was.
+        # What leaves the set, from here or from the leaving rule below, and why.
+        leaving = nothing
+        why = "dual-newton inconsistent"
+        if restoring !== nothing
+            leaving = _leave(
+                prob, act_ph, refs, active, xB, u, hv, gq, x_iterate, dead, max(opts.si_tol, opts.tol);
+                phases = restoring.phases, vars = restoring.vars,
+            )
+            if leaving[5] == 0 && leaving[6] == 0
+                leaving = nothing
+                v, active, accepted, lspoint, _ = _newton_step!(
+                    W, prob, v, R, act_ph, active, bv, x_buf, x_iterate, dead, degenerate, m, opts,
+                    scales, σb, κ, inner_resid, composed; polish, consistency = false,
+                )
+            end
+        end
         # No step under the new classification: the step under the one before is
         # the other direction there is, not a retry.
-        if !accepted && moved
+        if leaving === nothing && !accepted && moved
             active, xB, act_ph, refs = before
             nph = length(act_ph)
             v = vcat([log(r) for r in refs], y, xB, q)
@@ -3070,12 +3426,15 @@ function _dual_newton_attempt(
             )
             copyto!(x_iterate, x_buf)
             scales = _balance_scales(prob, x_buf, q, bv, degenerate)
-            v, active, accepted = _newton_step!(
+            v, active, accepted, lspoint, _ = _newton_step!(
                 W, prob, v, R, act_ph, active, bv, x_buf, x_iterate, dead, degenerate, m, opts,
-                scales, σb, κ, inner_resid, composed,
+                scales, σb, κ, inner_resid, composed; consistency = false,
             )
         end
-        accepted && (iterations += 1)
+        # The final step counts whether or not it finds anything to correct: a
+        # residual that rounds to exactly zero takes none, one of 9e-16 takes one,
+        # and the count would differ between a system and the same one doubled.
+        (accepted || polish) && (iterations += 1)
         polished |= polish
         if polish && !accepted
             converged = true
@@ -3091,52 +3450,46 @@ function _dual_newton_attempt(
         # A set no step improves cannot be solved as it is; where a variable held at
         # its bound is supersaturated, the set may lack it, whatever the error of
         # the iterate, and it comes off its bound before anything leaves.
-        if !accepted && e_cand != 0 && e == 0
-            active2, xB2, released = _release(prob, active, xB, act_ph, e_cand, bv, dead, degenerate)
+        if leaving === nothing && !accepted && e_cand != 0 && e == 0
+            active2, xB2, act2, refs2, released = _release(
+                prob, active, xB, act_ph, refs, e_cand, bv, dead, degenerate, x_iterate, q,
+            )
             if released
                 opts.verbose && @info "dual-newton stall" released = e_cand
                 push!(left, (sort(act_ph), sort(active)))
-                active, xB = active2, xB2
+                active, xB, act_ph, refs = active2, xB2, act2, refs2
                 (sort(act_ph), sort(active)) in left && break
                 continue
             end
         end
-        if !accepted
-            a_out = 0
-            j_out = 0
-            worst = max(opts.si_tol, opts.tol)
-            for (a, k) in enumerate(act_ph)
-                prob.phases[k].always_present && continue
-                sat = -_phase_saturation(prob, k, u, hv, x_iterate, gq, dead)
-                if sat > worst
-                    worst = sat
-                    a_out = a
-                end
-            end
-            for (j, i) in enumerate(active)
-                i in prob.always_active && continue
-                r = abs(gq[i] + hv[i] - u[i])
-                if r > worst
-                    worst = r
-                    j_out = j
-                    a_out = 0
-                end
-            end
-            opts.verbose && @info "dual-newton stall" leaves = j_out != 0 ? active[j_out] : 0 phase_leaves = a_out != 0 ? act_ph[a_out] : 0
-            push!(left, (sort(act_ph), sort(active)))
-            if j_out != 0
-                push!(stalled, active[j_out])
-                keep = setdiff(eachindex(active), j_out)
-                active = active[keep]
-                xB = xB[keep]
-            elseif a_out != 0
-                push!(stalled_ph, act_ph[a_out])
-                keep = setdiff(eachindex(act_ph), a_out)
-                act_ph = act_ph[keep]
-                refs = refs[keep]
-            else
+        # A line search that found no decrease where the linearization predicts
+        # one does not show the set inconsistent: the residual is only not reduced
+        # along the step from here, an inner inversion running away or a model
+        # past its range. Nothing leaves on that evidence, and the search from
+        # this start ends there, for another start or the vertex of the linear
+        # program. Taken for an inconsistent set, it made the pure phases holding
+        # a chlorinated cement paste leave one by one under the limiting law, and
+        # the residual went from 4.5 to 1e25.
+        leaving === nothing && !accepted && !lspoint && break
+        if leaving === nothing && !accepted
+            leaving = _leave(
+                prob, act_ph, refs, active, xB, u, hv, gq, x_iterate, dead, max(opts.si_tol, opts.tol),
+            )
+            why = "dual-newton stall"
+            if leaving[5] == 0 && leaving[6] == 0
+                opts.verbose && @info why leaves = 0 phase_leaves = 0
                 break
             end
+        end
+        # The condition leaving, held out until the search improves, and the set it
+        # leaves recorded: coming back to one left before is a cycle.
+        if leaving !== nothing
+            act2, refs2, active2, xB2, k_out, i_out = leaving
+            opts.verbose && @info why leaves = i_out phase_leaves = k_out
+            push!(left, (sort(act_ph), sort(active)))
+            i_out == 0 || push!(stalled, i_out)
+            k_out == 0 || push!(stalled_ph, k_out)
+            act_ph, refs, active, xB = act2, refs2, active2, xB2
             (sort(act_ph), sort(active)) in left && break
             continue
         end
@@ -3148,6 +3501,10 @@ function _dual_newton_attempt(
         y = v[(nph + 1):(nph + m)]
         xB = na == 0 ? Float64[] : v[(nph + m + 1):(nph + m + na)]
         q = nq == 0 ? Float64[] : v[(nph + m + na + 1):(nph + m + na + nq)]
+        # A mixing phase the step emptied leaves the set, at its bound, as does one
+        # it left at a trace no balance row would miss.
+        act_ph, refs, gone = _without_negligible(prob, act_ph, refs, σb, opts.tol, dead)
+        opts.verbose && !isempty(gone) && @info "dual-newton move" phases_gone = gone
         # A set changed for good: the one left is recorded, and coming back to one
         # left before is a cycle.
         old_set = (sort(before[3]), sort(before[1]))
