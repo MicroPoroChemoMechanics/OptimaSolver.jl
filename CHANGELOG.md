@@ -1,62 +1,124 @@
 # Changelog
 
-## v0.8.9 — a trace the start holds, and a phase in the place of another
+## v0.9.0 — an active set reclassified at every iteration, and no amount in moles
 
-A patch release, on the dual Newton method when no start converges: the solve is
-tried once more from the best answer with a pure phase in the place of the one
-it depends on, then with the traces of the start in the initial active set, and
-an answer is kept only if it converges. A solve that converged, or one this does
-not help, returns what it returned before, to the bit.
+A minor release, on the dual Newton method. Its active-set search no longer
+changes the set in rounds and catches what that missed with a cascade of
+restarts: one Newton iteration reclassifies the set at every step, an entrant
+whose composition depends on the others takes the place of the one the ratio
+test of the simplex empties, and every phase present, the solution included,
+counts in the phase rule. No test of the solver compares an amount with a
+number of moles any more: the search on a gram of paste is the search on a
+tonne. A solve can resume from the multipliers of the one before.
+
+### Breaking changes
+
+- Below 1.0 a minor release is breaking for Julia's resolver: a package with
+  `OptimaSolver = "0.8"` in its `[compat]` must widen it to `"0.8, 0.9"` or
+  `"0.9"` to receive this version.
+- `DualNewtonOptions(max_active_updates = …)` is deprecated and ignored (the
+  set changes at every iteration); `maxit` bounds the whole search (500 by
+  default).
+- The fallback on the vertex of the linear program is on by default
+  (`lp_fallback = true`).
+- `si_tol` is a saturation index in RT only; it no longer serves as an amount.
+- The KKT certificate judges each balance row relative to what it holds, with
+  no absolute part in moles; `floor` is relative to the largest budget entry.
+- Answers may differ from 0.8.8 within the tolerances: the final step from the
+  first iterate within them is always taken, and the answer is the iterate it
+  reaches.
+
+### Added
+
+- `dual_newton_solve(prob, b, x0; y0)`: the multipliers of an earlier answer;
+  the search resumes from them in one attempt. Re-solving from `(res.x, res.y)`
+  takes one iteration.
+- The result reports `iterations`, the Newton steps taken (the final one
+  included), and `route`: `:start` for a resumed solve, `:fit` for one from
+  the fitted multipliers, `:lp` for one from the vertex of the linear program.
+
+### Changed
+
+- **One Newton iteration, its active set reclassified at every step.** A free
+  variable goes to its bound when the step, cut at the first bound it crosses,
+  brings it there; a variable comes off its bound when it is supersaturated by
+  more than the error of the iterate, one per iteration; an entrant dependent
+  on the free ones takes the place of the incumbent the ratio test empties,
+  the matter moved exactly; a mixing phase held out is tested by the tangent
+  plane once the set is solved. Removed: the seeding amount of 1e-6 mol, the
+  trace scales and their rescue, the swap restart and the trace retry of the
+  unreleased 0.8.9, the rejected and visited sets.
+- **Every phase present counts in the phase rule**, by the column of its
+  composition: by the Gibbs-Duhem relation the condition a solution sets on
+  the potentials varies along it, as a solid solution's does. Left out, the
+  solution let portlandite, gypsum and anhydrite be free together beside a
+  pore solution of nothing but their components, which has a solution at one
+  temperature only: on ChemistryLab's semi-adiabatic cell of lime and gypsum,
+  1 203 of 11 258 solves ended unconverged; the run now takes 3 186, all
+  converged.
+- **A mixing phase the tangent plane admits enters by exchange** when its trial
+  composition is a combination of the columns present: a solid solution
+  supersaturated beside its two end-members as pure phases takes the place of
+  the one the ratio test empties. Admitted beside both, it made a set with no
+  solution, on which every start crawled until `maxit`.
+- **An inconsistent set is read on its linearization.** Where the least-squares
+  step leaves more than a fraction `tol` of the squared residual (a singular
+  system, its conditions in conflict), the condition whose removal alone
+  restores consistency, and which fails to hold, leaves at once, instead of the
+  search creeping to the least-squares point of a set without solution: on 60
+  long solves of ChemistryLab's suite, 51 iterations became 6, 45 became 5 and
+  43 became 18, the answers unchanged to 4e-13.
+- **The total of a mixing phase moves linearly**, Newton's step in the total,
+  without the cap of one unit per step on its logarithm: a binary solid
+  solution two RT less stable than the solution took 31 to 43 iterations to
+  leave, and now at most 10.
+- **The fallback serves problems with unknown parameters**: the program is posed
+  at their start, on the budget `b − A_q q₀` with the standard potentials
+  there, and the search moves the parameters from its vertex; a kinetic step or
+  an adiabatic solve whose starts all fail now gets the fallback too.
+- **Fewer, better ordered starts.** Without multipliers, the search tries two
+  least-squares fits, then the vertex of the linear program, then the
+  element-potential start. A third fit, every member weighted equally,
+  converged in 36 of the 551 solves of ChemistryLab's suite that reached it, at
+  1.2 s each, the starts after it converging where it did: without it a
+  quaternary cement hydration takes 49 s instead of 493 s. The vertex goes
+  before the element-potential start, at a twentieth of its cost.
+- **No amount in moles.** Every bound, floor and scale of the solver is
+  relative to the largest budget entry, to the budget of a row, or to the most
+  one budgeted row lets a variable hold. A test multiplies four problems by
+  2^k and 10^k, k from -6 to 6: same sets, same iterations, the amounts
+  multiplied and the multipliers unchanged.
+- The forward-mode chunk of the outer Jacobians is fixed at the number of
+  conservation rows (at most 12), so that the inversion compiles once.
 
 ### Fixed
 
-- **A start in the wrong one of two phases the solvent relates could not leave
-  it.** Gypsum and anhydrite differ by two waters, and water is the reference
-  of the solution: the two cannot both be stationary but at the one
-  temperature where they coexist. From a start holding gypsum just above that
-  temperature, the search admitted anhydrite beside it, the inner inversion
-  could not hold both, and anhydrite was refused at every round, gypsum, being
-  stationary, never leaving: each solve ended uncertified with the gypsum
-  kept, after about 100 ms against 0.4 ms for one that certifies. The solve is
-  now restarted from the best answer with the supersaturated phase in the
-  place of the one it depends on, modulo the reference members of the
-  solutions, the amounts moved exactly (`_swapped_start`, `_dependent_incumbent`).
-  On ChemistryLab's run of a lime and gypsum paste in a semi-adiabatic cell,
-  which crosses that transition, the run went from 670 s to under 100 s, its
-  uncertified solves from 8268 to 1, and the temperature at which the cell
-  stays while gypsum turns to anhydrite came within 3e-7 K of where the two
-  coexist, against 1e-3 K above it.
-
-- **A trace the start held was left out of the initial active set, and the
-  search could not bring it back.** A pure phase enters the initial set only
-  above 1e-6 mol, which keeps out the absent phases an interior-point start
-  holds near its barrier parameter, but also a genuine trace below it. Left
-  out, such a trace can be the one phase that fixes a potential the others
-  leave free: every phase that potential then reads as supersaturated is
-  admitted against it. Measured on a CEM I paste in a semi-adiabatic cell,
-  solved by ChemistryLab at 1.22 days, its sulfate all in ettringite and its
-  magnesium in hydrotalcite: 7e-7 mol of monocarbonate holds the aluminum the
-  two leave over. Started from the partition of the instant before, which
-  holds it, the search left it out; the aluminum potential then put
-  monocarbonate at 4.3 RT and the AFm solid solution above saturation, both
-  were admitted, the inner inversion failed, and monocarbonate and
-  hemicarbonate took turns until the set repeated. No start certified the
-  instants that followed, and the run stopped there, on some machines and not
-  others, with the rounding. The trace is now seeded when the search without
-  it does not converge, and those instants certify, monocarbonate growing
-  from 6.96e-7 to 9.77e-7 mol over three seconds and the AFm phase
-  undersaturated, as the same equilibrium solved without the competing
-  phases says. The retry runs only when a trace may be what the search missed:
-  a pure phase of the start the best answer holds active, or reads as
-  supersaturated while the start holds it at the geometric mean of `si_tol`
-  and the seeding amount or more (1e-7 mol by default), above the amounts an
-  interior point leaves absent phases at; and only from a best answer whose KKT
-  error is under 10, a phase more or less in the initial set not bringing a
-  farther one within reach. Run for every failed solve holding
-  some trace, it made ChemistryLab's tests 1.6 % slower (+14 % on some files):
-  over the semi-adiabatic cells, it won 193 of 323 failed solves and lost 130
-  for 17 s. Restricted so, it wins the same 193 and runs 4 of the 130 (its
-  answers at a KKT error of 5.2 at most, the losses from 38 and beyond).
+- **A trace the start held was left out of the search.** A pure phase entered
+  the initial set only above 1e-6 mol, and a genuine trace below it can be the
+  one phase that fixes a potential: every phase that potential then read as
+  supersaturated was admitted against it. On a CEM I paste in ChemistryLab's
+  semi-adiabatic cell, 7e-7 mol of monocarbonate at 1.22 days, no start
+  certified the instants that followed and the run stopped there, on some
+  machines. A start now reads an exact zero as absent and any amount above it
+  as present, and the run crosses that instant.
+- A line search that finds no decrease where the linearization predicts one no
+  longer sends a phase out: it ends the attempt. Taken for an inconsistent
+  set, it emptied a chlorinated cement paste of its solids one by one under
+  the limiting law, the residual going from 4.5 to 1e25.
+- Each trial of the line search is judged on what its own rows hold, and one
+  whose inner inversion has not converged by the residual the inversion,
+  carried on, gives it: on the iterate's scales a trial that emptied a row of
+  its carriers looked balanced and the next iteration read 6e19; a trial
+  accepted at 0.72 was read at 5.1e13.
+- A trial outside the domain of the model (a `DomainError` raised by a
+  callback, as an equation of state past its range) is refused as a runaway
+  inversion is, instead of raising: an adiabatic solve tried 599 K.
+- A pure phase reaching a row that no fitted phase carries (the reactivity row
+  of an implicit kinetic step) is read as the start holds it: two C3A pathways
+  with gypsum ran every start to `maxit` and returned extents 25 % short.
+- The answer no longer depends on the path within the tolerance: resumed from
+  the multipliers of the solve before, ChemistryLab's semi-adiabatic cell
+  agrees with the replay of its own heat to 2.1e-8, against 1.1e-7.
 
 ## v0.8.8 — the step it takes, and the phase that takes another's place
 
