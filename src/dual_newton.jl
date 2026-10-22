@@ -602,12 +602,18 @@ relation between their `gᵢ` that the database will not happen to satisfy. That
 second test is what catches two polymorphs of one composition — `Gbs` and
 `AlOHmic` are both Al(OH)₃ — which impose `uᵢ = gᵢ` twice on the same vector.
 Given the columns `C` of the phases present (`_phase_columns`), the rank is taken
-with them.
+with them; columns that are not finite, read from amounts that ran away or whose
+products overflow, judge nothing, and the set is not taken to support a solution.
 """
 function _active_set_supports_a_solution(prob, active, act_ph, C = nothing)
     _n_stationarity_conditions(prob, active, act_ph) <= stationarity_capacity(prob) ||
         return false
     isempty(active) && return true
+    # Inf over Inf in a column made the rank raise from LAPACK (invalid argument
+    # #4 to `gesdd`): at an iterate that ran away (`_release`) and at a start
+    # holding such amounts (`_initial_free_set`), the temperature walk of a
+    # semi-adiabatic CEM I cell on Windows.
+    C === nothing || all(isfinite, C) || return false
     # With the columns of the phases present (`_phase_columns`), the conditions
     # they set on `y` count in the rank too: a pure phase whose composition the
     # others and a solution of them already span adds no direction, and the set
