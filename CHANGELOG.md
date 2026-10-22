@@ -1,5 +1,23 @@
 # Changelog
 
+## v0.9.3 — no phase rule judged on columns that are not finite
+
+A patch release of the dual Newton method.
+
+### Fixed
+
+- **A start could raise from LAPACK where it should have been read.** The phase
+  rule takes the rank of the columns of the active bound variables and of the
+  phases present. Read from amounts that ran away, or whose products overflow,
+  those columns were Inf over Inf, and the rank raised `ArgumentError: invalid
+  argument #4 to LAPACK call`. 0.9.1 guarded the release of a stalled iterate;
+  the reading of a start reached the same rank with the same columns, and
+  ChemistryLab's semi-adiabatic CEM I cell raised there on Windows. Columns
+  that are not finite now judge nothing, and the set is not taken to support a
+  solution: such a start frees no phase on that reading, and the search goes
+  on with its other starts. The guard is in the phase rule itself, for every
+  caller. A solve whose columns are finite returns what it returned before.
+
 ## v0.9.2 — a solution past the domain of its model is taken at the edge
 
 A patch release of the dual Newton method.
