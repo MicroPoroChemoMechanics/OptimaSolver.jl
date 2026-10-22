@@ -1,5 +1,41 @@
 # Changelog
 
+## v0.9.2 — a solution past the domain of its model is taken at the edge
+
+A patch release of the dual Newton method.
+
+### Fixed
+
+- **A start outside the domain of an activity model never left it.** Where the
+  inversion of a phase (`SolutionPhase(...; invert)`) finds no composition at
+  the potentials of an iterate, as the Debye–Hückel limiting law past its
+  range does, its solutes growing faster than the ionic strength they make,
+  the phase was swept, and the sweeps cycle there: the residual of the iterate
+  was where they stopped, and the trials of its line search, swept on from
+  that state, read another residual at the same point, 1.6e17 against 10.0 on
+  a chlorinated cement paste, down to α = 2⁻⁴⁰. The starts of that paste lie
+  outside the domain, by 0.13 RT and more, and the search ended within the
+  first iterates of each: ChemistryLab's chloride binding test certified on
+  some machines only, through the tenth solve of its fallback routes. Where
+  the sweeps do not converge either, the phase now takes the composition at
+  the edge of the domain: the solutes at their potentials, with the activity
+  coefficients of the composition `invert` finds once the potentials fall by
+  the least uniform amount `Δ` that gives one (up to 64 RT; beyond, the sweeps
+  as before). It is a function of the potentials alone, its step is that of an
+  ideal solution, and `Δ` counts in the error of the iterate, which is never
+  within the tolerances outside the domain, nor an answer. From such an
+  iterate a step is cut by a million at most: the residual is not smooth where
+  the sweeps stop converging, and a resumed solve of a semi-adiabatic cell
+  otherwise accepted steps of 2⁻³⁹ for 485 iterations. The eleven solves of
+  the chloride test's first point (two phase lists), each from its start
+  perturbed by a relative 1e-14 and 1e-8, twenty times: all 440 converge,
+  against 40 for 0.9.1 and 108 for 0.8.8, and all 880 do from starts perturbed
+  by up to 1e-4 or floored at 1e-16; the first solve of each list converges
+  from its first start, in 7 and 8 iterations. Where the sweeps converge, the
+  composition is theirs, as before: the temperature walk of ChemistryLab's
+  semi-adiabatic CEM I cell spends 0.96 s in its 349 solves, as 0.9.1 does
+  (0.97 s).
+
 ## v0.9.1 — nothing released at an iterate that ran away
 
 A patch release of the dual Newton method.
