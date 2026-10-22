@@ -483,6 +483,18 @@ end
         @test out == ([4], [0.1], [1], [1.0], false)
     end
 
+    # Phase columns that are not finite judge nothing: the set is not taken to
+    # support a solution, where the rank raised from LAPACK. A start holding an
+    # infinite amount of the solution frees no phase on that reading, and the
+    # same start with finite amounts frees phase 4.
+    @test !OptimaSolver._active_set_supports_a_solution(prob, [4], [1], [NaN; Inf;;])
+    @test OptimaSolver._active_set_supports_a_solution(prob, [4], [1], [0.5; 0.5;;])
+    for (start, freed) in (([0.5, 0.5, 0.0, 0.1, 0.0], [4]), ([Inf, 0.5, 0.0, 0.1, 0.0], Int[]))
+        r0 = OptimaSolver._balance_residual(prob, start, Float64[], b, Set{Int}())
+        active, xB = OptimaSolver._initial_free_set(prob, start, zeros(5), ones(5), [1], Set{Int}(), Int[], r0)
+        @test active == freed
+    end
+
 end
 
 @testset "the certificate tests a mixing phase held absent" begin
