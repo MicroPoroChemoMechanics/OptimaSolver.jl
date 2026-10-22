@@ -293,7 +293,16 @@ budget), `ref` the amount of the reference, `w` their current log-amounts and
 `q`, `params` what `h` is given, returns the log-amounts at which every member
 but the reference meets `hᵢ = cᵢ`, or `nothing` when no composition does. A trial
 of the line search it answers `nothing` is passed over when the iterate it comes
-from had a composition, and swept as that iterate was when it had none. The sweep
+from had a composition. Any other point it answers `nothing` (an iterate, or a
+trial from an iterate that had none) is swept, and where the sweeps do not
+converge either, running away or cycling as they do past the model's domain, the
+phase takes the composition at the edge of that domain: the solutes at their
+potentials, with the activity coefficients of the composition `invert` finds once
+every `cᵢ` falls by the least `Δ` that gives one. `invert` is to find one once the
+`cᵢ` fall far enough, as a solution does in the dilute limit; where no fall up to
+64 RT gives one, the phase keeps what its sweeps found. `Δ`, in RT, is the error
+of the point: an iterate outside the domain is never within the tolerances, and
+never an answer. The sweep
 below assumes `∂hᵢ/∂wᵢ = 1` and nothing else, and an activity model couples the
 solutes: through the ionic strength, the Debye–Hückel and B-dot models give
 `∂h/∂w` a part of rank one. Where that coupling is strong the
@@ -964,6 +973,69 @@ function _potentials(A, y)
     return u
 end
 
+# The most the potentials of a phase that inverts itself fall to find it a
+# composition (`_edge_composition`), in RT: a factor e⁶⁴ on every molality, past
+# the range of any model. One call of `invert` there decides whether to search at
+# all: where it answers nothing even there, it fails for another reason than the
+# domain of its model, and the phase keeps what its sweeps found.
+const EDGE_MAX_FALL = 64.0
+
+"""
+    _edge_composition(ph, c, ref, w, q, params) -> Union{Nothing, Tuple}
+
+The composition of the phase `ph`, which inverts itself, at potentials `c` that
+hold none (`ph.invert` answers `nothing`, and its sweeps do not converge), and how
+far they are from holding one:
+`(w, Δ)`, `Δ` the least uniform fall of the members' `cᵢ` at which `ph.invert`
+finds a composition `w_Δ`, and `w = w_Δ + Δ` for every member but the reference,
+the solutes at their potentials with the activity coefficients of `w_Δ`, which is
+one substitution step from it. `nothing` when no fall up to `EDGE_MAX_FALL`
+gives one.
+
+Where the model has no solution, the sweeps cycle: from the state a sweep left,
+the next one gives another composition at the same potentials, and the residual
+of an iterate depended on where its sweeps stopped. The starts of a chlorinated
+cement paste under the limiting law lay outside the model's domain, by 0.13 RT
+and more, and their line searches compared trials of one cycle with the residual
+of another, 1.6e17 against 10.0 down to α = 2⁻⁴⁰: every start of every route
+ended so, and the paste certified on some machines only. The composition at the
+edge is a function of the potentials alone, the line search compares what it
+evaluates, and the step, through `w = w_Δ + Δ` with the coefficients held, is
+that of an ideal solution, which lowers the potentials that ask for more solute
+than the budget holds: from those same starts, the first solve certifies from
+its first start.
+
+`Δ` is found on values, from `EDGE_MAX_FALL` halved while a composition holds,
+then bisected to `1e-10` of itself; `c` may carry dual numbers, and `w` then
+carries `∂wᵢ/∂cᵢ = 1`.
+"""
+function _edge_composition(ph, c, ref, w, q, params)
+    cv = _primal_value.(c)
+    rv = _primal_value(ref)
+    wv = _primal_value.(w)
+    qv = _primal_value.(q)
+    held(Δ) = ph.invert(cv .- Δ, rv, wv, qv, params)
+    lo, hi = 0.0, EDGE_MAX_FALL
+    w_hi = held(hi)
+    w_hi === nothing && return nothing
+    while hi > 1.0e-3
+        w_half = held(hi / 2)
+        w_half === nothing && (lo = hi / 2; break)
+        hi, w_hi = hi / 2, w_half
+    end
+    while hi - lo > 1.0e-10 * hi
+        mid = (lo + hi) / 2
+        (mid == lo || mid == hi) && break
+        w_mid = held(mid)
+        w_mid === nothing ? (lo = mid) : ((hi, w_hi) = (mid, w_mid))
+    end
+    out = [
+        j == ph.j_ref || !isfinite(cv[j]) ? w[j] + zero(c[j]) : w_hi[j] + hi + (c[j] - cv[j])
+            for j in eachindex(c)
+    ]
+    return out, hi
+end
+
 """
     _invert_phases!(prob, W, y, refs, act_ph, active, xB, x_buf; wb, dead) -> x_buf
 
@@ -1009,9 +1081,21 @@ function _invert_phases!(
     # hold one, and a shorter step comes back to them. From an iterate whose
     # potentials hold none, every nearby trial holds none either, and stopping
     # each of them stopped the solve at its first iterate: a paste loaded with
-    # sodium chloride under the limiting law, which the sweeps had carried from
-    # that same start to its answer. Its trials are swept, as the iterate was.
+    # sodium chloride under the limiting law. Its trials are swept, as the
+    # iterate was. Where the sweeps of such a phase do not converge either, its
+    # potentials are past the model's domain, and the phase takes the
+    # composition at its edge (`_edge_composition`), after the sweeps.
     use_invert = [prob.phases[k].invert !== nothing for k in eachindex(prob.phases)]
+    # The phases swept for want of a composition from their own inversion, the
+    # largest step of their last sweep, and whether one of their solutes reached
+    # the ceiling, where no sweep after converges.
+    fell = falses(length(prob.phases))
+    fell_step = 0.0
+    fell_ceiling = false
+    # The largest step of the last sweep of every other phase.
+    rest_step = 0.0
+    # How far outside its domain the furthest phase is, in RT (`_edge_composition`).
+    outside = 0.0
     # The phases taken by their own inversion in the sweep under way.
     by_inversion = falses(length(prob.phases))
     # `h` is needed by the phases that are swept, and only by them.
@@ -1020,6 +1104,8 @@ function _invert_phases!(
     for _ in 1:maxsweeps
         _fill_x!(x_buf, prob, W, refs, act_ph, active, xB)
         worst = 0.0
+        fell_step = 0.0
+        rest_step = 0.0
         # Each phase reads the composition the sweep starts from and writes its
         # own, so the phases can be taken in any order. Those that invert
         # themselves come first: they need no `h`, and a trial whose inversion
@@ -1050,6 +1136,7 @@ function _invert_phases!(
                     runaway = true
                 else
                     use_invert[k] = false
+                    fell[k] = true
                     swept = true
                     worst = max(worst, one(worst))   # the sweeps start next
                 end
@@ -1137,9 +1224,13 @@ function _invert_phases!(
                         # -- a species sits at the floor only while the others hold
                         # it there, and excluding it lets the loop stop one sweep
                         # before it comes off.
-                        worst = max(worst, abs(_primal_value(w - W[k][j])))
+                        step = abs(_primal_value(w - W[k][j]))
+                        worst = max(worst, step)
+                        fell[k] ? (fell_step = max(fell_step, step)) : (rest_step = max(rest_step, step))
                         W[k][j] = w
-                        trial && w >= wb.hi && (runaway = true)
+                        if w >= wb.hi
+                            fell[k] ? (fell_ceiling = true) : (trial && (runaway = true))
+                        end
                     end
                 end
             end
@@ -1157,6 +1248,9 @@ function _invert_phases!(
             worst = Inf
             break
         end
+        # Nor will the sweeps of a phase whose solute reached it: it takes the
+        # composition at the edge of its domain, below.
+        fell_ceiling && break
         # Every phase recovered by its own inversion is exact after one call:
         # sweeping again would change nothing.
         swept || (worst = 0.0)
@@ -1171,11 +1265,31 @@ function _invert_phases!(
         end
     end
 
+    # A phase whose own inversion and sweeps found no composition, its sweeps
+    # running away or cycling, takes the one at the edge of its domain.
+    if any(fell) && !runaway && (fell_ceiling || fell_step > 1.0e-14)
+        for (a, k) in enumerate(act_ph)
+            fell[k] || continue
+            ph = prob.phases[k]
+            c = [i in dead ? oftype(u[i] - g[i], -Inf) : u[i] - g[i] for i in ph.members]
+            edge = _edge_composition(ph, c, refs[a], W[k], q, prob.params)
+            edge === nothing && continue
+            we, Δ = edge
+            for (j, i) in enumerate(ph.members)
+                (j == ph.j_ref || i in dead) && continue
+                W[k][j] = clamp(we[j], wb.lo, wb.hi)
+            end
+            outside = max(outside, Δ)
+        end
+        outside > 0 && (worst = rest_step)
+    end
+
     # What the sweeps ended on, so the caller can tell a converged inversion from
     # one that merely ran out of sweeps. Left unreported, the two are
     # indistinguishable and the second silently makes the outer residual depend
-    # on the warm start rather than on `v`.
-    resid === nothing || (resid[] = worst)
+    # on the warm start rather than on `v`. A phase taken at the edge of its
+    # domain has not converged either: by how far outside it the potentials are.
+    resid === nothing || (resid[] = max(worst, outside))
 
     return _fill_x!(x_buf, prob, W, refs, act_ph, active, xB)
 end
@@ -3046,8 +3160,14 @@ function _newton_step!(
         only_runaway = true
         runaway_streak = 0
         # The final step from within the tolerances is one trial, kept if it stays
-        # within them (`_dual_newton_attempt`).
-        for _ in 1:(polish ? 1 : 40)
+        # within them (`_dual_newton_attempt`). From an iterate whose potentials
+        # hold no composition for a phase that inverts itself, the step is cut by
+        # a million at most: its residual is not smooth where that phase's sweeps
+        # stop converging, and a decrease found further down is a step along the
+        # jump. A solve of the temperature walk of a semi-adiabatic cell accepted
+        # 485 steps of 2⁻³⁹ in a row so, its residual at 1.378 throughout, before
+        # the vertex of the linear program certified it in 11 iterations.
+        for _ in 1:(polish ? 1 : all(k -> composed[k], act_ph) ? 40 : 21)
             v_t .= v .+ α .* δ
             for a in 1:nph
                 lin[a] || continue
@@ -3274,6 +3394,10 @@ function _dual_newton_attempt(
         scales = _balance_scales(prob, x_buf, q, bv, degenerate)
         jscales = _judged_scales(scales, bv, degenerate)
         judged = _judged_residual(R, jscales, nph)
+        # An iterate whose potentials hold no composition for a phase that
+        # inverts itself is in error by how far outside the model's domain they
+        # are (`_edge_composition`), whatever its residual at the edge.
+        all(k -> composed[k], act_ph) || (judged = max(judged, inner_resid[]))
         # The same residual in the square: what tells two iterates of equal error
         # apart, the measure the step itself decreases.
         judged2 = _judged_sumsq(R, jscales, nph)
@@ -3559,13 +3683,19 @@ function _dual_newton_attempt(
         y = v[(nph + 1):(nph + m)]
         xB = na == 0 ? Float64[] : v[(nph + m + 1):(nph + m + na)]
         q = nq == 0 ? Float64[] : v[(nph + m + na + 1):(nph + m + na + nq)]
+        # Nor is a state whose potentials hold no composition an answer, however
+        # small its residual at the edge of the model's domain: unless the sweeps
+        # found one there, as they do for a phase whose `invert` never answers.
+        in_domain = trues(length(prob.phases))
+        inner = Ref(Inf)
         converged = _judged_residual(
             _outer_residual(
                 prob, v, W, act_ph, active, bv, x_buf;
                 dead, degenerate, inner_maxit = opts.inner_maxit, max_fall = opts.inner_fall_bound,
+                composed = in_domain, resid = inner,
             ),
             _judged_scales(_balance_scales(prob, x_buf, q, bv, degenerate), bv, degenerate), nph,
-        ) <= opts.tol && best_viol <= opts.si_tol
+        ) <= opts.tol && best_viol <= opts.si_tol && (all(k -> in_domain[k], act_ph) || inner[] <= opts.inner_tol)
     end
 
     _invert_phases!(
