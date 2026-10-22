@@ -1237,6 +1237,94 @@ end
     @test_throws ArgumentError SolutionPhase([1, 2], 1; mole_fraction = true, invert = (args...) -> nothing)
 end
 
+@testset "a solution outside the domain of its model is taken at its edge" begin
+    # A solvent, a divalent cation, an anion and their complex, whose activity
+    # coefficients follow the Debye–Hückel limiting law, `ln γ = −a z² √I`: past
+    # its range the solutes' amounts grow faster than the ionic strength they
+    # make, and potentials asking too much of them hold no composition. Four
+    # members on three components, so that the multipliers fitted to a start do
+    # not reproduce its potentials.
+    z = [0, 2, -1, 1]
+    a = 2.0
+    lnγ(I, i) = -a * z[i]^2 * sqrt(I)
+    ionic(x) = 0.5 * sum(z[i]^2 * x[i] for i in 2:4) / x[1]
+    h(x, _) = (I = ionic(x); [zero(I), (log(x[i] / x[1]) + lnγ(I, i) for i in 2:4)...])
+    # `F(c, s) = ln S(eˢ) − s`, `S(I)` the ionic strength of the solutes the
+    # potentials `c` give at `I`: convex in `s`, it falls from the dilute limit to
+    # a minimum, and its first root, the ionic strength of the solution, exists
+    # when that minimum is not above zero.
+    F(c, s) = log(0.5 * sum(z[i]^2 * exp(c[i] - lnγ(exp(s), i)) for i in 2:4)) - s
+    function bisect(f, lo, hi)
+        for _ in 1:200
+            mid = (lo + hi) / 2
+            f(mid) ? (lo = mid) : (hi = mid)
+        end
+        return (lo + hi) / 2
+    end
+    s_min(c) = bisect(s -> ForwardDiff.derivative(t -> F(c, t), s) < 0, log(1.0e-12), log(1.0e2))
+    function invert(c, ref, w, q, params)
+        cv = ForwardDiff.value.(c)
+        sm = s_min(cv)
+        F(cv, sm) > 0 && return nothing
+        I = exp(bisect(s -> F(cv, s) > 0, log(1.0e-12), sm))
+        return [w[1], (c[i] - lnγ(I, i) + log(ref) for i in 2:4)...]
+    end
+    A = Float64[1 0 0 0; 0 1 0 1; 0 0 1 1]
+    g = [0.0, 0.0, 0.0, -3.0]
+    b = [55.5, 1.11, 2.22]
+    prob = DualNewtonProblem(
+        A, g, h; phases = [SolutionPhase([1, 2, 3, 4], 1; always_present = true, invert = invert)],
+        idx_bounded = Int[],
+    )
+    # The answer, independently: the complex's mass action and the two balances
+    # in its amount `n`, the ionic strength the composition's own.
+    function speciation()
+        function resid(n)
+            x = [55.5, b[2] - n, b[3] - n, n]
+            I = ionic(x)
+            return log(x[4] / x[1]) + lnγ(I, 4) - log(x[2] / x[1]) - lnγ(I, 2) - log(x[3] / x[1]) - lnγ(I, 3) + g[4]
+        end
+        lo, hi = 0.0, b[2]
+        for _ in 1:200
+            mid = (lo + hi) / 2
+            resid(mid) < 0 ? (lo = mid) : (hi = mid)
+        end
+        n = (lo + hi) / 2
+        return [55.5, b[2] - n, b[3] - n, n]
+    end
+    x_ref = speciation()
+    # A start whose fitted multipliers lie outside the model's domain: the
+    # solutes' potentials there hold no composition at any ionic strength of
+    # the dilute branch.
+    x0 = [55.5, b[2] / 2, b[3] / 2, b[2] / 2]
+    y_fit = qr(transpose(A), ColumnNorm()) \ (-(g .+ h(x0, nothing)))
+    c_fit = -(transpose(A) * y_fit) .- g
+    @test invert(c_fit, x0[1], log.(x0), Float64[], nothing) === nothing
+    res = dual_newton_solve(prob, b, x0)
+    @test res.converged
+    @test kkt_certificate(prob, res.x, b).optimal
+    @test res.x ≈ x_ref rtol = 1.0e-9
+    # The composition at the edge: the potentials fall by the least `Δ` that
+    # holds one, which is where `F` has its minimum at zero, and the solutes are
+    # taken there at their potentials, with the coefficients of that edge.
+    ph = prob.phases[1]
+    edge, Δ = OptimaSolver._edge_composition(ph, c_fit, x0[1], log.(x0), Float64[], nothing)
+    s_edge = s_min(c_fit)
+    @test Δ ≈ F(c_fit, s_edge) rtol = 1.0e-8
+    I_edge = exp(s_edge)
+    @test edge[2:4] ≈ [c_fit[i] - lnγ(I_edge, i) + log(x0[1]) for i in 2:4] rtol = 1.0e-4
+    @test edge[1] == log(x0[1])
+    # Its derivative is that of the solutes at those coefficients: one for each
+    # solute's own potential, none for the others' nor for the solvent's.
+    J = ForwardDiff.jacobian(c -> first(OptimaSolver._edge_composition(ph, c, x0[1], log.(x0), Float64[], nothing)), c_fit)
+    @test J ≈ Diagonal([0.0, 1.0, 1.0, 1.0])
+    # An inversion that answers at no fall leaves the phase to the sweeps.
+    @test OptimaSolver._edge_composition(
+        SolutionPhase([1, 2, 3, 4], 1; always_present = true, invert = (args...) -> nothing),
+        c_fit, x0[1], log.(x0), Float64[], nothing,
+    ) === nothing
+end
+
 @testset "a trace far below its budget is brought back to it" begin
     # A solvent and one solute carrying a trace component, its potentials put
     # where a guess holding the solute at `x₂` puts them. Its balance row has
