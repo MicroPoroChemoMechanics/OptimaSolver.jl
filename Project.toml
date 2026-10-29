@@ -1,6 +1,6 @@
 name = "OptimaSolver"
 uuid = "24efeca9-a785-406e-adb3-83609348bee7"
-version = "0.9.3"
+version = "0.10.0"
 authors = ["Jean-François Barthélémy <jean-francois.barthelemy@cerema.fr>"]
 
 [deps]
@@ -19,7 +19,7 @@ LinearAlgebra = "1"
 SciMLBase = "2, 3"
 SparseArrays = "1"
 Test = "1"
-julia = "1.12"
+julia = "1.13"
 
 [extras]
 Aqua = "4c88cf16-eb10-579e-8560-4a9242c79595"
