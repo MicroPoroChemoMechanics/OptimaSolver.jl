@@ -1,5 +1,17 @@
 # Changelog
 
+## v0.10.0 — Julia 1.13
+
+A minor release that changes no code: OptimaSolver now requires Julia 1.13.
+
+### Breaking changes
+
+- **Julia 1.13 or later** (`julia = "1.13"`, was `1.12`). The MPCM packages
+  stop testing Julia 1.12; the `min` job of the CI now runs 1.13. Under SemVer
+  below 1.0, this minor release is breaking whatever the API did: a package
+  bounded at `OptimaSolver = "0.9"` (ChemistryLab among them) must widen its
+  bound to accept 0.10.
+
 ## v0.9.3 — no phase rule judged on columns that are not finite
 
 A patch release of the dual Newton method.
