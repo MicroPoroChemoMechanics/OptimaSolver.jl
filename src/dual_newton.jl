@@ -361,7 +361,7 @@ end
     DualNewtonProblem(A, g, h; phases, idx_bounded = Int[], params = nothing,
                       gq = nothing, cq = nothing, hq = nothing, q0 = Float64[],
                       qscale = Float64[], Aq, always_active = Int[],
-                      conservation_rows = 1:size(A, 1))
+                      conservation_rows = 1:size(A, 1), holdings_rows = Int[])
 
 A convex program in the form solved by [`dual_newton_solve`](@ref):
 
@@ -407,6 +407,15 @@ A convex program in the form solved by [`dual_newton_solve`](@ref):
     and the reaction extents came out 4.3 times short. "This species starts at
     zero" and "this component is absent from the system" are different statements,
     and only the second licenses the criterion.
+  - `holdings_rows`: rows whose budget may be zero and that the search weighs by
+    what they hold rather than by the scale of the whole budget: the acid-base or
+    charge row of an aqueous system, judged by PHREEQC on the ionic strength of
+    its iterate. Their tolerance is unchanged. Empty by default, and the search is
+    then that of 0.10.0. Without it, the acid-base row of pure water, whose ions
+    hold 5e-8 mol beside 22 mol of water, weighs 2e-9 of the other rows in the
+    factorization and the line search, and a step that balances it counts for
+    nothing; a redox row, whose carriers lie on one side and must vanish, is
+    better left on the scale of the budget, where the search does not chase them.
   - `always_active`: bounded variables that are never dropped from the active set.
     A variable whose amount is fixed by a linear row is not deciding anything by a
     sign test: it is determined, and its extra multiplier makes its stationarity
@@ -442,6 +451,7 @@ struct DualNewtonProblem{T <: Real, H, G, C, HQ, P}
     Aq::Matrix{T}        # m × nq, so the linear rows read `A x + Aq q = b`
     always_active::Vector{Int}   # bounded variables pinned by a linear row
     conservation_rows::Vector{Int}   # rows the degeneracy criterion applies to
+    holdings_rows::Vector{Int}   # rows without a budget the search weighs by what they hold
     q0::Vector{T}        # starting guess
     qscale::Vector{T}    # scale of each parameter (not read since the Jacobian is exact)
 end
@@ -459,6 +469,12 @@ function DualNewtonProblem(
         Aq::AbstractMatrix = zeros(Float64, size(A, 1), length(q0)),
         always_active::AbstractVector{Int} = Int[],
         conservation_rows::AbstractVector{Int} = 1:size(A, 1),
+        holdings_rows::AbstractVector{Int} = Int[],
+    )
+    all(k -> 1 <= k <= size(A, 1), holdings_rows) || throw(
+        ArgumentError(
+            "`holdings_rows` names rows of `A`, which has $(size(A, 1)); got $(holdings_rows)."
+        )
     )
     isempty(phases) && throw(
         ArgumentError(
@@ -520,7 +536,7 @@ function DualNewtonProblem(
         Matrix{T}(A), Vector{T}(g), h,
         collect(SolutionPhase, phases), collect(Int, idx_bounded), params,
         nq, gq, cq, hq, Matrix{T}(Aq),
-        collect(Int, always_active), collect(Int, conservation_rows),
+        collect(Int, always_active), collect(Int, conservation_rows), collect(Int, holdings_rows),
         Vector{T}(q0), Vector{T}(qscale),
     )
 end
@@ -2399,21 +2415,22 @@ function _judged_scales(scales, b, degenerate)
     ]
 end
 
-# The scales a trial is weighed on: what its balance rows hold, at its own
-# amounts `x` and parameters (the tail of `v`), for a row with a budget; what the
-# row holds at the iterate (`held`) for a row without one. A trial that empties
-# a row with a budget leaves it unmet, and must show it; one that empties a row
-# without a budget balances it. Weighed on what the trial itself holds, a row
-# whose carriers lie on one side, so that its residual is all it holds, reads
-# one whatever the trial: the electron row of a sulfate and chloride solution,
-# perchlorate on one side and sulfides at 1e-160 mol on the other, refused every
-# step that lowered the perchlorate, and each start stopped there.
-function _trial_scales(prob, x, v, nph, m, na, bv, degenerate, held)
+# The scales the search weighs the balance rows on: those the tolerance judges
+# them on (`_judged_scales`), except a row of `prob.holdings_rows` without a
+# budget, weighed by what it holds (`scales`). See `holdings_rows`.
+function _search_scales(prob, scales, b, degenerate)
+    jsc = _judged_scales(scales, b, degenerate)
+    return [(k in prob.holdings_rows && !(k in degenerate)) ? scales[k] : jsc[k] for k in eachindex(scales)]
+end
+
+# The search scales of a trial, on what its rows hold at its own amounts `x` and
+# parameters (the tail of `v`), as the next iteration weighs it: on the scales
+# of the current point, a trial that emptied a row of its carriers looked
+# balanced.
+function _trial_scales(prob, x, v, nph, m, na, bv, degenerate)
     nq = prob.nq
     q = nq == 0 ? Float64[] : _primal_value.(v[(nph + m + na + 1):(nph + m + na + nq)])
-    sc = _balance_scales(prob, x, q, bv, degenerate)
-    S = _system_scale(bv)
-    return [_has_budget(bv[k], S) ? sc[k] : held[k] for k in eachindex(sc)]
+    return _search_scales(prob, _balance_scales(prob, x, q, bv, degenerate), bv, degenerate)
 end
 
 # The weights of the `N` rows of a residual: its balance rows (from `nph + 1`)
@@ -2981,20 +2998,18 @@ function _newton_step!(
     # stopped with the row unmet. On a square system the weights do not change
     # the step; they change which directions count as there.
     #
-    # A row whose budget is zero is the same case, and the search weights it the
-    # same way (`wR`), although the tolerance judges it on the scale of the whole
-    # budget (`wJ`, `_judged_scales`). Weighted by that scale in the search, as
-    # from 0.9.0 to 0.10.0, the acid-base row of pure water, whose ions hold
-    # 5e-8 mol beside 22 mol of water, entered the factorization and the line
-    # search at 2e-9 of the other rows: a step that balanced it counted for
-    # nothing, and the search crept. Pure water beside a family of surface sites
-    # with a diffuse layer ended each of its four starts at `maxit` with 2.3e-5
-    # mol of H⁺ unbalanced.
+    # A row whose budget is zero is judged on the scale of the whole budget
+    # (`wJ`, `_judged_scales`), and the search weights it so, except a row the
+    # caller names in `holdings_rows`, weighted by what it holds (`wR`): pure
+    # water beside a family of surface sites with a diffuse layer, its acid-base
+    # row weighted on the whole budget, ended each of its four starts at `maxit`
+    # with 2.3e-5 mol of H⁺ unbalanced.
+    search = _search_scales(prob, scales, bv, degenerate)
     local δ, wR, cs
     while true
         na = length(active)
         N = length(v)
-        wR = _row_weights(scales, N, nph)
+        wR = _row_weights(search, N, nph)
         cs = ones(N)
         cs[(nph + m + 1):(nph + m + na)] .= view(κ, active)
         δ = cs .* (qr((wR .* J) .* transpose(cs), ColumnNorm()) \ (-(wR .* R)))
@@ -3226,7 +3241,7 @@ function _newton_step!(
             # accepted, and the next iteration read a residual of 6e19 on a
             # chlorinated cement paste under the limiting law. The final step is
             # kept if it stays within the tolerance, read in its metric.
-            sc_t = _trial_scales(prob, x_buf, v_t, nph, m, length(active), bv, degenerate, scales)
+            sc_t = _trial_scales(prob, x_buf, v_t, nph, m, length(active), bv, degenerate)
             wR_t = _row_weights(sc_t, length(v_t), nph)
             mx = maximum(abs, wR_t .* R_t)
             # A decrease is one beyond the rounding of the residual itself: at the
@@ -3255,7 +3270,7 @@ function _newton_step!(
                     dead, degenerate, inner_maxit = opts.inner_maxit, max_fall = opts.inner_fall_bound,
                 )
                 wR_c = _row_weights(
-                    _trial_scales(prob, x_buf, v_t, nph, m, length(active), bv, degenerate, scales), length(v_t), nph,
+                    _trial_scales(prob, x_buf, v_t, nph, m, length(active), bv, degenerate), length(v_t), nph,
                 )
                 mx_c = maximum(abs, wR_c .* R_c)
                 decrease = mx_c < res * (1 - 8 * eps()) ||

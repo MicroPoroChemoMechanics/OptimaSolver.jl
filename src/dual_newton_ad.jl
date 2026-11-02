@@ -67,7 +67,7 @@ function _primal_problem(prob::DualNewtonProblem)
     return DualNewtonProblem(
         Matrix{T}(A), Vector{T}(g), prob.h, prob.phases, prob.idx_bounded,
         _values(prob.params), prob.nq, prob.gq, prob.cq, prob.hq, Matrix{T}(Aq),
-        prob.always_active, prob.conservation_rows, Vector{T}(q0), Vector{T}(qs),
+        prob.always_active, prob.conservation_rows, prob.holdings_rows, Vector{T}(q0), Vector{T}(qs),
     )
 end
 
