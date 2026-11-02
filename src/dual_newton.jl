@@ -2364,6 +2364,10 @@ _outer_chunk(prob) = ForwardDiff.Chunk{min(size(prob.A, 1), ForwardDiff.DEFAULT_
 # certified replay for 5033 of its 6283 evaluations: three and a half times the
 # time, for nothing.
 
+# Whether a balance row has a budget: one above the rounding of the largest,
+# `S` the scale of the whole budget (`_system_scale`).
+_has_budget(bk, S) = abs(bk) > eps() * S
+
 function _balance_scales(prob, x, q, b, degenerate)
     m = size(prob.A, 1)
     bscale = _system_scale(b)
@@ -2377,7 +2381,7 @@ function _balance_scales(prob, x, q, b, degenerate)
         for l in eachindex(q)
             s += abs(prob.Aq[k, l] * _primal_value(q[l]))
         end
-        floor_k = abs(b[k]) > eps() * bscale ? eps()^2 * abs(b[k]) : eps() * bscale
+        floor_k = _has_budget(b[k], bscale) ? eps()^2 * abs(b[k]) : eps() * bscale
         scales[k] = max(s, floor_k)
     end
     return scales
@@ -2390,22 +2394,33 @@ end
 function _judged_scales(scales, b, degenerate)
     bscale = _system_scale(b)
     return [
-        k in degenerate ? 1.0 : abs(b[k]) > eps() * bscale ? scales[k] : bscale
+        k in degenerate ? 1.0 : _has_budget(b[k], bscale) ? scales[k] : bscale
             for k in eachindex(scales)
     ]
 end
 
-# The weights of the rows of a trial residual, its balance rows divided by the
-# scales they are judged on at the trial's own amounts `x` and parameters (the
-# tail of `v`), every other row as it is.
-function _trial_weights(prob, x, v, nph, m, na, bv, degenerate)
+# The scales a trial is weighed on: what its balance rows hold, at its own
+# amounts `x` and parameters (the tail of `v`), for a row with a budget; what the
+# row holds at the iterate (`held`) for a row without one. A trial that empties
+# a row with a budget leaves it unmet, and must show it; one that empties a row
+# without a budget balances it. Weighed on what the trial itself holds, a row
+# whose carriers lie on one side, so that its residual is all it holds, reads
+# one whatever the trial: the electron row of a sulfate and chloride solution,
+# perchlorate on one side and sulfides at 1e-160 mol on the other, refused every
+# step that lowered the perchlorate, and each start stopped there.
+function _trial_scales(prob, x, v, nph, m, na, bv, degenerate, held)
     nq = prob.nq
     q = nq == 0 ? Float64[] : _primal_value.(v[(nph + m + na + 1):(nph + m + na + nq)])
-    jsc = _judged_scales(_balance_scales(prob, x, q, bv, degenerate), bv, degenerate)
-    w = ones(length(v))
-    for k in 1:m
-        w[nph + k] = 1.0 / jsc[k]
-    end
+    sc = _balance_scales(prob, x, q, bv, degenerate)
+    S = _system_scale(bv)
+    return [_has_budget(bv[k], S) ? sc[k] : held[k] for k in eachindex(sc)]
+end
+
+# The weights of the `N` rows of a residual: its balance rows (from `nph + 1`)
+# divided by `scales`, every other row as it is.
+function _row_weights(scales, N, nph)
+    w = ones(N)
+    w[(nph + 1):(nph + length(scales))] .= inv.(scales)
     return w
 end
 
@@ -2454,7 +2469,7 @@ function _amount_scales(prob, b, dead)
         j in dead && continue
         for k in axes(prob.A, 1)
             a = abs(_primal_value(prob.A[k, j]))
-            (iszero(a) || abs(b[k]) <= eps() * S) && continue
+            (iszero(a) || !_has_budget(b[k], S)) && continue
             κ[j] = min(κ[j], abs(b[k]) / a)
         end
     end
@@ -2747,7 +2762,7 @@ end
 # make a phase that matters look negligible.
 function _budget_scales(b)
     S = _system_scale(b)
-    return [abs(b[k]) > eps() * S ? abs(b[k]) : S for k in eachindex(b)]
+    return [_has_budget(b[k], S) ? abs(b[k]) : S for k in eachindex(b)]
 end
 
 # Whether the bound-constrained variable `i` at the amount `x` is negligible: no
@@ -2955,38 +2970,41 @@ function _newton_step!(
         )
     all(isfinite, J) || return (v_in, active_in, false, false, nothing)
 
-    # Each balance row weighted by the scale it is judged on, what it currently
-    # holds, and each amount column by the scale of its variable: the rank of a
-    # pivoted QR is decided against its largest pivot, and in these units it is
-    # decided alike whatever the size of the system. The row of a trace component
-    # carries the derivatives of amounts as small as its carriers: a budget of
-    # 1e-9 mol whose carriers sat at 1e-16 gave its potential a column of 1e-16
-    # beside entries of order a hundred, below the rank threshold, so the step
-    # left that potential where it was and the Newton stopped with the row unmet.
-    # On a square system the weights do not change the step; they change which
-    # directions count as there.
+    # Each balance row of the factorization weighted by what it currently holds
+    # (`_balance_scales`), and each amount column by the scale of its variable:
+    # the rank of a pivoted QR is decided against its largest pivot, and in these
+    # units it is decided alike whatever the size of the system. The row of a
+    # trace component carries the derivatives of amounts as small as its
+    # carriers: a budget of 1e-9 mol whose carriers sat at 1e-16 gave its
+    # potential a column of 1e-16 beside entries of order a hundred, below the
+    # rank threshold, so the step left that potential where it was and the Newton
+    # stopped with the row unmet. On a square system the weights do not change
+    # the step; they change which directions count as there.
+    #
+    # A row whose budget is zero is the same case, and the search weights it the
+    # same way (`wR`), although the tolerance judges it on the scale of the whole
+    # budget (`wJ`, `_judged_scales`). Weighted by that scale in the search, as
+    # from 0.9.0 to 0.10.0, the acid-base row of pure water, whose ions hold
+    # 5e-8 mol beside 22 mol of water, entered the factorization and the line
+    # search at 2e-9 of the other rows: a step that balanced it counted for
+    # nothing, and the search crept. Pure water beside a family of surface sites
+    # with a diffuse layer ended each of its four starts at `maxit` with 2.3e-5
+    # mol of H⁺ unbalanced.
     local δ, wR, cs
     while true
         na = length(active)
         N = length(v)
-        wR = ones(N)
-        jsc = _judged_scales(scales, bv, degenerate)
-        for k in 1:m
-            wR[nph + k] = 1.0 / jsc[k]
-        end
+        wR = _row_weights(scales, N, nph)
         cs = ones(N)
-        for j in 1:na
-            cs[nph + m + j] = κ[active[j]]
-        end
+        cs[(nph + m + 1):(nph + m + na)] .= view(κ, active)
         δ = cs .* (qr((wR .* J) .* transpose(cs), ColumnNorm()) \ (-(wR .* R)))
         # A free variable at zero that the step would send below it stays at its
         # bound: its own row is dropped and the step solved again without it,
         # which cannot repeat more often than there are free variables.
-        held = Int[]
-        for j in 1:na
-            !(active[j] in prob.always_active) && v[nph + m + j] <= 0 && δ[nph + m + j] < 0 &&
-                push!(held, j)
-        end
+        held = [
+            j for j in 1:na
+                if !(active[j] in prob.always_active) && v[nph + m + j] <= 0 && δ[nph + m + j] < 0
+        ]
         isempty(held) && break
         keep = setdiff(1:N, nph + m .+ held)
         J = J[keep, keep]
@@ -3006,11 +3024,7 @@ function _newton_step!(
     # amount of a phase with a solvent, and the total of a phase always present,
     # keep the logarithm and its cap.
     lin = [_linear_total(prob.phases[k]) for k in act_ph]
-    α = 1.0
-    for a in 1:nph
-        lin[a] && continue
-        abs(δ[a]) > 1.0 && (α = min(α, 1.0 / abs(δ[a])))
-    end
+    α = minimum((1.0 / abs(δ[a]) for a in 1:nph if !lin[a] && abs(δ[a]) > 1.0); init = 1.0)
     # The potential of a species, `−Aᵀy`, moves by no more per step than the
     # inner inversion lets a log-amount rise in one sweep. The balance of a
     # component is a sum of exponentials of its potential, and from below its
@@ -3114,13 +3128,15 @@ function _newton_step!(
     # The slope of `‖R‖²` along the least-squares step is `−2‖Jδ‖²`, the part of
     # the residual the linearization can remove, so that is what the decrease is
     # measured against. Both tests are taken in the metric the step was taken in,
-    # each balance row relative to what it holds, the scale it is judged on: in
-    # moles beside rows in RT, the worst row was a balance row in a large system
-    # and a potential in a small one, and the search took a different path for
-    # the same chemistry.
+    # each balance row relative to what it holds: in moles beside rows in RT, the
+    # worst row was a balance row in a large system and a potential in a small
+    # one, and the search took a different path for the same chemistry. Whether
+    # an iterate is within the tolerance is read in the metric of the tolerance
+    # (`wJ`), as the search loop reads it.
     res = maximum(abs, wR .* R)
     φ = sum(abs2, wR .* R)
     pred = sum(abs2, wR .* (J * δ))
+    wJ = _row_weights(_judged_scales(scales, bv, degenerate), length(v), nph)
     # The linearization's own residual at its least-squares step. A square system
     # of full rank leaves nothing of it but rounding; a set whose conditions cannot
     # all hold together leaves its inconsistency there, the pivoted factorization
@@ -3132,7 +3148,7 @@ function _newton_step!(
     # solution. Crept along, steps on such a set removing 3e-8 of the squared
     # residual each, a chlorinated cement paste stayed 37 iterations at a residual
     # of 0.4545 before reaching it.
-    if consistency && !polish && res > opts.tol && sum(abs2, wR .* (J * δ .+ R)) > opts.tol * φ
+    if consistency && !polish && maximum(abs, wJ .* R) > opts.tol && sum(abs2, wR .* (J * δ .+ R)) > opts.tol * φ
         restoring = _restoring_drops(prob, J, R, wR, cs, v, act_ph, active, nph, m, opts.tol)
         if !isempty(restoring.phases) || !isempty(restoring.vars)
             copyto!(x_buf, x_iterate)
@@ -3204,12 +3220,14 @@ function _newton_step!(
             end
             only_runaway = false
             runaway_streak = 0
-            # The trial judged on its own scales, what its rows hold there, as the
-            # next iteration judges it: on the scales of the current point, a
+            # The trial weighed on its own scales, what its rows hold there, as the
+            # next iteration weighs it: on the scales of the current point, a
             # trial that emptied a row of its carriers looked balanced and was
             # accepted, and the next iteration read a residual of 6e19 on a
-            # chlorinated cement paste under the limiting law.
-            wR_t = _trial_weights(prob, x_buf, v_t, nph, m, length(active), bv, degenerate)
+            # chlorinated cement paste under the limiting law. The final step is
+            # kept if it stays within the tolerance, read in its metric.
+            sc_t = _trial_scales(prob, x_buf, v_t, nph, m, length(active), bv, degenerate, scales)
+            wR_t = _row_weights(sc_t, length(v_t), nph)
             mx = maximum(abs, wR_t .* R_t)
             # A decrease is one beyond the rounding of the residual itself: at the
             # least-squares point of a set that has no solution, the linearization
@@ -3218,7 +3236,7 @@ function _newton_step!(
             # of 0.2917, unchanged to eleven digits, on an aqueous system that the
             # next starting point solved at once).
             decrease = if polish
-                mx <= opts.tol
+                maximum(abs, _row_weights(_judged_scales(sc_t, bv, degenerate), length(v_t), nph) .* R_t) <= opts.tol
             else
                 mx < res * (1 - 8 * eps()) || (
                     pred > opts.tol^2 && mx <= res * (1 + 1.0e-12) &&
@@ -3236,7 +3254,9 @@ function _newton_step!(
                     prob, v_t, W_c, act_ph, active, bv, x_buf;
                     dead, degenerate, inner_maxit = opts.inner_maxit, max_fall = opts.inner_fall_bound,
                 )
-                wR_c = _trial_weights(prob, x_buf, v_t, nph, m, length(active), bv, degenerate)
+                wR_c = _row_weights(
+                    _trial_scales(prob, x_buf, v_t, nph, m, length(active), bv, degenerate, scales), length(v_t), nph,
+                )
                 mx_c = maximum(abs, wR_c .* R_c)
                 decrease = mx_c < res * (1 - 8 * eps()) ||
                     sum(abs2, wR_c .* R_c) <= φ - max(2.0e-4 * α * pred, 8 * eps() * φ)
@@ -3264,13 +3284,9 @@ function _newton_step!(
     # On the bound exactly: the variable the full cut brought there, and the
     # negligible ones the step sent through it.
     jβ != 0 && α_acc == β && (v[nph + m + jβ] = 0.0)
-    for j in settle
-        v[nph + m + j] = 0.0
-    end
-    for j in 1:na
-        active[j] in prob.always_active && continue
-        v[nph + m + j] < 0 && (v[nph + m + j] = 0.0)
-    end
+    v[nph + m .+ settle] .= 0.0
+    free = [nph + m + j for j in 1:na if !(active[j] in prob.always_active)]
+    v[free] .= ifelse.(view(v, free) .< 0, 0.0, view(v, free))
     return (v, active, true, false, nothing)
 end
 
@@ -3886,7 +3902,7 @@ function kkt_certificate(
     feas_abs = maximum(abs, resid; init = 0.0)
     feas_rel = 0.0
     for k in eachindex(resid)
-        σ = (k in degenerate || abs(bv[k]) <= eps() * bscale) ? bscale : scales[k]
+        σ = (k in degenerate || !_has_budget(bv[k], bscale)) ? bscale : scales[k]
         feas_rel = max(feas_rel, abs(resid[k]) / σ)
     end
     feasibility = feas_rel

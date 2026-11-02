@@ -1,5 +1,33 @@
 # Changelog
 
+## v0.10.1 — a row without a budget weighed by what it holds
+
+A patch release of the dual Newton method.
+
+### Fixed
+
+- **A balance row without a budget counted for nothing in the search.** Since
+  0.9.0 the step and the line search weighted each balance row by the scale the
+  tolerance judges it on, and a row whose budget is zero within rounding is
+  judged on the scale of the whole budget. The acid–base row of pure water, whose
+  ions hold 5e-8 mol beside 22 mol of water, then entered the factorization and
+  the line search at 2e-9 of the other rows: a step that balanced it counted for
+  nothing, and the search crept or stalled. A kinetic run of ChemistryLab 0.42
+  that starts in pure water, a family of surface sites with a diffuse layer in
+  its partition, stopped at its first step (`DtNaN`), under OptimaSolver 0.9.3
+  as under 0.10.0: its first partition ended each of its four starts at
+  `maxit`, with 2.3e-5 mol of H⁺ unbalanced. The search now weights every
+  balance row by what it holds, as up to 0.8.8, and that partition certifies in
+  8 iterations. A trial is weighed on what its own rows hold, except a row
+  without a budget, weighed on what the iterate held: on its own holdings, a row
+  whose carriers lie on one side reads one whatever the trial, and the electron
+  row of a solution of sulfate and chloride (ChemistryLab's validation of
+  Friedel's and Kuzel's salts after Balonis, 2019, at 50 °C) refused every step
+  that lowered its perchlorate. The tolerance is unchanged: whether an iterate, or
+  the final step, is within it is still read on the scale of the whole budget for
+  such a row, and the certificate is untouched. A system whose rows all have a
+  budget is solved as before.
+
 ## v0.10.0 — Julia 1.13
 
 A minor release that changes no code: OptimaSolver now requires Julia 1.13.
