@@ -1,5 +1,33 @@
 # Changelog
 
+## v0.10.2 — the rows weighed by what they hold, named by the caller
+
+A patch release of the dual Newton method.
+
+### Fixed
+
+- **0.10.1 made the searches that have no answer slow.** It weighted every
+  balance row without a budget by what it holds, in the step and in the line
+  search. That served the acid–base row of pure water, and not a redox row,
+  whose carriers lie on one side and must vanish: weighed by what it holds, the
+  search went on lowering carriers already below what the tolerance resolves,
+  at the edge of the domain of an activity model, for as long as `maxit`
+  allowed. Solves that end without a certified answer, every answer unchanged,
+  took several times as long. The search now weighs a row without a budget on
+  the scale of the whole budget, as the tolerance judges it and as 0.10.0 did,
+  unless the caller names it in `holdings_rows`; the search of a problem that
+  names none is that of 0.10.0, iteration for iteration.
+
+### Added
+
+- **`holdings_rows`**, a keyword of `DualNewtonProblem`: the rows without a
+  budget that the search weighs by what they hold, as PHREEQC judges its charge
+  balance on the ionic strength of the iterate. Named, the acid–base row of pure
+  water beside a family of surface sites with a diffuse layer is met in 8
+  iterations, where each start otherwise ends at `maxit`. ChemistryLab names the
+  row of its primary `H+` from 0.42.1, which is what a kinetic run starting in
+  pure water needs.
+
 ## v0.10.1 — a row without a budget weighed by what it holds
 
 A patch release of the dual Newton method.
