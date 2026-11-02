@@ -812,24 +812,22 @@ next start or the vertex of the linear program. Taken for an inconsistent set,
 it emptied a chlorinated cement paste of its solids one by one under the limiting
 law.
 
-The step and the line search are taken in one metric, each balance row relative
-to what it holds, a row without a budget included, and each trial is weighed on
-what its own rows hold, as the next iteration will weigh it: on the iterate's
-holdings, a trial that emptied a row of its carriers looked balanced. A row
-without a budget is the exception, weighed on what the iterate held: emptying
-its carriers does balance it, and on its own holdings a row whose carriers lie
-on one side, its residual all it holds, reads one whatever the trial. The
-electron row of a solution of sulfate and chloride, perchlorate on one side and
-sulfides at ``10^{-160}`` mol on the other, refused so every step that lowered
-the perchlorate. Whether an
-iterate, or the final step, is within the tolerance is read in the metric of the
-convergence test, which judges a row without a budget relative to the whole
-budget. Weighted that way in the search too, as from 0.9.0 to 0.10.0, the
-acid–base row of pure water, whose ions hold ``5\times10^{-8}`` mol beside 22 mol
-of water, counted for ``2\times10^{-9}`` of the other rows, and a step that
-balanced it counted for nothing: pure water beside a family of surface sites
-with a diffuse layer ended each of its starts at `maxit`
-with ``2.3\times10^{-5}`` mol of H⁺ unbalanced. For the same reason a trial whose inner
+The step and the line search are taken in the metric the convergence test uses,
+each balance row relative to what it holds and a row without a budget relative
+to the whole budget, and each trial is weighed on what its own rows hold, as the
+next iteration will weigh it: on the iterate's holdings, a trial that emptied a
+row of its carriers looked balanced. A row without a budget that the caller names
+in `holdings_rows` is the exception, weighed in the search by what it holds, as
+PHREEQC judges its charge balance on the ionic strength of the iterate; its
+tolerance is unchanged. The acid–base row of pure water is such a row: its ions
+hold ``5\times10^{-8}`` mol beside 22 mol of water, and weighed on the whole
+budget it counts for ``2\times10^{-9}`` of the other rows, so that a step that
+balances it counts for nothing, and pure water beside a family of surface sites
+with a diffuse layer ended each of its starts at `maxit` with
+``2.3\times10^{-5}`` mol of H⁺ unbalanced. A redox row is not: its carriers lie on
+one side and must vanish, and weighed by what it holds, the search went on
+lowering carriers already below what the tolerance resolves, at the edge of the
+domain of an activity model, for as long as `maxit` allowed. For the same reason a trial whose inner
 inversion has not converged is compared by the residual that the inversion,
 carried on, gives it: under the limiting law a chlorinated cement paste accepted
 a trial at 0.72 that the next iteration read at ``5\times10^{13}``. A trial outside
@@ -946,8 +944,8 @@ and GEMS hold a mass balance to its element total. Judged in moles alone, as unt
 0.7.8, a trace of `1e-9` mol could be 10 % wrong and certified; judged in moles
 above one mole, as until 0.8.8, a row of a tonne of paste was held to a precision
 no data has, and the verdict depended on the size of the system. The dual Newton
-converges on the same measure, and its step weights each row by what it holds,
-a row without a budget included. The scale is floored at ``\epsilon^2 |b_k|`` for a row that has a
+converges on the same measure, and its rows are weighted by the same scales in
+the step, but for the rows named in `holdings_rows`. The scale is floored at ``\epsilon^2 |b_k|`` for a row that has a
 budget, so that a row whose carriers have all vanished is refused, and at
 ``\epsilon S`` for a row whose budget is zero within rounding, with
 ``S = \|b\|_\infty`` the scale of the budget. Such a row, the electron row of a

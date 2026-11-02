@@ -1440,26 +1440,24 @@ end
     @test !kkt_certificate(prob, y, b).optimal
 end
 
-@testset "a row without a budget is searched by what it holds" begin
+@testset "a row the caller names is searched by what it holds" begin
     # Water, H⁺ and OH⁻ in one phase, and a family of sites XOH ⇌ XO⁻ + H⁺ in
     # another; rows H, O, the charge and the sites. The charge row has no budget,
     # and its ions hold some 1e-7 mol beside 22 mol of water. The start is acid,
-    # as the search of surface sites in pure water stalled: 2.3e-5 mol of H⁺. Weighted
-    # in the search by the scale of the whole budget, as the tolerance judges it,
-    # the row counted for nothing and the search took 402 iterations; weighted by
-    # what it holds, 9.
+    # as the search of surface sites in pure water stalled: 2.3e-5 mol of H⁺.
+    # Weighted in the search by the scale of the whole budget, as the tolerance
+    # judges it, the row counts for nothing and the search takes 402 iterations;
+    # named in `holdings_rows`, weighted by what it holds, 9.
     h(x, _) = log.(max.(x, 1.0e-300))
     A = Float64[2 1 1 1 0; 1 0 1 1 1; 0 1 -1 0 -1; 0 0 0 1 1]
     nw, Xt, Kw, Ka = 22.2, 5.0e-4, 1.0e-18, exp(-25.0)
     g = [0.0, 0.0, -log(Kw), 0.0, 25.0]
-    prob = DualNewtonProblem(
-        A, g, h;
-        phases = [SolutionPhase([1, 2, 3], 1; always_present = true), SolutionPhase([4, 5], 1; always_present = true)],
-        idx_bounded = Int[],
-    )
+    phases = [SolutionPhase([1, 2, 3], 1; always_present = true), SolutionPhase([4, 5], 1; always_present = true)]
+    prob = DualNewtonProblem(A, g, h; phases, idx_bounded = Int[], holdings_rows = [3])
     b = [2nw + Xt, nw + Xt, 0.0, Xt]
+    x0 = [nw, 2.3e-5, 1.0e-12, Xt, 1.0e-12]
     @test isempty(degenerate_components(A, b))
-    out = dual_newton_solve(prob, b, [nw, 2.3e-5, 1.0e-12, Xt, 1.0e-12])
+    out = dual_newton_solve(prob, b, x0)
     @test out.converged && out.route === :fit
     @test out.iterations <= 20
     @test kkt_certificate(prob, out.x, b).optimal
@@ -1476,33 +1474,30 @@ end
     @test out.x[2] ≈ nH rtol = 1.0e-8
     @test out.x[3] ≈ nw * Kw / (nH + Kw) rtol = 1.0e-8
     @test out.x[5] ≈ Xt * Ka / (nH + Ka) rtol = 1.0e-8
+    # Without the row named, the search is that of 0.10.0: it reaches the same
+    # answer, slowly.
+    plain = dual_newton_solve(DualNewtonProblem(A, g, h; phases, idx_bounded = Int[]), b, x0)
+    @test plain.converged
+    @test plain.x ≈ out.x rtol = 1.0e-8
+    # A row that is not one of `A` is refused.
+    @test_throws ArgumentError DualNewtonProblem(A, g, h; phases, idx_bounded = Int[], holdings_rows = [5])
 end
 
-@testset "a trial is weighed on the iterate's scale for a row without a budget" begin
-    # Water, Cl⁻, ClO₄⁻, SO₄²⁻ and HS⁻; rows water, Cl, S and the electron, whose
-    # budget is zero. The iterate holds perchlorate and almost no sulfide: the
-    # electron row has its carriers on one side, and its residual is all it holds.
-    A = Float64[1 0 0 0 0; 0 1 1 0 0; 0 0 0 1 1; 0 0 8 0 -8]
+@testset "the search weighs a row as the tolerance does, unless it is named" begin
+    # Rows: a budget, a row without one, a degenerate one. What they hold:
+    # 2.0, 3e-8 and the floor.
+    A = Float64[1 0; 0 1; 0 0]
     h(x, _) = log.(max.(x, 1.0e-300))
-    prob = DualNewtonProblem(
-        A, [0.0, 0.0, 100.0, 0.0, 100.0], h;
-        phases = [SolutionPhase([1, 2, 3, 4, 5], 1; always_present = true)], idx_bounded = Int[],
-    )
-    b = [55.0, 2.0e-3, 1.0e-2, 0.0]
-    x = [55.0, 2.0e-3, 3.5e-5, 1.0e-2, 1.0e-160]
-    held = OptimaSolver._balance_scales(prob, x, Float64[], b, Int[])
-    # A trial with a tenth of the perchlorate.
-    xt = copy(x)
-    xt[3] /= 10
-    r = A * xt .- b
-    own = OptimaSolver._balance_scales(prob, xt, Float64[], b, Int[])
-    sc = OptimaSolver._trial_scales(prob, xt, Float64[], 1, 4, 0, b, Int[], held)
-    # On what the trial holds, its electron row reads one whatever the trial; on
-    # what the iterate held, a tenth, the decrease the trial made.
-    @test abs(r[4]) / own[4] ≈ 1 rtol = 1.0e-12
-    @test abs(r[4]) / sc[4] ≈ 0.1 rtol = 1.0e-12
-    # The rows with a budget are weighed on the trial's own holdings.
-    @test sc[1:3] == own[1:3]
+    b = [2.0, 0.0, 0.0]
+    scales = [2.0, 3.0e-8, 1.0]
+    jsc = OptimaSolver._judged_scales(scales, b, [3])
+    plain = DualNewtonProblem(A, [0.0, 0.0], h; phases = [SolutionPhase([1, 2], 1; always_present = true)], idx_bounded = Int[])
+    named = DualNewtonProblem(A, [0.0, 0.0], h; phases = [SolutionPhase([1, 2], 1; always_present = true)], idx_bounded = Int[], holdings_rows = [2, 3])
+    @test OptimaSolver._search_scales(plain, scales, b, [3]) == jsc
+    @test jsc == [2.0, 2.0, 1.0]
+    # Named, the row without a budget is weighed by what it holds; the degenerate
+    # one, whose residual is its pinned multiplier, stays as it was.
+    @test OptimaSolver._search_scales(named, scales, b, [3]) == [2.0, 3.0e-8, 1.0]
 end
 
 @testset "a phase made of a trace is judged on its own scale" begin
@@ -1931,13 +1926,17 @@ end
         )
         push!(cases, (prob, [55.0, 2.0e-9], [55.0, 2.0e-9, 0.0, 0.0]))
     end
+    # A factor 2ᵏ scales every number exactly, and the search is then the same to
+    # the iteration; a factor 10ᵏ rounds them, and the final step, kept on the
+    # rounding of a solved residual, may take one iteration more or less: 5
+    # instead of 6 at 0.1 under Julia 1.14, on 0.10.0 as on later versions.
     for (prob, b, x0) in cases
         ref = dual_newton_solve(prob, b, x0)
         @test ref.converged
         for k in -6:6, λ in (2.0^k, 10.0^k)
             out = dual_newton_solve(prob, λ .* b, λ .* x0)
             @test out.converged
-            @test out.iterations == ref.iterations
+            @test abs(out.iterations - ref.iterations) <= (λ == 2.0^k ? 0 : 1)
             @test sort(out.active) == sort(ref.active)
             @test sort(out.active_phases) == sort(ref.active_phases)
             @test out.x ./ λ ≈ ref.x rtol = 1.0e-12 atol = 1.0e-12 * maximum(ref.x)
@@ -2536,12 +2535,21 @@ end
     @test kkt_certificate(prob4, res4.x, [1.0, 0.3]).optimal
 
     # A phase declared always present never leaves, so B cannot enter in its
-    # place: the entrant goes back out, and the solve says it has not converged
-    # rather than certify A.
+    # place, and the solve never certifies A holding the matter. It says it has
+    # not converged, or it finds the answer with A kept at a trace, B holding the
+    # matter: which of the two is decided by the rounding of a problem whose only
+    # answer puts an always-present phase at nothing, and both have been met on
+    # the same version (`--check-bounds=yes` or not, one runner or another).
     phases_A = [SolutionPhase([1, 2], 1; mole_fraction = true, always_present = true), SolutionPhase([3, 4], 1; mole_fraction = true)]
     prob3 = DualNewtonProblem(Float64[1 1 1 1], [0.0, 0.0, -1.0, -1.0], h; phases = phases_A, idx_bounded = Int[])
     res3 = dual_newton_solve(prob3, [1.0], [0.5, 0.5, 0.0, 0.0])
-    @test !res3.converged
-    @test res3.active_phases == [1]
-    @test !kkt_certificate(prob3, res3.x, [1.0]).optimal
+    cert3 = kkt_certificate(prob3, res3.x, [1.0])
+    @test res3.converged == cert3.optimal
+    if res3.converged
+        @test res3.active_phases == [1, 2]
+        @test res3.x[3:4] ≈ [0.5, 0.5] rtol = 1.0e-10
+        @test sum(res3.x[1:2]) < 1.0e-100
+    else
+        @test res3.active_phases == [1]
+    end
 end
