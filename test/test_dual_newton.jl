@@ -2531,12 +2531,21 @@ end
     @test kkt_certificate(prob4, res4.x, [1.0, 0.3]).optimal
 
     # A phase declared always present never leaves, so B cannot enter in its
-    # place: the entrant goes back out, and the solve says it has not converged
-    # rather than certify A.
+    # place, and the solve never certifies A holding the matter. It says it has
+    # not converged, or it finds the answer with A kept at a trace, B holding the
+    # matter: which of the two is decided by the rounding of a problem whose only
+    # answer puts an always-present phase at nothing, and both have been met on
+    # the same version (`--check-bounds=yes` or not, one runner or another).
     phases_A = [SolutionPhase([1, 2], 1; mole_fraction = true, always_present = true), SolutionPhase([3, 4], 1; mole_fraction = true)]
     prob3 = DualNewtonProblem(Float64[1 1 1 1], [0.0, 0.0, -1.0, -1.0], h; phases = phases_A, idx_bounded = Int[])
     res3 = dual_newton_solve(prob3, [1.0], [0.5, 0.5, 0.0, 0.0])
-    @test !res3.converged
-    @test res3.active_phases == [1]
-    @test !kkt_certificate(prob3, res3.x, [1.0]).optimal
+    cert3 = kkt_certificate(prob3, res3.x, [1.0])
+    @test res3.converged == cert3.optimal
+    if res3.converged
+        @test res3.active_phases == [1, 2]
+        @test res3.x[3:4] ≈ [0.5, 0.5] rtol = 1.0e-10
+        @test sum(res3.x[1:2]) < 1.0e-100
+    else
+        @test res3.active_phases == [1]
+    end
 end
