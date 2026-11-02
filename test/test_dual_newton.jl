@@ -1440,6 +1440,71 @@ end
     @test !kkt_certificate(prob, y, b).optimal
 end
 
+@testset "a row without a budget is searched by what it holds" begin
+    # Water, H⁺ and OH⁻ in one phase, and a family of sites XOH ⇌ XO⁻ + H⁺ in
+    # another; rows H, O, the charge and the sites. The charge row has no budget,
+    # and its ions hold some 1e-7 mol beside 22 mol of water. The start is acid,
+    # as the search of surface sites in pure water stalled: 2.3e-5 mol of H⁺. Weighted
+    # in the search by the scale of the whole budget, as the tolerance judges it,
+    # the row counted for nothing and the search took 402 iterations; weighted by
+    # what it holds, 9.
+    h(x, _) = log.(max.(x, 1.0e-300))
+    A = Float64[2 1 1 1 0; 1 0 1 1 1; 0 1 -1 0 -1; 0 0 0 1 1]
+    nw, Xt, Kw, Ka = 22.2, 5.0e-4, 1.0e-18, exp(-25.0)
+    g = [0.0, 0.0, -log(Kw), 0.0, 25.0]
+    prob = DualNewtonProblem(
+        A, g, h;
+        phases = [SolutionPhase([1, 2, 3], 1; always_present = true), SolutionPhase([4, 5], 1; always_present = true)],
+        idx_bounded = Int[],
+    )
+    b = [2nw + Xt, nw + Xt, 0.0, Xt]
+    @test isempty(degenerate_components(A, b))
+    out = dual_newton_solve(prob, b, [nw, 2.3e-5, 1.0e-12, Xt, 1.0e-12])
+    @test out.converged && out.route === :fit
+    @test out.iterations <= 20
+    @test kkt_certificate(prob, out.x, b).optimal
+    # The reference, by mass action and the balances alone: the water is what the
+    # O row leaves, nOH = nw·Kw/(nH + Kw), nXO = Xt·Ka/(nH + Ka), and the charge
+    # nH − nOH − nXO, increasing in nH, vanishes at the answer (bisection in ln nH).
+    charge(nH) = nH - nw * Kw / (nH + Kw) - Xt * Ka / (nH + Ka)
+    lo, hi = log(1.0e-12), log(1.0e-3)
+    for _ in 1:200
+        mid = (lo + hi) / 2
+        charge(exp(mid)) > 0 ? (hi = mid) : (lo = mid)
+    end
+    nH = exp((lo + hi) / 2)
+    @test out.x[2] ≈ nH rtol = 1.0e-8
+    @test out.x[3] ≈ nw * Kw / (nH + Kw) rtol = 1.0e-8
+    @test out.x[5] ≈ Xt * Ka / (nH + Ka) rtol = 1.0e-8
+end
+
+@testset "a trial is weighed on the iterate's scale for a row without a budget" begin
+    # Water, Cl⁻, ClO₄⁻, SO₄²⁻ and HS⁻; rows water, Cl, S and the electron, whose
+    # budget is zero. The iterate holds perchlorate and almost no sulfide: the
+    # electron row has its carriers on one side, and its residual is all it holds.
+    A = Float64[1 0 0 0 0; 0 1 1 0 0; 0 0 0 1 1; 0 0 8 0 -8]
+    h(x, _) = log.(max.(x, 1.0e-300))
+    prob = DualNewtonProblem(
+        A, [0.0, 0.0, 100.0, 0.0, 100.0], h;
+        phases = [SolutionPhase([1, 2, 3, 4, 5], 1; always_present = true)], idx_bounded = Int[],
+    )
+    b = [55.0, 2.0e-3, 1.0e-2, 0.0]
+    x = [55.0, 2.0e-3, 3.5e-5, 1.0e-2, 1.0e-160]
+    held = OptimaSolver._balance_scales(prob, x, Float64[], b, Int[])
+    # A trial with a tenth of the perchlorate.
+    xt = copy(x)
+    xt[3] /= 10
+    r = A * xt .- b
+    own = OptimaSolver._balance_scales(prob, xt, Float64[], b, Int[])
+    sc = OptimaSolver._trial_scales(prob, xt, Float64[], 1, 4, 0, b, Int[], held)
+    # On what the trial holds, its electron row reads one whatever the trial; on
+    # what the iterate held, a tenth, the decrease the trial made.
+    @test abs(r[4]) / own[4] ≈ 1 rtol = 1.0e-12
+    @test abs(r[4]) / sc[4] ≈ 0.1 rtol = 1.0e-12
+    # The rows with a budget are weighed on the trial's own holdings.
+    @test sc[1:3] == own[1:3]
+end
+
 @testset "a phase made of a trace is judged on its own scale" begin
     # Water, a solute T and two solids made of it, S₁ = T and S₂ = T₂, the second
     # the more stable; the budget of T is 2e-9 mol. At equilibrium S₂ holds what
