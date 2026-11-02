@@ -1926,13 +1926,17 @@ end
         )
         push!(cases, (prob, [55.0, 2.0e-9], [55.0, 2.0e-9, 0.0, 0.0]))
     end
+    # A factor 2ᵏ scales every number exactly, and the search is then the same to
+    # the iteration; a factor 10ᵏ rounds them, and the final step, kept on the
+    # rounding of a solved residual, may take one iteration more or less: 5
+    # instead of 6 at 0.1 under Julia 1.14, on 0.10.0 as on later versions.
     for (prob, b, x0) in cases
         ref = dual_newton_solve(prob, b, x0)
         @test ref.converged
         for k in -6:6, λ in (2.0^k, 10.0^k)
             out = dual_newton_solve(prob, λ .* b, λ .* x0)
             @test out.converged
-            @test out.iterations == ref.iterations
+            @test abs(out.iterations - ref.iterations) <= (λ == 2.0^k ? 0 : 1)
             @test sort(out.active) == sort(ref.active)
             @test sort(out.active_phases) == sort(ref.active_phases)
             @test out.x ./ λ ≈ ref.x rtol = 1.0e-12 atol = 1.0e-12 * maximum(ref.x)
