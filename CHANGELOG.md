@@ -1,5 +1,30 @@
 # Changelog
 
+## v0.10.3 — a Hessian diagonal handed over in the right variables
+
+A patch release of the interior point.
+
+### Fixed
+
+- **A Hessian diagonal handed through `p.hdiag` was read in the wrong
+  variables.** The interior point of `OptimaOptimizer` solves in the scaled
+  amounts `ũ = n/s` and wraps the gradient accordingly, but it passed `p.hdiag`
+  through as it was: the caller's diagonal was evaluated at `ũ`, amounts all near
+  one, and its curvature was not multiplied by `sᵢ²`, which spans twenty orders
+  of magnitude on a chemical system. It is now evaluated at `s ⊙ ũ` and scaled as
+  the gradient is. Handed the exact diagonal, a solve now takes the iterations of
+  the forward-mode diagonal it replaces.
+
+### Changed
+
+- **The null-space Newton step works in its workspace.** `compute_step_nullspace!`
+  allocated its reduced Hessian, the copy its Cholesky factorization overwrites
+  and seven vectors at every iteration; they are now buffers of `NewtonStep`,
+  sized on the first call, and the step allocates nothing after it. The
+  arithmetic is unchanged, operation for operation.
+- The objective and the gradient of the scaled problem write the amounts
+  `s ⊙ ũ` into a buffer instead of allocating them at every evaluation.
+
 ## v0.10.2 — the rows weighed by what they hold, named by the caller
 
 A patch release of the dual Newton method.
