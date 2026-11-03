@@ -59,6 +59,41 @@
         @test length(sol.original.y) == 1
     end
 
+    @testset "an exact Hessian diagonal handed through `p` is scaled with the variables" begin
+        # The solver works on `ũ = n/s` and calls `p.hdiag` there. The caller's
+        # diagonal is a function of the amounts and gives `∂²G/∂nᵢ²`, so it is
+        # evaluated at `s ⊙ ũ` and multiplied by `sᵢ²`, as the gradient is.
+        # Handed over as it was, it read amounts near one and returned a
+        # curvature wrong by `sᵢ²`.
+        s = [2.0, 1.0e-3, 5.0]
+        ũ = [0.5, 3.0, 0.2]
+        hd(hf, n) = (hf .= 1 ./ n .+ n)
+        q = OptimaSolver._scaled_params((hdiag = hd, c = 1), s)
+        hf = zeros(3)
+        q.hdiag(hf, ũ)
+        n = s .* ũ
+        @test hf ≈ s .^ 2 .* (1 ./ n .+ n) rtol = 1.0e-15
+        @test q.c == 1
+        @test OptimaSolver._scaled_params((c = 1,), s) === (c = 1,)
+        @test OptimaSolver._scaled_params(nothing, s) === nothing
+
+        # End to end, from a start the scaling moves: the exact diagonal of this
+        # ideal mixture is `1/nᵢ`, and handed over it gives the answer and the
+        # iterations of the one the solver reads off a forward-mode Jacobian.
+        f = SciMLBase.OptimizationFunction(G; grad = ∇G!)
+        u0 = [0.7, 0.2, 0.1]
+        run(p) = SciMLBase.solve(
+            SciMLBase.OptimizationProblem(f, copy(u0), p; lb = lb, ub = fill(Inf, 3)),
+            OptimaOptimizer(; tol = 1.0e-12, warm_start = false),
+        )
+        sol_ad = run((μ⁰ = μ⁰, A = A, b = b))
+        sol_h = run((μ⁰ = μ⁰, A = A, b = b, hdiag = (hf, n) -> (hf .= 1 ./ n)))
+        @test sol_h.retcode == SciMLBase.ReturnCode.Success
+        @test sol_h.u ≈ n_analytic atol = 1.0e-9
+        @test sol_h.u ≈ sol_ad.u rtol = 1.0e-10
+        @test sol_h.original.iterations == sol_ad.original.iterations
+    end
+
     @testset "convergence does not depend on the last digits" begin
         # The same solve with its data moved by a few ulp, which is what another
         # machine's arithmetic does to it. Left to rounding near the solution,

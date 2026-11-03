@@ -269,6 +269,34 @@ end
 
 # The problem `A n = b` solved from `u_start` (and `y_start`, or nothing) in the
 # variables `ñ = n / s`, `s` the start, and the answer brought back to `n`.
+# The amounts `s ⊙ ũ` of a scaled iterate, written into `buf` when `ũ` is in the
+# solve's number type, so that the objective and the gradient, evaluated at every
+# iteration and every trial of the line search, do not allocate them. A `ũ` of
+# another type (the dual numbers of a forward-mode Hessian) gets a vector of its
+# own. Neither `f` nor `g!` keeps the vector it is handed.
+_unscaled!(buf::AbstractVector{T}, s, ũ::AbstractVector{T}) where {T} = (buf .= s .* ũ)
+_unscaled!(buf, s, ũ) = s .* ũ
+
+# The parameters the scaled problem is handed. An exact Hessian diagonal the
+# caller supplies (`p.hdiag`, see `solve!`) is a function of the amounts, and the
+# solver calls it on the scaled iterate `ũ`: it is wrapped to evaluate at
+# `n = s ⊙ ũ` and return the curvature in the scaled variables,
+# `∂²G̃/∂ũᵢ² = sᵢ² ∂²G/∂nᵢ²`, as the gradient is wrapped by `g_s!`. Handed over
+# as it was, it read amounts that are all near one and returned a curvature in
+# the wrong variables, wrong by `sᵢ²`, which spans twenty orders of magnitude on
+# a chemical system.
+_scaled_params(p, s) = p
+function _scaled_params(p::NamedTuple, s)
+    haskey(p, :hdiag) || return p
+    hdiag = p.hdiag
+    n_buf = similar(s)
+    hdiag_s = (hf, ũ) -> begin
+        hdiag(hf, _unscaled!(n_buf, s, ũ))
+        hf .*= s .* s
+    end
+    return merge(p, (hdiag = hdiag_s,))
+end
+
 function _scaled_solve(opts::OptimaOptions, f_obj, g!, A, b, lb, ub, p, u_start, y_start, ::Type{T}) where {T}
     # ── Variable scaling ─────────────────────────────────────────────────────
     # Ipopt scales each variable by its initial value so all normalized
@@ -291,15 +319,17 @@ function _scaled_solve(opts::OptimaOptions, f_obj, g!, A, b, lb, ub, p, u_start,
     ub_s = ub .* inv_s
     u0_s = u_start .* inv_s              # scaled start (≈ 1 component-wise)
 
-    # Scaled closures — unscale internally so f/g! see original n = s ⊙ ñ
-    f_s = (ũ, par) -> f_obj(s .* ũ, par)
+    # Scaled closures — unscale internally so f/g! see original n = s ⊙ ñ, in a
+    # buffer when `ũ` is in the solve's number type (see `_unscaled!`).
+    n_buf = similar(s)
+    f_s = (ũ, par) -> f_obj(_unscaled!(n_buf, s, ũ), par)
     g_s! = (grad, ũ, par) -> begin
-        g!(grad, s .* ũ, par)
+        g!(grad, _unscaled!(n_buf, s, ũ), par)
         grad .*= s                        # chain rule: ∂G̃/∂ũᵢ = sᵢ * ∂G/∂nᵢ
     end
 
     # ── Build OptimaProblem (in scaled space) ────────────────────────────────
-    prob_s = OptimaProblem(A_s, b, f_s, g_s!; lb = lb_s, ub = ub_s, p = p)
+    prob_s = OptimaProblem(A_s, b, f_s, g_s!; lb = lb_s, ub = ub_s, p = _scaled_params(p, s))
 
     # ── Solve ────────────────────────────────────────────────────────────────
     result_s = solve(prob_s, opts; u0 = u0_s, y0 = y_start)
