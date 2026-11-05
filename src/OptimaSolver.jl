@@ -58,6 +58,7 @@ include("sciml_interface.jl")   # OptimaOptimizer, SciMLBase.solve
 
 # Problem definition
 export OptimaProblem, OptimaOptions, OptimaState, OptimaResult
+export OptimaParametricProblem, OptimaParametricResult
 
 # Canonicalizer (exposed for reuse across solves with fixed A)
 export Canonicalizer

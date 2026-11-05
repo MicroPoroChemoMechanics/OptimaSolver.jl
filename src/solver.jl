@@ -506,19 +506,13 @@ Simple initial guess: each row's budget spread over the species with a positive
 coefficient in it, `bⱼ Aⱼᵢ / Σₖ |Aⱼₖ|`, every species taking the largest share
 any row gives it and at least `1e-3`, so that `A n ≈ b` roughly.
 """
-function _default_initial_n(prob::OptimaProblem{T}) where {T}
+function _default_initial_n(prob::Union{OptimaProblem{T}, OptimaParametricProblem{T}}) where {T}
     n0 = fill(T(1.0e-3), prob.ns)
     # Try to satisfy An = b by distributing b evenly over the species
-    for i in 1:(prob.m)
-        row_sum = sum(abs, prob.A[i, :])
-        if row_sum > zero(T)
-            scale = prob.b[i] / row_sum
-            for k in 1:(prob.ns)
-                if prob.A[i, k] > zero(T)
-                    n0[k] = max(n0[k], scale * prob.A[i, k])
-                end
-            end
-        end
+    for (row, bi) in zip(eachrow(prob.A), prob.b)
+        row_sum = sum(abs, row)
+        row_sum > zero(T) || continue
+        n0 .= ifelse.(row .> zero(T), max.(n0, (bi / row_sum) .* row), n0)
     end
     # Ensure strict positivity
     _lift_above_bounds!(n0, prob.lb)

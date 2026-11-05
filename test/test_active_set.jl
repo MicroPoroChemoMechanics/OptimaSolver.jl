@@ -160,6 +160,131 @@ const AS_OPTS = OptimaOptions(tol = 1.0e-12, algorithm = :active_set)
         @test OptimaSolver._weighted_basis(A, [1.0, 2.0, 1.0]) == [2, 3]
     end
 
+    @testset "a basis is one the matrix supports, the heaviest columns first" begin
+        # The second column differs from the first by rounding: weighted before
+        # the factorization, the absent third column (alone in the second row)
+        # loses to it, and the basis is singular in exact arithmetic.
+        A = [1.0 1.0 0.0; 1.0 (1.0 + 1.0e-15) 1.0]
+        jb = OptimaSolver._weighted_basis(A, [1.0, 1.0, 1.0e-30])
+        @test 3 in jb
+        @test cond(A[:, jb]) < 10
+        # a heavier column replaces a basic one where it can
+        @test OptimaSolver._weighted_basis([1.0 1.0 0.0; 0.0 1.0 1.0], [1.0, 0.0, 5.0]) == [1, 3]
+        # a matrix with no column outside its basis
+        @test OptimaSolver._weighted_basis([2.0 0.0; 0.0 3.0], [1.0, 1.0]) == [1, 2]
+    end
+
+    @testset "a component held by no amount is priced by the dual ratio test" begin
+        # Rows X and Y; X₁ carries X and is present, Y₁ and Y₂ carry Y and are on
+        # their bounds: the component Y is absent. With Y₂ basic its stationarity
+        # sets the multiplier of Y to −g(Y₂) = −1, and Y₁ reads as supersaturated
+        # (s = −1) although nothing of Y is there. The ratio test moves the
+        # multiplier to the largest value that keeps both carriers at s ≥ 0, here
+        # 0, and makes Y₁ basic.
+        A = [1.0 0.0 0.0; 0.0 1.0 1.0]
+        g = [0.5, 0.0, 1.0]
+        jb, jn = [1, 3], [2]
+        S = LinearAlgebra.lu(A[:, jb]) \ A[:, jn]
+        y = [-0.5, -1.0]
+        s = g .+ transpose(A) * y
+        @test s ≈ [0.0, -1.0, 0.0]
+        OptimaSolver._degenerate_pivots!(y, s, jb, jn, S, [false, true, true], A)
+        @test s ≈ g .+ transpose(A) * y
+        @test s ≈ [0.0, 0.0, 1.0]
+        @test sort(jb) == [1, 2] && jn == [3]
+        # nothing to do on a row with a carrier off its bound, or already priced
+        s2 = copy(s); y2 = copy(y)
+        OptimaSolver._degenerate_pivots!(y2, s2, copy(jb), copy(jn), copy(S), [false, true, true], A)
+        @test s2 == s && y2 == y
+        jb3, jn3 = [1, 3], [2]
+        y3 = [-0.5, -1.0]; s3 = g .+ transpose(A) * y3
+        OptimaSolver._degenerate_pivots!(y3, s3, jb3, jn3, LinearAlgebra.lu(A[:, jb3]) \ A[:, jn3], [false, false, true], A)
+        @test s3 ≈ [0.0, -1.0, 0.0]
+        # no carrier that can take the multiplier up (every coefficient negative),
+        # or none that keeps all the others non-negative: left as it is
+        for (Srow, s0) in (([-1.0;;], [0.0, -1.0, 0.0]), ([1.0 -1.0], [0.0, -1.0, 0.0, -2.0]))
+            ns4 = length(s0)
+            jb4, jn4 = [1, 3], setdiff(1:ns4, [1, 3])
+            S4 = vcat(zeros(1, length(jn4)), Srow)
+            y4 = [0.0, 0.0]; s4 = copy(s0)
+            OptimaSolver._degenerate_pivots!(y4, s4, jb4, jn4, S4, [false; trues(ns4 - 1)], zeros(2, ns4))
+            @test s4 == s0 && y4 == [0.0, 0.0]
+        end
+    end
+
+    # An ideal mixture of three species, `∂f/∂n = g⁰ + ln(n/N) + z q`, whose total
+    # the parameter fixes (`Ap`) or whose potential the parameter carries (`z`).
+    g⁰ = [0.3, -0.5, 1.2]
+    mix!(g, n, q, p) = (g .= p.g⁰ .+ log.(n ./ sum(n)) .+ p.z .* q[1]; g)
+
+    @testset "parameters: the total fixed by an external equation" begin
+        v!(v, n, q, p) = (v[1] = q[1] - p.c; v)
+        prob = OptimaParametricProblem(ones(1, 3), fill(-1.0, 1, 1), [0.0], mix!, v!; p = (g⁰ = g⁰, z = zeros(3), c = 2.0))
+        r = solve_active_set(prob, AS_OPTS)
+        @test r isa OptimaParametricResult{Float64}
+        @test r.converged
+        @test r.q ≈ [2.0] rtol = 1.0e-12
+        @test r.n ≈ 2 .* exp.(-g⁰) ./ sum(exp.(-g⁰)) rtol = 1.0e-12
+        @test max(r.error_opt, r.error_feas, r.error_param) <= AS_OPTS.tol
+        # the derivative of the answer with respect to the data, through the solve
+        f(c) = solve_active_set(
+            OptimaParametricProblem(ones(1, 3), fill(-1.0, 1, 1), [0.0], mix!, v!; p = (g⁰ = g⁰, z = zeros(3), c = c)), AS_OPTS,
+        ).n
+        @test ForwardDiff.derivative(f, 2.0) ≈ exp.(-g⁰) ./ sum(exp.(-g⁰)) rtol = 1.0e-10
+        @test (@inferred solve_active_set(prob, AS_OPTS)) isa OptimaParametricResult{Float64}
+    end
+
+    @testset "parameters: a potential closed on the composition" begin
+        # `q = asinh(Σ zᵢ nᵢ)`, a Gouy–Chapman-like closure, against a bisection
+        # on the potential alone: at a given `q` the composition is explicit.
+        z = [1.0, -1.0, 0.0]
+        v!(v, n, q, p) = (v[1] = q[1] - asinh(sum(p.z .* n)); v)
+        prob = OptimaParametricProblem(ones(1, 3), zeros(1, 1), [1.0], mix!, v!; p = (g⁰ = g⁰, z = z))
+        r = solve_active_set(prob, AS_OPTS)
+        @test r.converged
+        x(ψ) = exp.(-g⁰ .- z .* ψ) ./ sum(exp.(-g⁰ .- z .* ψ))
+        lo, hi = -5.0, 5.0
+        for _ in 1:200
+            mid = (lo + hi) / 2
+            (mid - asinh(sum(z .* x(mid)))) > 0 ? (hi = mid) : (lo = mid)
+        end
+        @test r.q[1] ≈ lo atol = 1.0e-12
+        @test r.n ≈ x(lo) rtol = 1.0e-10
+        # the same with the Hessian handed over, exact for an ideal mixture
+        calls = Ref(0)
+        hess(H, n, q) = (calls[] += 1; H .= LinearAlgebra.Diagonal(1 ./ n) .- 1 / sum(n); H)
+        rh = solve_active_set(OptimaParametricProblem(ones(1, 3), zeros(1, 1), [1.0], mix!, v!; p = (g⁰ = g⁰, z = z, hess = hess)), AS_OPTS)
+        @test rh.converged && calls[] > 0
+        @test rh.n ≈ r.n rtol = 1.0e-10
+    end
+
+    @testset "parameters: start, bounds, and what is refused" begin
+        v!(v, n, q, p) = (v[1] = q[1] - p.c; v)
+        p = (g⁰ = g⁰, z = zeros(3), c = 5.0)
+        # a parameter held at its bound cannot meet its equation: not converged,
+        # and the answer is the best iterate, on the bound
+        prob = OptimaParametricProblem(ones(1, 3), fill(-1.0, 1, 1), [0.0], mix!, v!; p, qlb = [0.0], qub = [3.0])
+        r = solve_active_set(prob, OptimaOptions(tol = 1.0e-12, max_iter = 30); q0 = [10.0])
+        @test !r.converged
+        @test r.q[1] <= 3.0
+        @test r.error_param >= 1.0
+        @test_throws DimensionMismatch solve_active_set(prob, AS_OPTS; q0 = [1.0, 2.0])
+        # verbose: one line per iteration and the verdict
+        s = mktemp() do path, io
+            redirect_stdout(io) do
+                solve_active_set(prob, OptimaOptions(tol = 1.0e-12, max_iter = 3, verbose = true))
+            end
+            close(io)
+            read(path, String)
+        end
+        @test occursin("err_opt", s) && occursin("MAX_ITER", s)
+        @test_throws ArgumentError OptimaParametricProblem(zeros(0, 3), zeros(0, 1), Float64[], mix!, v!)
+        @test_throws DimensionMismatch OptimaParametricProblem(ones(1, 3), ones(2, 1), [1.0], mix!, v!)
+        @test_throws DimensionMismatch OptimaParametricProblem(ones(1, 3), ones(1, 1), [1.0, 2.0], mix!, v!)
+        @test_throws DimensionMismatch OptimaParametricProblem(ones(1, 3), ones(1, 1), [1.0], mix!, v!; lb = zeros(2))
+        @test_throws DimensionMismatch OptimaParametricProblem(ones(1, 3), ones(1, 1), [1.0], mix!, v!; qlb = zeros(2))
+    end
+
     @testset "inference" begin
         prob = _as_problem(ones(1, 3), [1.0], [0.0, 1.0, 2.0])
         @test (@inferred solve_active_set(prob, AS_OPTS)) isa OptimaResult{Float64}
