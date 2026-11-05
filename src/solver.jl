@@ -410,7 +410,10 @@ end
 """
     solve(prob, opts; u0, y0) -> OptimaResult
 
-Solve the Gibbs minimization problem `prob` and return an `OptimaResult`.
+Solve the Gibbs minimization problem `prob` and return an `OptimaResult`, by the
+algorithm `opts.algorithm` names: the active set of Optima
+([`solve_active_set`](@ref)) by default, or the interior point of
+[`solve!`](@ref).
 
 # Arguments
 - `prob`:  `OptimaProblem`
@@ -430,6 +433,8 @@ function solve(
         u0 = nothing,
         y0 = nothing,
     ) where {T}
+    _check_algorithm(opts)
+    opts.algorithm === :active_set && return solve_active_set(prob, opts; u0, y0)
     can = Canonicalizer(prob.A)
     state = _make_initial_state(prob, opts, u0, y0)
     solve!(state, prob, can, opts)
@@ -449,6 +454,8 @@ function solve(
         u0 = nothing,
         y0 = nothing,
     ) where {T}
+    _check_algorithm(opts)
+    opts.algorithm === :active_set && return solve_active_set(prob, opts; u0, y0)
     state = _make_initial_state(prob, opts, u0, y0)
     solve!(state, prob, can, opts)
     return OptimaResult(state)

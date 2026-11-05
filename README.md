@@ -16,10 +16,10 @@
 [![License: LGPL v2.1+](https://img.shields.io/badge/License-LGPL_v2.1+-blue.svg)](https://github.com/MicroPoroChemoMechanics/OptimaSolver.jl/blob/main/LICENSE)
 [![DOI](https://img.shields.io/badge/DOI-10.5281%2Fzenodo.19534031-blue)](https://doi.org/10.5281/zenodo.19534031)
 
-Gibbs-energy minimization for equilibrium chemistry, in Julia: an interior-point
-method ported from the Optima C++ library, and a Newton method on the optimality
-conditions in the space of the conservation multipliers, whose answers a KKT
-certificate checks.
+Gibbs-energy minimization for equilibrium chemistry, in Julia: the active-set
+Newton iteration of the Optima C++ library, with an interior-point method as an
+alternative, and a Newton method on the optimality conditions in the space of the
+conservation multipliers, whose answers a KKT certificate checks.
 
 ## What it does
 
@@ -31,7 +31,19 @@ subject to  A n = b        (mass conservation, m equations)
             n ≥ 0
 ```
 
-### `solve` — the interior-point method, ported from Optima
+### `solve` — the active-set iteration of Optima (default)
+
+- **An active set on the bounds** — a species on its bound whose reduced gradient
+  points outward is held there; the others take a Newton step whose right-hand side
+  holds the residual of the balance, so that a full step restores it.
+- **Null-space step on the full Hessian**, the basis re-chosen at every iteration on
+  the amounts, the most abundant species carrying the balance.
+- **What differs from Optima**, each change measured against it: a barrier and a
+  balance error that do not depend on how much matter the system holds, negligible
+  traces that do not shorten the step, and a saddle point of a non-convex Gibbs
+  energy refused and solved again with an inertia correction.
+
+### `solve` with `algorithm = :interior_point`
 
 - **Schur-complement Newton step** — reduces the KKT system from $(n_s+m)\times(n_s+m)$
   to $m\times m$ by exploiting the diagonal Hessian structure. For typical chemistry

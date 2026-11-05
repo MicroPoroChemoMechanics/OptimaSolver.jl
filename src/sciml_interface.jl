@@ -31,7 +31,8 @@ OptimaOptimizer(; tol = 1e-10, max_iter = 300, warm_start = true,
                 barrier_init = 1e-4, barrier_min = 1e-14, barrier_decay = 0.2,
                 barrier_eps_factor = 1.0, barrier_stall_iters = 8,
                 ls_alpha = 1e-4, ls_beta = 0.5, ls_max_iter = 40, verbose = false,
-                use_fd_hessian = true, nullspace_step = true)
+                use_fd_hessian = true, nullspace_step = true,
+                algorithm = :active_set, barrier_rel = 1e-20, negligible_rel = 1e-12)
 OptimaOptimizer(opts::OptimaOptions)
 ```
 
@@ -76,14 +77,18 @@ function OptimaOptimizer(;
         # resolved.
         use_fd_hessian::Bool = true,
         nullspace_step::Bool = true,
+        algorithm::Symbol = :active_set,
+        barrier_rel::Float64 = 1.0e-20,
+        negligible_rel::Float64 = 1.0e-12,
     )
     opts = OptimaOptions(;
         tol, max_iter, warm_start,
         barrier_init, barrier_min, barrier_decay, barrier_eps_factor,
         barrier_stall_iters,
         ls_alpha, ls_beta, ls_max_iter, verbose, use_fd_hessian,
-        nullspace_step,
+        nullspace_step, algorithm, barrier_rel, negligible_rel,
     )
+    _check_algorithm(opts)
     return OptimaOptimizer(opts, Ref{Union{Nothing, OptimaResult}}(nothing))
 end
 
@@ -228,7 +233,7 @@ function SciMLBase.solve(
         # gradient.  The solver can only advance them by ≈ 1 ε per Newton step
         # → 10⁵+ iterations needed.  Ipopt avoids this via "feasibility
         # restoration"; we approximate it by distributing the element mass.
-        u_start = _lift_cold_start(copy(u0), A, b, lb)
+        u_start = _solve_start(alg.options, u0, A, b, lb)
     else
         # Warm start: reuse present species from the previous solution, but lift
         # absent ones.  A species that was near-zero at pH 6 (e.g. OH⁻ ≈ 3e-15 mol)
@@ -239,7 +244,7 @@ function SciMLBase.solve(
         # O(10⁸) iterations (or non-convergence).  _lift_cold_start only touches
         # species with u[k] ≤ lb[k]×100 (truly absent), leaving present species at
         # their warm-start values and preserving the warm-start benefit.
-        u_start = _lift_cold_start(copy(prev.n), A, b, lb)
+        u_start = _solve_start(alg.options, prev.n, A, b, lb)
     end
     y_start = isnothing(prev) ? nothing : prev.y
 
@@ -264,6 +269,13 @@ function SciMLBase.solve(
         original = result,
     )
 end
+
+# The amounts a solve starts from. The interior point needs every amount off its
+# bound (`_lift_cold_start`); the active set takes a species on its bound as
+# what it is, a variable its first iteration can hold there, as Reaktoro starts
+# from the state as it stands.
+_solve_start(opts::OptimaOptions, u, A, b, lb) =
+    opts.algorithm === :active_set ? max.(copy(u), lb) : _lift_cold_start(copy(u), A, b, lb)
 
 # ── One solve, in variables scaled by the start ──────────────────────────────
 
@@ -298,6 +310,10 @@ function _scaled_params(p::NamedTuple, s)
 end
 
 function _scaled_solve(opts::OptimaOptions, f_obj, g!, A, b, lb, ub, p, u_start, y_start, ::Type{T}) where {T}
+    # The scaling is a device of the interior point; the active set solves the
+    # problem as posed.
+    opts.algorithm === :active_set &&
+        return solve_active_set(OptimaProblem(A, b, f_obj, g!; lb, ub, p), opts; u0 = u_start, y0 = y_start)
     # ── Variable scaling ─────────────────────────────────────────────────────
     # Ipopt scales each variable by its initial value so all normalized
     # variables are O(1) at the starting point.  This is critical when

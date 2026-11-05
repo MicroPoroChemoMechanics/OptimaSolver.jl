@@ -152,6 +152,16 @@ Solver hyperparameters.
                       difference quotient is taken.)
 - `nullspace_step`:   compute the Newton step in the null space of `A`, so that
                       feasibility once reached is kept (default true)
+- `algorithm`:        `:active_set` (default), the iteration of Optima
+                      ([`solve_active_set`](@ref)), or `:interior_point`, the
+                      primal-dual barrier method of [`solve!`](@ref). The
+                      barrier, line-search and Hessian-diagonal options above
+                      are those of the interior point.
+- `barrier_rel`:      the active set's log barrier `−τ Σ ln nᵢ`, `τ` this
+                      fraction of `max|b|` (default 1e-20)
+- `negligible_rel`:   below this fraction of `max|b|` an amount does not
+                      shorten an active-set step: it is set on its bound
+                      (default 1e-12)
 
 !!! warning "`use_fd_hessian` defaults differently here and on `OptimaOptimizer`"
     This struct defaults it to `false`; the `OptimaOptimizer(; …)` keyword
@@ -199,6 +209,22 @@ Base.@kwdef struct OptimaOptions
     verbose::Bool = false
     use_fd_hessian::Bool = false
     nullspace_step::Bool = true
+    algorithm::Symbol = :active_set
+    barrier_rel::Float64 = 1.0e-20
+    negligible_rel::Float64 = 1.0e-12
+end
+
+# The algorithms `solve` knows, by the name `OptimaOptions.algorithm` gives them.
+const ALGORITHMS = (:active_set, :interior_point)
+
+function _check_algorithm(opts::OptimaOptions)
+    opts.algorithm in ALGORITHMS || throw(
+        ArgumentError(
+            "unknown algorithm `:$(opts.algorithm)`; OptimaSolver implements " *
+                join(("`:$a`" for a in ALGORITHMS), " and ") * ".",
+        ),
+    )
+    return nothing
 end
 
 # ── OptimaState ───────────────────────────────────────────────────────────────

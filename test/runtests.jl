@@ -55,4 +55,5 @@ end
     include("test_solver_paths.jl")
     include("test_stability_linesearch.jl")
     include("test_pathological.jl")
+    include("test_active_set.jl")
 end
