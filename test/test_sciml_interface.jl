@@ -35,12 +35,16 @@
 
     @testset "constraints carried by `p` (Optima-native path)" begin
         # `_extract_constraints` path 1: `p` is a NamedTuple holding A and b, so
-        # nothing is differentiated at all.
+        # nothing is differentiated at all. The interior point, whose iteration
+        # count the last assertions are about; the active set below.
         f = SciMLBase.OptimizationFunction(G; grad = ∇G!)
         prob = SciMLBase.OptimizationProblem(
             f, copy(lb), (μ⁰ = μ⁰, A = A, b = b); lb = lb, ub = fill(Inf, 3)
         )
-        sol = SciMLBase.solve(prob, OptimaOptimizer(; tol = 1.0e-12))
+        sol_as = SciMLBase.solve(prob, OptimaOptimizer(; tol = 1.0e-12))
+        @test sol_as.retcode == SciMLBase.ReturnCode.Success
+        @test sol_as.u ≈ n_analytic atol = 1.0e-10
+        sol = SciMLBase.solve(prob, OptimaOptimizer(; tol = 1.0e-12, algorithm = :interior_point))
 
         @test SciMLBase.successful_retcode(sol)
         @test sol.retcode == SciMLBase.ReturnCode.Success
@@ -84,7 +88,7 @@
         u0 = [0.7, 0.2, 0.1]
         run(p) = SciMLBase.solve(
             SciMLBase.OptimizationProblem(f, copy(u0), p; lb = lb, ub = fill(Inf, 3)),
-            OptimaOptimizer(; tol = 1.0e-12, warm_start = false),
+            OptimaOptimizer(; tol = 1.0e-12, warm_start = false, algorithm = :interior_point),
         )
         sol_ad = run((μ⁰ = μ⁰, A = A, b = b))
         sol_h = run((μ⁰ = μ⁰, A = A, b = b, hdiag = (hf, n) -> (hf .= 1 ./ n)))
@@ -107,7 +111,7 @@
             bk = [1.0 + ((5k) % 17 - 8) * eps(1.0)]
             sol = SciMLBase.solve(
                 SciMLBase.OptimizationProblem(f, copy(lb), (μ⁰ = moved, A = A, b = bk); lb = lb, ub = fill(Inf, 3)),
-                OptimaOptimizer(; tol = 1.0e-12),
+                OptimaOptimizer(; tol = 1.0e-12, algorithm = :interior_point),
             )
             sol.original.converged ? sol.original.iterations : typemax(Int)
         end
@@ -124,8 +128,30 @@
         prob = SciMLBase.OptimizationProblem(
             f, copy(lb), (μ⁰ = μ⁰, A = A, b = b); lb = lb, ub = fill(Inf, 3)
         )
-        sol = SciMLBase.solve(prob, OptimaOptimizer(; tol = 1.0e-12))
+        sol = SciMLBase.solve(prob, OptimaOptimizer(; tol = 1.0e-12, algorithm = :interior_point))
         @test sol.u ≈ n_analytic atol = 1.0e-7
+        # and by the active set, which differentiates the gradient for its whole
+        # Hessian
+        @test SciMLBase.solve(prob, OptimaOptimizer(; tol = 1.0e-12)).u ≈ n_analytic atol = 1.0e-10
+    end
+
+    @testset "a Hessian handed through `p` to the active set" begin
+        # The exact Hessian of this ideal mixture, `diag(1/nᵢ)`, in place of the
+        # forward-mode Jacobian of the gradient: the same answer, by the same
+        # iterations, the active set reading it on the amounts themselves.
+        f = SciMLBase.OptimizationFunction(G; grad = ∇G!)
+        calls = Ref(0)
+        hess = (H, n) -> (calls[] += 1; fill!(H, 0); H[diagind(H)] .= 1 ./ n; H)
+        run(p) = SciMLBase.solve(
+            SciMLBase.OptimizationProblem(f, [0.7, 0.2, 0.1], p; lb = lb, ub = fill(Inf, 3)),
+            OptimaOptimizer(; tol = 1.0e-12, warm_start = false),
+        )
+        sol_ad = run((μ⁰ = μ⁰, A = A, b = b))
+        sol_h = run((μ⁰ = μ⁰, A = A, b = b, hess = hess))
+        @test sol_h.retcode == SciMLBase.ReturnCode.Success
+        @test sol_h.u ≈ n_analytic atol = 1.0e-10
+        @test sol_h.original.iterations == sol_ad.original.iterations
+        @test calls[] > 0
     end
 
     @testset "parameters carrying dual numbers" begin
