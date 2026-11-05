@@ -15,6 +15,8 @@ OptimaProblem
 OptimaOptions
 OptimaState
 OptimaResult
+OptimaParametricProblem
+OptimaParametricResult
 ```
 
 ## Canonicalizer

@@ -180,9 +180,9 @@ not of the method, and it should be checked before it is relied on.
 
 ## Active-set Newton method (the default)
 
-This is the iteration of Optima as Reaktoro runs it for chemical equilibrium
-([`solve_active_set`](@ref)), with the corrections the last subsection lists. A
-variable is either free or held on its lower bound; there is no barrier schedule.
+The iteration of Optima ([`solve_active_set`](@ref)): a variable is either free or
+held on its lower bound, and every error it judges is relative, so that the answer
+and the iteration count do not depend on how much matter the system holds.
 
 ### Stability of a variable on its bound
 
@@ -204,10 +204,15 @@ again at every iteration, so a variable whose $s_i$ turns negative is released.
 
 ### The step, in the null space of the free columns
 
-The variables not held are split into $m$ *basic* ones $B$, chosen by pivoted QR
-on $A\,\mathrm{diag}(n)$ so that the most abundant species carry the balance, and
-the others $N$. A basic variable is never held, so that every row keeps a variable
-that can restore it. The step $d$ minimizes the quadratic model of $f$ under the
+The variables not held are split into $m$ *basic* ones $B$ and the others $N$. A
+basis of $A$ is taken first, by pivoted QR on the matrix alone, and its canonical
+form $S = A_B^{-1} A_N$ formed; then each basic variable is exchanged for the
+heaviest non-basic one that can replace it, the weight of a variable being its
+amount (the lowest for one on its bound) and a replacement being possible where
+$|S_{ik}| > 10^{-8}$, a ratio of stoichiometric coefficients. The most abundant
+species carry the balance, and the basis stays one that $A$ supports: an absent
+species alone in its row stays basic. A basic variable is never held, so that
+every row keeps a variable that can restore it. The step $d$ minimizes the quadratic model of $f$ under the
 linearized balance,
 
 ```math
@@ -247,16 +252,14 @@ accepted.
 
 ### Barrier, convergence
 
-As Reaktoro does, the objective carries the barrier $-\tau \sum_i \ln n_i$, a
-regularization that adds $\tau / n_i^2$ to the curvature of an amount near its
-bound. Here $\tau = \tau_\mathrm{rel} \max_k |b_k|$, a fraction of the budget, so
-that it does not depend on how much matter the system holds, and small: it adds
-$\tau / n_i$ to the potential of species $i$, which at
-$\tau_\mathrm{rel} = 10^{-16}$ was about a tenth of $RT$ for $\mathrm{H^+}$ at pH 13. Restricted to the pure
-phases, as Reaktoro restricts it, it left solutes to settle on their bounds, and
-fifteen equilibria of ChemistryLab's tests no longer certified.
+The objective carries the barrier $-\tau \sum_i \ln n_i$, a regularization that
+adds $\tau / n_i^2$ to the curvature of an amount near its bound, with
+$\tau = \tau_\mathrm{rel} \max_k |b_k|$ a fraction of the budget. It adds
+$\tau / n_i$ to the potential of species $i$, so it is kept small:
+$\tau_\mathrm{rel} = 10^{-20}$ by default, against a tenth of $RT$ on
+$\mathrm{H^+}$ at pH 13 at $10^{-16}$.
 
-The solve has converged when both errors are below the tolerance:
+The solve has converged when the errors are below the tolerance:
 
 ```math
 e_\mathrm{opt} = \max_{i \text{ free}} |s_i|,
@@ -273,7 +276,7 @@ system, whose residual is the amounts held on their bound).
 The Hessian is the forward-mode Jacobian of the gradient unless the caller hands
 one over through the parameters, `p.hess`, a function `(H, n) -> H`. ChemistryLab
 hands over the Hessian of its Gibbs energy exact on the diagonal and, off it, the
-coupling of an ideal solution within each phase, as Reaktoro approximates it: the
+coupling of an ideal solution within each phase: the
 Jacobian of the whole activity model costs as many evaluations of it as there are
 species, divided by the chunk of the forward mode, at every iteration.
 
@@ -304,23 +307,39 @@ with the inertia correction of Wächter and Biegler (2006): $H$ is shifted by
 $\delta D$, $\delta$ raised from $10^{-12}$ by factors of ten until the reduced
 Hessian is positive definite, so that every step descends.
 
-### What differs from Optima, and why
-
-Each change was measured against the iteration as published, on the test suites
-of this package and of ChemistryLab and on cement equilibria.
-
-| | Optima (as Reaktoro runs it) | here | why |
-|:--|:--|:--|:--|
-| barrier $\tau$ | $10^{-16}$ mol | $10^{-20} \max_k \lvert b_k \rvert$ | an amount in moles changes the answer with the size of the system |
-| balance error | in moles | per row, relative to what it holds | the same |
-| amounts crossing a bound | the step is shortened to the first | to the first that is not negligible | a hundred traces took a hundred iterations, one per trace |
-| saddle point | accepted | tested, solved again with the inertia correction | a miscibility gap converged to one composition |
-| start | the state as it is | the same | an absent species is held at the first iteration |
-| Hessian | exact for the basic variables, ideal blocks otherwise | the caller's (`p.hess`), else exact | the cost of the Jacobian of the activity model |
-| a run that stalls | runs to `maxiters` | ends after its error turns back up ten times without halving its best value | the active set cycled, on an approximate Hessian |
-
 A solve that does not converge is made once more, its steps clamped into the
-bounds rather than shortened, as Reaktoro does, and the best iterate is returned.
+bounds rather than shortened, and the best iterate is returned.
+
+### Unknown parameters
+
+Some equilibria hold unknowns that are not amounts: the extents of reactions
+advanced at a rate over a time step, the potential of a charged surface. They
+are parameters $q$ of the problem ([`OptimaParametricProblem`](@ref)),
+
+```math
+\min_n f(n, q)
+\quad \text{s.t.} \quad A n + A_q q = b,
+\qquad v(n, q) = 0,
+\qquad \ell \le n \le u,\ \ \ell_q \le q \le u_q,
+```
+
+where $v$ holds one equation per parameter: a rate law, the closure of a
+potential. The basis is chosen among the amounts as above, and the parameters
+enter through $S_q = A_B^{-1} A_q$: with $Z_q = \begin{pmatrix} -S_q \\ 0 \end{pmatrix}$,
+$H_{nq} = \partial g / \partial q$ and $(V_n, V_q)$ the Jacobian of $v$, the step
+of the free amounts and of the parameters solves
+
+```math
+\begin{pmatrix} Z^\top H Z & Z^\top (H Z_q + H_{nq}) \\ V_n Z & V_n Z_q + V_q \end{pmatrix}
+\begin{pmatrix} d_N \\ d_q \end{pmatrix}
+=
+-\begin{pmatrix} Z^\top (g + H d_p) \\ v + V_n d_p \end{pmatrix},
+```
+
+and the basic amounts follow, $d_B = d_p - R\, d_N - S_q d_q$. A full step meets
+the linear constraints exactly; the parameters are clamped into their bounds.
+Convergence asks $\max_j |v_j|$ below the tolerance as well, so $v$ is written
+dimensionless by the caller. With no parameter the step is the one above.
 
 ## Log-barrier interior-point method
 

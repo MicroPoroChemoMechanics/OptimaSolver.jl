@@ -1,5 +1,41 @@
 # Changelog
 
+## v0.12.0 — unknown parameters, and a basis the matrix supports
+
+### Breaking changes
+
+- Below 1.0, Julia's resolver treats a minor release as breaking: a package with
+  `[compat] OptimaSolver = "0.11"` must widen its bound to accept 0.12. No API is
+  removed and no default changes; the iterates of the active set differ where the
+  basis it now chooses differs.
+
+### Added
+
+- **`OptimaParametricProblem` and `solve_active_set` on it.** Amounts `n` and
+  parameters `q` solved together: `min f(n, q)` under `A n + Ap q = b` and
+  `v(n, q) = 0`, with bounds on both. The parameters are the unknowns that are not
+  amounts — the extents of reactions advanced over a time step, the potential of a
+  charged surface — and `v` holds their equations. The step is taken in the null
+  space of the free amounts with the parameters bordering it, so a full step
+  meets the linear constraints exactly, and convergence asks the largest residual
+  of `v` below the same tolerance as the other errors. The answer is an
+  `OptimaParametricResult` (`n`, `q`, `y`, the errors). It carries dual numbers in
+  the data through to the answer, so the derivatives of `n` and `q` follow by
+  `ForwardDiff`. A Hessian handed through the parameters is called
+  `p.hess(H, n, q)`.
+
+### Fixed
+
+- **The basis of the active set is one the matrix supports.** The basic variables
+  were chosen by a pivoted QR on `A diag(n)`: a column of near-zero weight (an
+  absent species, alone in its row) could then lose to a combination of others
+  that is singular in exact arithmetic and survives the factorization by
+  rounding, and the iteration cycled. A basis of `A` is now taken first, and each
+  basic variable exchanged for the heaviest non-basic one that can replace it,
+  where the canonical form `B⁻¹N` has an entry above `1e-8`. Equilibria of cement
+  pastes with a C-S-H solid solution, far from equilibrium at the start, that
+  stopped after 45 iterations without converging now converge in 22.
+
 ## v0.11.0 — the iteration of Optima, by default
 
 `solve` and `OptimaOptimizer` now run the active-set iteration of Optima, the C++

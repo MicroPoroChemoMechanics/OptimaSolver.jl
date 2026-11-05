@@ -121,6 +121,93 @@ function OptimaProblem(
     )
 end
 
+"""
+    OptimaParametricProblem(A, Ap, b, g!, v!; lb, ub, qlb, qub, p = nothing)
+
+The master problem of Optima with unknown parameters: amounts `n` and parameters
+`q`, solved together,
+
+    minimize    f(n, q)            over n, for the q found
+    subject to  A n + Ap q = b     (linear, m rows)
+                v(n, q) = 0        (one equation per parameter)
+                lb ≤ n ≤ ub,  qlb ≤ q ≤ qub
+
+`g!(grad, n, q, p)` writes `∂f/∂n`; `v!(vals, n, q, p)` writes the residuals that
+determine `q`, which have no objective of their own (Optima's external
+constraints `v(x, p) = 0`). They must be dimensionless, as the optimality and
+balance errors are: [`solve_active_set`](@ref) judges all three against the same
+tolerance.
+
+A Hessian handed through the parameters is called `p.hess(H, n, q)`; the
+derivatives with respect to `q`, and those of `v`, are taken by `ForwardDiff`.
+
+The element type is promoted over every numeric input, the parameters included,
+as for [`OptimaProblem`](@ref).
+"""
+struct OptimaParametricProblem{T <: Real, G <: Function, V <: Function, P}
+    # `T <: Real`: the iteration compares its iterates (bounds, stability), so it
+    # takes real and dual numbers, not symbolic ones.
+    A::Matrix{T}
+    Ap::Matrix{T}
+    b::Vector{T}
+    g!::G
+    v!::V
+    ns::Int
+    m::Int
+    nq::Int
+    lb::Vector{T}
+    ub::Vector{T}
+    qlb::Vector{T}
+    qub::Vector{T}
+    p::P
+end
+
+function OptimaParametricProblem(
+        A::AbstractMatrix, Ap::AbstractMatrix, b::AbstractVector, g!::G, v!::V;
+        lb::AbstractVector = zeros(size(A, 2)), ub::AbstractVector = fill(Inf, size(A, 2)),
+        qlb::AbstractVector = fill(-Inf, size(Ap, 2)), qub::AbstractVector = fill(Inf, size(Ap, 2)),
+        p = nothing,
+    ) where {G <: Function, V <: Function}
+    T = float(
+        promote_type(
+            eltype(A), eltype(Ap), eltype(b), eltype(lb), eltype(ub), eltype(qlb), eltype(qub),
+            param_eltype(p),
+        )
+    )
+    m, ns = size(A)
+    nq = size(Ap, 2)
+    m > 0 || throw(ArgumentError("OptimaParametricProblem needs at least one linear constraint; got $(m) rows."))
+    size(Ap, 1) == m || throw(DimensionMismatch("`Ap` has $(size(Ap, 1)) rows, `A` has $m."))
+    length(b) == m || throw(DimensionMismatch("`b` has $(length(b)) entries for $m rows."))
+    length(lb) == ns && length(ub) == ns || throw(DimensionMismatch("the bounds on `n` must have $ns entries."))
+    length(qlb) == nq && length(qub) == nq || throw(DimensionMismatch("the bounds on `q` must have $nq entries."))
+    return OptimaParametricProblem{T, G, V, typeof(p)}(
+        convert(Matrix{T}, A), convert(Matrix{T}, Ap), convert(Vector{T}, b), g!, v!, ns, m, nq,
+        convert(Vector{T}, lb), convert(Vector{T}, ub), convert(Vector{T}, qlb), convert(Vector{T}, qub), p,
+    )
+end
+
+"""
+    OptimaParametricResult{T}
+
+The answer of [`solve_active_set`](@ref) on an [`OptimaParametricProblem`](@ref):
+the amounts `n`, the parameters `q`, the multipliers `y`, the iterations, whether it
+converged, and its three errors: optimality `error_opt`, balance `error_feas`
+(each row relative to what it holds, `error_feas_abs` unscaled) and the largest
+residual of `v`, `error_param`.
+"""
+struct OptimaParametricResult{T <: Real}
+    n::Vector{T}
+    q::Vector{T}
+    y::Vector{T}
+    iterations::Int
+    converged::Bool
+    error_opt::T
+    error_feas::T
+    error_feas_abs::T
+    error_param::T
+end
+
 # ── OptimaOptions ─────────────────────────────────────────────────────────────
 
 """
