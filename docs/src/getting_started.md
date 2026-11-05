@@ -90,9 +90,15 @@ Key options in [`OptimaOptions`](@ref):
 | `tol` | `1e-10` | KKT convergence tolerance |
 | `max_iter` | `300` | maximum Newton iterations |
 | `verbose` | `false` | print per-iteration log |
-| `barrier_init` | `1e-4` | initial barrier weight $\mu_0$ |
-| `barrier_decay` | `0.2` | $\mu \leftarrow 0.2\,\mu$ each outer step |
-| `use_fd_hessian` | `false` | exact Hessian diagonal, by forward mode |
+| `algorithm` | `:active_set` | the iteration of Optima, or `:interior_point` |
+| `barrier_rel` | `1e-20` | active set: barrier weight, a fraction of $\max_k \lvert b_k \rvert$ |
+| `negligible_rel` | `1e-12` | active set: below this fraction of $\max_k \lvert b_k \rvert$ an amount does not shorten a step |
+| `barrier_init` | `1e-4` | interior point: initial barrier weight $\mu_0$ |
+| `barrier_decay` | `0.2` | interior point: $\mu \leftarrow 0.2\,\mu$ each outer step |
+| `use_fd_hessian` | `false` | interior point: exact Hessian diagonal, by forward mode |
+
+The active set takes the full Hessian, by forward mode, at every iteration; the
+options below are those of the interior point.
 
 ### When to use `use_fd_hessian = true`
 

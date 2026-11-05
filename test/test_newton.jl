@@ -63,6 +63,19 @@ end
     dn2, _ = OptimaSolver.compute_step!(ws2, can, h, ex, ew)
     @test maximum(abs, dn .- dn2) < 1.0e-8 * max(1.0, maximum(abs, dn2))
 
+    # The step works in the buffers of its workspace, sized on the first call:
+    # a second call gives what a fresh workspace gives, bit for bit, and
+    # allocates nothing, but for the few bytes an instrumented run (coverage,
+    # bounds checks) adds; the step that allocated its matrices took 1152 bytes
+    # here.
+    h2 = [2.0, 1.0, 3.0, 4.0, 0.5, 2.5]
+    ex2 = [0.3, 0.1, -0.2, 1.0, -0.5, 0.4]
+    ew2 = [1.0e-3, -2.0e-3, 0.0]
+    dn_a, dy_a = map(copy, OptimaSolver.compute_step_nullspace!(ws, can, h2, ex2, ew2))
+    dn_b, dy_b = OptimaSolver.compute_step_nullspace!(OptimaSolver.NewtonStep(6, 3), can, h2, ex2, ew2)
+    @test dn_a == dn_b && dy_a == dy_b
+    @test (@allocated OptimaSolver.compute_step_nullspace!(ws, can, h2, ex2, ew2)) <= 128
+
 end
 
 @testset "the starting point is made exactly feasible" begin

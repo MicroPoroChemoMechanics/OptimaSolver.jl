@@ -51,6 +51,7 @@ include("line_search.jl")       # LineSearchFilter, line_search
 include("convergence.jl")       # is_converged, reduce_barrier, log_iteration
 include("sensitivity.jl")       # SensitivityResult, sensitivity
 include("solver.jl")            # solve!, solve
+include("active_set.jl")        # solve_active_set: the iteration of Optima
 include("sciml_interface.jl")   # OptimaOptimizer, SciMLBase.solve
 
 # ── Exports ───────────────────────────────────────────────────────────────────
@@ -68,7 +69,7 @@ export Canonicalizer
 export SensitivityResult, sensitivity
 
 # SciML drop-in
-export OptimaOptimizer, reset_cache!, solve
+export OptimaOptimizer, reset_cache!, solve, solve_active_set
 
 # Internal components (exported for testing and extension)
 export SolutionPhase, DualNewtonProblem, DualNewtonOptions, dual_newton_solve,

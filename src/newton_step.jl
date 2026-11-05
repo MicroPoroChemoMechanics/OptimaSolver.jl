@@ -26,9 +26,10 @@
 """
     NewtonStep{T}
 
-Workspace for the Schur-complement Newton solver: its matrices and vectors are
-allocated once and reused across the iterations by `compute_step!`; the
-null-space variant `compute_step_nullspace!` allocates its own temporaries.
+Workspace of the Newton step: its matrices and vectors are allocated once and
+reused across the iterations by `compute_step!` and `compute_step_nullspace!`.
+The buffers of the null-space step are sized on its first call, from the
+partition of the canonicalizer it is handed.
 
 Fields:
 - `S`:      Schur complement `A * diag(1/h) * A'`  (m × m)
@@ -38,6 +39,12 @@ Fields:
 - `d`:      equilibration diagonal `sqrt.(diag(S))` (m,)
 - `AoverH`: buffer for `A ./ h'` (m × ns), shared between the Schur build
             (`S = AoverH * A'`) and the RHS computation (`rhs = ew - AoverH * ex`)
+- `K`, `Kf`: the reduced Hessian `Zᵀ H Z` (nn × nn) and the copy its Cholesky
+            factorization overwrites
+- `hR`:     `diag(h_b) R` (nb × nn)
+- `dnp`, `w_b`, `Rdz`, `rhs_y`: vectors of the basic block (nb,)
+- `rhs_z`, `dK`: the reduced right-hand side, then `dz`, and its equilibration
+            diagonal (nn,)
 """
 mutable struct NewtonStep{T <: Real}
     S::Matrix{T}          # Schur complement A H⁻¹ Aᵀ (m × m)
@@ -46,6 +53,31 @@ mutable struct NewtonStep{T <: Real}
     dy::Vector{T}         # dual step (m,)
     d::Vector{T}          # equilibration diagonal sqrt(diag(S)) (m,)
     AoverH::Matrix{T}     # A ./ h'  (m × ns) — reusable buffer
+    K::Matrix{T}          # reduced Hessian Zᵀ H Z (nn × nn)
+    Kf::Matrix{T}         # its Cholesky factor, overwritten at each attempt
+    hR::Matrix{T}         # diag(h_b) R (nb × nn)
+    dnp::Vector{T}        # particular solution on the basic block (nb,)
+    w_b::Vector{T}        # ex[jb] + h[jb] ⊙ dnp (nb,)
+    Rdz::Vector{T}        # R dz (nb,)
+    rhs_y::Vector{T}      # right-hand side of Bᵀ dy (nb,)
+    rhs_z::Vector{T}      # reduced right-hand side, then dz (nn,)
+    dK::Vector{T}         # equilibration diagonal of K (nn,)
+end
+
+# The buffers of the null-space step for a basic block of `nb` variables and
+# `nn` non-basic ones, reallocated only when the partition changes size.
+function _nullspace_buffers!(ws::NewtonStep{T}, nb::Int, nn::Int) where {T}
+    size(ws.K) == (nn, nn) && size(ws.hR) == (nb, nn) && return ws
+    ws.K = Matrix{T}(undef, nn, nn)
+    ws.Kf = Matrix{T}(undef, nn, nn)
+    ws.hR = Matrix{T}(undef, nb, nn)
+    ws.dnp = Vector{T}(undef, nb)
+    ws.w_b = Vector{T}(undef, nb)
+    ws.Rdz = Vector{T}(undef, nb)
+    ws.rhs_y = Vector{T}(undef, nb)
+    ws.rhs_z = Vector{T}(undef, nn)
+    ws.dK = Vector{T}(undef, nn)
+    return ws
 end
 
 
@@ -72,6 +104,8 @@ function NewtonStep(ns::Int, m::Int, T::Type = Float64)
         zeros(T, m),
         zeros(T, m),
         zeros(T, m, ns),
+        Matrix{T}(undef, 0, 0), Matrix{T}(undef, 0, 0), Matrix{T}(undef, 0, 0),
+        T[], T[], T[], T[], T[], T[],
     )
 end
 
@@ -195,6 +229,14 @@ end
 
 # ── Nullspace step ────────────────────────────────────────────────────────────
 
+# The Cholesky factorization of the symmetric matrix `K`, computed in `Kf`, which
+# it overwrites: what `cholesky(Symmetric(K); check = false)` returns, without
+# allocating the copy.
+function _cholesky_copy!(Kf, K)
+    copyto!(Kf, K)
+    return LinearAlgebra.cholesky!(LinearAlgebra.Symmetric(Kf); check = false)
+end
+
 """
     compute_step_nullspace!(ws, can, h, ex, ew) -> (dn, dy)
 
@@ -242,27 +284,28 @@ function compute_step_nullspace!(
     T = eltype(ws.dn)
     jb, jn, R = can.jb, can.jn, can.R
     nb, nn = length(jb), length(jn)
+    _nullspace_buffers!(ws, nb, nn)
+    K, dK, rhs = ws.K, ws.dK, ws.rhs_z
 
     # Particular solution: dnₚ[jn] = 0, dnₚ[jb] = B⁻¹(−ew).
-    dnp_b = can.BLU \ (-ew)
+    dnp_b = ws.dnp
+    dnp_b .= .-ew
+    LinearAlgebra.ldiv!(can.BLU, dnp_b)
 
     # Reduced Hessian Zᵀ H Z = Rᵀ diag(h_b) R + diag(h_n).
     hb = @view h[jb]
-    K = Matrix{T}(undef, nn, nn)
-    hR = R .* hb                      # diag(h_b) * R
+    hR = ws.hR
+    hR .= R .* hb                     # diag(h_b) * R
     mul!(K, R', hR)
-    @inbounds for j in 1:nn
-        K[j, j] += h[jn[j]]
-    end
+    Kd = view(K, LinearAlgebra.diagind(K))
+    Kd .+= view(h, jn)
 
     # RHS: −Zᵀ(ex + H dnₚ). H dnₚ is nonzero only on the basic block.
     r_b = @view ex[jb]
-    w_b = r_b .+ hb .* dnp_b
-    rhs = Vector{T}(undef, nn)
+    w_b = ws.w_b
+    w_b .= r_b .+ hb .* dnp_b
     mul!(rhs, R', w_b)                # (−R)ᵀ w_b, sign folded below
-    @inbounds for j in 1:nn
-        rhs[j] = rhs[j] - ex[jn[j]]
-    end
+    rhs .-= view(ex, jn)
 
     # Jacobi equilibration of the reduced Hessian, for the same reason
     # `compute_step!` equilibrates its Schur complement — and it is not optional
@@ -282,16 +325,9 @@ function compute_step_nullspace!(
     # Scaling by the square root of the diagonal is exact: with
     # `D = diag(√diag K)`, solving `(D⁻¹KD⁻¹)(D dz) = D⁻¹ rhs` gives the same `dz`
     # in exact arithmetic and a matrix whose diagonal is all ones.
-    dK = Vector{T}(undef, nn)
-    @inbounds for j in 1:nn
-        dK[j] = sqrt(max(K[j, j], eps(T)))
-    end
-    @inbounds for j in 1:nn
-        rhs[j] /= dK[j]
-        for i in 1:nn
-            K[i, j] /= dK[i] * dK[j]
-        end
-    end
+    dK .= sqrt.(max.(Kd, eps(T)))
+    rhs ./= dK
+    K ./= dK .* transpose(dK)
     # `Zᵀ H Z` is positive definite at any interior point in exact arithmetic,
     # since `h > 0` there whatever the curvature. Numerically it can still lose
     # definiteness, and the remedy is an inertia correction: try the plain
@@ -301,39 +337,33 @@ function compute_step_nullspace!(
     # needed it — a fixed `1e-12` cost three digits on a warm-started solve whose
     # tolerance was `1e-12`, which is exactly the regime where the perturbation
     # and the tolerance are the same size.
-    Ksym = LinearAlgebra.Symmetric(K)
-    chol = LinearAlgebra.cholesky(Ksym; check = false)
+    #
+    # Each attempt factorizes a copy (`Kf`), so that a failed one leaves `K` to
+    # take the ridge.
+    chol = _cholesky_copy!(ws.Kf, K)
     δ = T(1.0e-10)
     while !LinearAlgebra.issuccess(chol) && δ <= T(1.0e6)
-        @inbounds for j in 1:nn
-            K[j, j] += δ
-        end
-        Ksym = LinearAlgebra.Symmetric(K)
-        chol = LinearAlgebra.cholesky(Ksym; check = false)
+        Kd .+= δ
+        chol = _cholesky_copy!(ws.Kf, K)
         δ *= T(100)
     end
-    dz = LinearAlgebra.issuccess(chol) ? chol \ rhs :
-        LinearAlgebra.bunchkaufman(Ksym; check = false) \ rhs
-    @inbounds for j in 1:nn
-        dz[j] /= dK[j]
+    dz = rhs
+    if LinearAlgebra.issuccess(chol)
+        LinearAlgebra.ldiv!(chol, dz)
+    else
+        dz .= LinearAlgebra.bunchkaufman(LinearAlgebra.Symmetric(K); check = false) \ rhs
     end
+    dz ./= dK
 
     # Assemble dn = dnₚ + Z dz.
-    fill!(ws.dn, zero(T))
-    @inbounds for j in 1:nn
-        ws.dn[jn[j]] = dz[j]
-    end
-    Rdz = R * dz
-    @inbounds for i in 1:nb
-        ws.dn[jb[i]] = dnp_b[i] - Rdz[i]
-    end
+    dn_b = view(ws.dn, jb)
+    view(ws.dn, jn) .= dz
+    dn_b .= dnp_b .- mul!(ws.Rdz, R, dz)
 
     # Dual step from the basic rows: Bᵀ dy = −ex[jb] − h[jb] ⊙ dn[jb].
-    rhs_y = Vector{T}(undef, nb)
-    @inbounds for i in 1:nb
-        rhs_y[i] = -ex[jb[i]] - h[jb[i]] * ws.dn[jb[i]]
-    end
-    ws.dy .= can.BLU' \ rhs_y
+    rhs_y = ws.rhs_y
+    rhs_y .= .-r_b .- hb .* dn_b
+    ws.dy .= LinearAlgebra.ldiv!(can.BLU', rhs_y)
 
     return ws.dn, ws.dy
 end

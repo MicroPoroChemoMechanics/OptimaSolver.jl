@@ -26,11 +26,14 @@ Canonicalizer
 ## Solver
 
 `solve` is exported and re-exports `SciMLBase.solve`, so `using OptimaSolver` is
-sufficient. `solve!` (the in-place variant) is not exported; use the qualified name
-`OptimaSolver.solve!(...)` or `import OptimaSolver: solve!`.
+sufficient. It runs the active set, `solve_active_set`, or the interior point,
+`solve!`, as `OptimaOptions.algorithm` says. `solve!` (the in-place variant) is
+not exported; use the qualified name `OptimaSolver.solve!(...)` or
+`import OptimaSolver: solve!`.
 
 ```@docs
 OptimaSolver.solve
+solve_active_set
 OptimaSolver.solve!
 ```
 

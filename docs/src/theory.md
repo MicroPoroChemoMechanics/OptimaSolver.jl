@@ -4,10 +4,11 @@ CurrentModule = OptimaSolver
 
 # Theory
 
-This page describes the mathematical foundations of the two solvers. The
-interior-point method closely follows the C++ Optima library by Allan Leal
-([github.com/reaktoro/optima](https://github.com/reaktoro/optima)) and the
-reference by Leal et al. (2014). The Newton method in the space of the
+This page describes the mathematical foundations of the solvers. The active-set
+Newton method, the default, is the iteration of the C++ Optima library by Allan
+Leal ([github.com/reaktoro/optima](https://github.com/reaktoro/optima)) with the
+corrections its section lists; the interior-point method, which follows Leal et
+al. (2014), remains available. The Newton method in the space of the
 multipliers, its certificate and the linear program over pure phases are
 original to this package, after the published methods cited with them.
 
@@ -176,6 +177,150 @@ follow, and neither is automatic:
 Every mixing model this solver has been exercised on is ideal, so the certificate
 has meant global optimality throughout — but that is a property of those models,
 not of the method, and it should be checked before it is relied on.
+
+## Active-set Newton method (the default)
+
+This is the iteration of Optima as Reaktoro runs it for chemical equilibrium
+([`solve_active_set`](@ref)), with the corrections the last subsection lists. A
+variable is either free or held on its lower bound; there is no barrier schedule.
+
+### Stability of a variable on its bound
+
+With the reduced gradient $s = \nabla f(n) + A^\top y$, the optimality conditions
+of the problem above read
+
+```math
+s_i = 0 \ \text{ if } n_i > \ell_i,
+\qquad
+s_i \geq 0 \ \text{ if } n_i = \ell_i ,
+\qquad
+A n = b .
+```
+
+A variable on its bound with $s_i > 0$ would decrease if the bound allowed it: it
+is *unstable*. At each iteration the unstable variables are held on their bounds,
+their step is zero, and their $s_i$ is left out of the error. The set is read
+again at every iteration, so a variable whose $s_i$ turns negative is released.
+
+### The step, in the null space of the free columns
+
+The variables not held are split into $m$ *basic* ones $B$, chosen by pivoted QR
+on $A\,\mathrm{diag}(n)$ so that the most abundant species carry the balance, and
+the others $N$. A basic variable is never held, so that every row keeps a variable
+that can restore it. The step $d$ minimizes the quadratic model of $f$ under the
+linearized balance,
+
+```math
+\min_{d}\ \tfrac12\, d^\top H d + g^\top d
+\qquad \text{s.t.} \quad A_B d_B + A_N d_N = -(A n - b),
+```
+
+with $g = \nabla f(n)$ and $H = \nabla^2 f(n)$. With $R = A_B^{-1} A_N$, every
+feasible step is $d = d_p + Z\, d_N$, where $d_p = (A_B^{-1}(b - A n),\, 0)$ and
+$Z = \begin{pmatrix} -R \\ I \end{pmatrix}$, and the model is minimized at
+
+```math
+\left(Z^\top H Z\right) d_N = -Z^\top \left(g + H d_p\right),
+\qquad
+A_B^\top y^{+} = -\left(g + H d\right)_B .
+```
+
+A full step meets the balance exactly, whatever the start.
+
+### Back to the bounds
+
+The step is shortened to the first variable it would take below its bound, among
+those that are not negligible, and applied to $n$ and $y$:
+
+```math
+\beta = \min\Bigl(1,\ \min_{i:\ n_i > \max(\ell_i, \theta),\ n_i + d_i < \ell_i} \frac{\ell_i - n_i}{d_i}\Bigr),
+\qquad
+n \leftarrow \mathrm{clamp}(n + \beta d,\ \ell,\ u),
+\qquad
+y \leftarrow y + \beta\,(y^{+} - y).
+```
+
+An amount below $\theta = \theta_\mathrm{rel} \max_k |b_k|$ is set on its bound
+instead of shortening the step; the balance it then misses is restored by the
+next step, whose right-hand side holds it. There is no line search: the step is
+accepted.
+
+### Barrier, convergence
+
+As Reaktoro does, the objective carries the barrier $-\tau \sum_i \ln n_i$, a
+regularization that adds $\tau / n_i^2$ to the curvature of an amount near its
+bound. Here $\tau = \tau_\mathrm{rel} \max_k |b_k|$, a fraction of the budget, so
+that it does not depend on how much matter the system holds, and small: it adds
+$\tau / n_i$ to the potential of species $i$, which at
+$\tau_\mathrm{rel} = 10^{-16}$ was about a tenth of $RT$ for $\mathrm{H^+}$ at pH 13. Restricted to the pure
+phases, as Reaktoro restricts it, it left solutes to settle on their bounds, and
+fifteen equilibria of ChemistryLab's tests no longer certified.
+
+The solve has converged when both errors are below the tolerance:
+
+```math
+e_\mathrm{opt} = \max_{i \text{ free}} |s_i|,
+\qquad
+e_\mathrm{feas} = \max_k \frac{|(A n - b)_k|}{h_k},
+```
+
+where $h_k = \max(|b_k|, \sum_j |A_{kj} n_j|)$ is what row $k$ holds, and the scale
+of the whole budget for a row without a budget (an element absent from the
+system, whose residual is the amounts held on their bound).
+
+### The Hessian, and a search that no longer progresses
+
+The Hessian is the forward-mode Jacobian of the gradient unless the caller hands
+one over through the parameters, `p.hess`, a function `(H, n) -> H`. ChemistryLab
+hands over the Hessian of its Gibbs energy exact on the diagonal and, off it, the
+coupling of an ideal solution within each phase, as Reaktoro approximates it: the
+Jacobian of the whole activity model costs as many evaluations of it as there are
+species, divided by the chunk of the forward mode, at every iteration.
+
+With a Hessian that is not exact, the active set can cycle: a variable leaves its
+bound, the next step brings it back, and the error falls and rises again
+periodically. A descent only lowers the error; a run that leaves a saddle point,
+or whose first step sends a species near zero, raises it first, then lowers it,
+even far above its best value. Neither turns back up after a fall. So the run
+counts those turns; after ten of them without halving its best error, it ends on
+its best iterate. In ChemistryLab that iterate is the start of a
+Newton method that certifies the answer.
+
+### A saddle point is not a minimum
+
+Where the Gibbs energy is not convex, a solid solution with a miscibility gap,
+Newton's method with the exact Hessian converges to a saddle point as readily as
+to a minimum, and a method that accepts every step stays there. At convergence
+the reduced Hessian is tested,
+
+```math
+Z^\top H Z + 10^{-8}\, Z^\top D Z \succ 0,
+\qquad D = \mathrm{diag}(1/n),
+```
+
+$D$ being the Hessian of an ideal solution, the scale against which a curvature
+is negligible, and $H$ the exact Hessian, computed for this test once. Where the test fails, the solve is made again from the same start
+with the inertia correction of Wächter and Biegler (2006): $H$ is shifted by
+$\delta D$, $\delta$ raised from $10^{-12}$ by factors of ten until the reduced
+Hessian is positive definite, so that every step descends.
+
+### What differs from Optima, and why
+
+Each change was measured against the iteration as published, on the test suites
+of this package and of ChemistryLab and on cement equilibria.
+
+| | Optima (as Reaktoro runs it) | here | why |
+|:--|:--|:--|:--|
+| barrier $\tau$ | $10^{-16}$ mol | $10^{-20} \max_k \lvert b_k \rvert$ | an amount in moles changes the answer with the size of the system |
+| balance error | in moles | per row, relative to what it holds | the same |
+| amounts crossing a bound | the step is shortened to the first | to the first that is not negligible | a hundred traces took a hundred iterations, one per trace |
+| saddle point | accepted | tested, solved again with the inertia correction | a miscibility gap converged to one composition |
+| start | the state as it is | the same | an absent species is held at the first iteration |
+| Hessian | exact for the basic variables, ideal blocks otherwise | the caller's (`p.hess`), else exact | the cost of the Jacobian of the activity model |
+| a run that stalls | runs to `maxiters` | ends after its error turns back up ten times without halving its best value | the active set cycled, on an approximate Hessian |
+
+A solve that does not converge is made once more, its steps clamped into the
+bounds rather than shortened, as Reaktoro does, and the best iterate is returned.
 
 ## Log-barrier interior-point method
 
@@ -1437,7 +1582,6 @@ The scaling is transparent: the returned solution is always in the original unit
   large-scale nonlinear programming.
   *Mathematical Programming*, **106**(1), 25–57.
   <https://doi.org/10.1007/s10107-004-0559-y>
-```
 
 - White, W.B., Johnson, S.M., Dantzig, G.B. (1958).
   Chemical equilibrium in complex mixtures.

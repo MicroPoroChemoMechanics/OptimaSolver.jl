@@ -123,7 +123,7 @@
 
         res = Ref{Any}(nothing)
         s = captured() do
-            res[] = solve(prob, OptimaOptions(tol = 1.0e-12, verbose = true))
+            res[] = solve(prob, OptimaOptions(tol = 1.0e-12, verbose = true, algorithm = :interior_point))
         end
         @test res[].converged
         @test occursin("iter", s)
@@ -131,7 +131,7 @@
         @test occursin("CONVERGED", s)
 
         s2 = captured() do
-            solve(prob, OptimaOptions(tol = 1.0e-18, max_iter = 3, verbose = true))
+            solve(prob, OptimaOptions(tol = 1.0e-18, max_iter = 3, verbose = true, algorithm = :interior_point))
         end
         @test occursin("MAX_ITER", s2)
     end

@@ -27,7 +27,7 @@
         # a completion path distinct from both success and `max_iter`. What
         # matters is that the reported state is the *final* one and that
         # `converged` says no rather than the solver claiming success.
-        res = solve(prob, OptimaOptions(tol = 1.0e-18, max_iter = 500))
+        res = solve(prob, OptimaOptions(tol = 1.0e-18, max_iter = 500, algorithm = :interior_point))
 
         @test !res.converged
         @test res.iterations < 500          # it left on the barrier, not on the count
@@ -132,7 +132,7 @@
         calls = Ref(0)
         hdiag(hf, n) = (calls[] += 1; hf .= 1 ./ n)
         prob_h = OptimaProblem(A, b, G, ∇G!; lb = fill(1.0e-16, 3), p = (μ⁰ = μ⁰, hdiag = hdiag))
-        res = solve(prob_h, OptimaOptions(tol = 1.0e-12))
+        res = solve(prob_h, OptimaOptions(tol = 1.0e-12, algorithm = :interior_point))
         @test res.converged
         @test res.n ≈ n_analytic atol = 1.0e-9
         @test calls[] > 0

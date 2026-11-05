@@ -5,9 +5,10 @@ CurrentModule = OptimaSolver
 # OptimaSolver.jl
 
 **OptimaSolver** minimizes a Gibbs energy under linear mass balances, the problem
-every chemical equilibrium reduces to. It provides an interior-point method ported
-from the Optima C++ library, and a Newton method on the optimality conditions in the
-space of the conservation multipliers, whose answers a KKT certificate checks.
+every chemical equilibrium reduces to. It provides the active-set Newton iteration
+of the Optima C++ library, with an interior-point method as an alternative, and a
+Newton method on the optimality conditions in the space of the conservation
+multipliers, whose answers a KKT certificate checks.
 
 Both solve problems of the form
 
@@ -22,9 +23,23 @@ for an ideal/dilute solution), $A \in \mathbb{R}^{m \times n_s}$ is the
 mass-conservation (stoichiometric) matrix and $b \in \mathbb{R}^m$ is the
 element-abundance vector.
 
-## The interior-point method, ported from Optima
+## The active-set iteration of Optima (default)
 
-[`solve`](@ref) on an [`OptimaProblem`](@ref):
+[`solve`](@ref) on an [`OptimaProblem`](@ref), by [`solve_active_set`](@ref):
+
+- **An active set on the bounds** — a species on its bound whose reduced gradient
+  points outward is held there, the others take a Newton step in the null space of
+  their columns, on the full Hessian, whose right-hand side holds the residual of
+  the balance.
+- **Corrections to Optima, each measured against it** — a barrier and a balance error
+  that do not depend on how much matter the system holds, negligible traces that do
+  not shorten the step, and a saddle point of a non-convex Gibbs energy refused and
+  solved again with an inertia correction
+  ([Active-set Newton method](@ref "Active-set Newton method (the default)")).
+
+## The interior-point method
+
+[`solve`](@ref) with `OptimaOptions(algorithm = :interior_point)`:
 
 - **Schur-complement Newton step** — reduces the $(n_s+m)$-dimensional KKT system
   to an $m \times m$ system by exploiting the diagonal Hessian structure.

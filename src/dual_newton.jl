@@ -122,6 +122,38 @@ const W_MAX_RISE = 30.0
 # for the same reason.
 const PHASE_ADMISSION_SEED = 1.0e-6
 
+# The iterations over which a search whose set is unchanged must lower its error
+# by `STALL_DECREASE` (relative), short of which it is stalled and the most
+# supersaturated variable held at its bound is released whatever its
+# supersaturation, once (see the rule on `e` in `_dual_newton_attempt`). A search
+# whose error no longer moves at all is not stalled in this sense: the rules
+# against cycling end it.
+#
+# A supersaturation is acted on once it exceeds the error of the iterate, and that
+# rule has a fixed point: a pure phase held at zero that the answer needs keeps
+# the error up, and while the error stays above its supersaturation it is never
+# released. Seen on a cement paste from a start without its trace phases: the
+# error crept down by some 1e-5 relative per iteration while the supersaturation
+# of the phase rose, until the budget of the search ran out; from the next start
+# the same problem certified in a few dozen iterations. A search that still
+# progresses lowers its error by far more than 1e-3 over ten iterations, and
+# keeps the rule.
+const STALL_WINDOW = 10
+const STALL_DECREASE = 1.0e-3
+
+# The iterations over which a search whose set is unchanged and whose error is
+# above the tolerance must lower it by `FLAT_DECREASE` (relative), short of which
+# it ends: by then it decreases at the rounding of its residual, and could not
+# reach the tolerance within any budget of iterations. Such a search otherwise ran
+# out its `maxit`, seconds on a cement where the next start certified at once.
+# Measured before it was set, on the solves of the calorimetry, kinetics and
+# equilibrium suites of ChemistryLab and on cement pastes: not one that
+# converged passes through such a stretch, and it ends about a fifth of those
+# that fail. The set is that of the phases and of the
+# variables off their bounds, a change of either restarting the count.
+const FLAT_WINDOW = 20
+const FLAT_DECREASE = 1.0e-10
+
 """
     _degenerate_conservation_rows(prob, b) -> Vector{Int}
 
@@ -3419,9 +3451,24 @@ function _dual_newton_attempt(
     # The budget of each row, on which a removal is judged (`_negligible`).
     σb = _budget_scales(bv)
 
+    # The error a stalled search is measured against (`STALL_WINDOW`), and the
+    # iteration it was taken at, reset whenever the set changes.
+    stall_ref = Inf
+    stall_it = 0
+    # The error of the iterate before (a stalled search still creeps; one whose
+    # error no longer moves at all is ended by the rules below), and the
+    # variables already released on a stall, each released so at most once.
+    judged_prev = Inf
+    stall_released = Set{Int}()
+    # The errors of the iterates since the set last changed, and that set, for
+    # the rule that ends a search no longer progressing (`FLAT_WINDOW`).
+    flat_errors = Float64[]
+    flat_set = (Int[], Int[])
     for it in 1:(opts.maxit)
         nph = length(act_ph)
         v = vcat([log(r) for r in refs], y, xB, q)
+        set_now = (sort(act_ph), sort(active))
+        set_now == flat_set || (empty!(flat_errors); flat_set = set_now)
         R = _outer_residual(
             prob, v, W, act_ph, active, bv, x_buf;
             dead, degenerate, resid = inner_resid, inner_maxit = opts.inner_maxit,
@@ -3461,7 +3508,19 @@ function _dual_newton_attempt(
         # off its bound at every iteration from a start far from its answer
         # (a residual of 475), the most supersaturated phase of a cement went in
         # and out by turns with two others for 200 iterations.
-        e = s_e > judged ? e_cand : 0
+        if judged < stall_ref * (1 - STALL_DECREASE)
+            stall_ref, stall_it = judged, it
+        end
+        # A search on one set whose error, above the tolerance, has not fallen by
+        # `FLAT_DECREASE` of itself over `FLAT_WINDOW` iterations ends here: at
+        # that rate it cannot reach the tolerance within any budget.
+        push!(flat_errors, judged)
+        judged > opts.tol && length(flat_errors) > FLAT_WINDOW &&
+            flat_errors[end - FLAT_WINDOW] - judged < FLAT_DECREASE * flat_errors[end - FLAT_WINDOW] && break
+        creeping = it - stall_it >= STALL_WINDOW && judged < judged_prev && !(e_cand in stall_released)
+        judged_prev = judged
+        e = (s_e > judged || creeping) ? e_cand : 0
+        (e != 0 && s_e <= judged) && push!(stall_released, e)
         # The mixing phases held out, tested once the set is solved and no pure
         # phase waits: their test is a search, the pure phases' a subtraction.
         fill!(admission, NaN)
@@ -3541,6 +3600,7 @@ function _dual_newton_attempt(
         # having left it at a trace.
         act_ph, refs, gone = _without_negligible(prob, act_ph, refs, σb, opts.tol, dead)
         isempty(gone) || (moved = true)
+        moved && (stall_ref = Inf; stall_it = it)
 
         nph = length(act_ph)
         v = vcat([log(r) for r in refs], y, xB, q)
