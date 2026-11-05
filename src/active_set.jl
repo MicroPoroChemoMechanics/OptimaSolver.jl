@@ -64,6 +64,13 @@ At the amounts `n` and the multipliers `y`, with `g = ∇f(n) − τ ./ n` and
   gradient, which costs as many gradient evaluations as there are variables,
   divided by the chunk. ChemistryLab hands over the exact diagonal and the ideal
   coupling within each phase. The saddle test at convergence reads the exact one.
+- **A component the iterate holds none of is priced by the dual ratio test.** In
+  a row of the canonical form whose variables are all on their bounds, no amount
+  fixes the multiplier, and the basic variable that would fix it by its own
+  stationarity can make another carrier read as supersaturated: the active set
+  cycled on such rows, the reduced sulfur and hydrogen of a cement paste. The
+  multiplier is moved, and the basic variable chosen, so that every carrier keeps
+  a non-negative reduced gradient (`_degenerate_pivots!`).
 - **A cycle ends.** On a Hessian that is not exact, the active set can cycle. A
   descent only lowers the error, and a run that leaves a saddle point or a poor
   first step raises it before lowering it; a cycle lowers it and raises it again.
@@ -211,12 +218,16 @@ const BASIS_PIVOT_TOL = 1.0e-8
 # lets a column whose weight is near zero (an absent species, the only one in
 # its row) lose to a combination of others that is singular in exact
 # arithmetic and survives the factorization by rounding.
-function _weighted_basis(A::AbstractMatrix, w::AbstractVector)
+_weighted_basis(A::AbstractMatrix, w::AbstractVector) = sort(first(_canonical_basis(A, w)))
+
+# The basis of `_weighted_basis`, with the non-basic variables and the canonical
+# form `S = B⁻¹N`, row `r` that of the basic variable `jb[r]`, column `c` that of
+# the non-basic one `jn[c]`.
+function _canonical_basis(A::AbstractMatrix, w::AbstractVector)
     m, ns = size(A)
     jb = LinearAlgebra.qr(A, LinearAlgebra.ColumnNorm()).p[1:m]
     jn = setdiff(1:ns, jb)
-    isempty(jn) && return sort(jb)
-    S = LinearAlgebra.lu(A[:, jb]) \ A[:, jn]
+    S = isempty(jn) ? zeros(eltype(A), m, 0) : LinearAlgebra.lu(A[:, jb]) \ A[:, jn]
     # One pass over the basic variables, each exchange updating the canonical
     # form the next one reads: a recurrence.
     for i in 1:m
@@ -224,17 +235,64 @@ function _weighted_basis(A::AbstractMatrix, w::AbstractVector)
         isempty(cands) && continue
         k = argmax(c -> w[jn[c]], cands)
         w[jb[i]] >= w[jn[k]] && continue
-        # Gauss–Jordan exchange of the i-th basic variable and the k-th non-basic one.
-        piv = S[i, k]
-        col = S[:, k]
-        col[i] = zero(piv)
-        S[i, :] ./= piv
-        S .-= col .* transpose(S[i, :])
-        S[:, k] .= -col ./ piv
-        S[i, k] = inv(piv)
-        jb[i], jn[k] = jn[k], jb[i]
+        _exchange!(S, jb, jn, i, k)
     end
-    return sort(jb)
+    return jb, jn, S
+end
+
+# The Gauss–Jordan exchange of the `i`-th basic variable and the `k`-th non-basic
+# one, in place on the canonical form and the two index lists.
+function _exchange!(S, jb, jn, i, k)
+    piv = S[i, k]
+    col = S[:, k]
+    col[i] = zero(piv)
+    S[i, :] ./= piv
+    S .-= col .* transpose(S[i, :])
+    S[:, k] .= -col ./ piv
+    S[i, k] = inv(piv)
+    jb[i], jn[k] = jn[k], jb[i]
+    return S
+end
+
+"""
+    _degenerate_pivots!(y, s, jb, jn, S, at_lb, A)
+
+The rows of the canonical form whose variables are all on their bounds: a
+component the iterate holds none of, whose multiplier no variable off its bound
+fixes. The basic variable of such a row, chosen by the weights among variables
+that all weigh the same, would fix it by its own stationarity, and a carrier of
+the row can then read as supersaturated (`sᵢ < 0` on its bound) while the
+component is absent: the active set cycled on such rows, the reduced sulfur and
+hydrogen of a cement paste. The multiplier of the row is moved instead, and its
+basic variable chosen, by the ratio test of the dual simplex method: along the
+row `c` (`1` for the basic variable, `S[r, j]` for the others), `s ← s − θ c` with
+the largest `θ ≤ 0` that keeps every carrier at `s ≥ 0`, and the carrier that
+binds becomes basic. Applied to `y` and `s` in place; `jb`, `jn` and `S` follow
+the exchange. A row where no such `θ` exists is left as it is.
+"""
+function _degenerate_pivots!(y, s, jb, jn, S, at_lb, A)
+    for r in eachindex(jb)
+        at_lb[jb[r]] || continue
+        cs = [c for c in eachindex(jn) if abs(S[r, c]) > BASIS_PIVOT_TOL]
+        all(at_lb[jn[c]] for c in cs) || continue
+        any(s[jn[c]] < 0 for c in cs) || continue
+        θs = Dict(c => s[jn[c]] / S[r, c] for c in cs)
+        pos = [c for c in cs if S[r, c] > 0]
+        isempty(pos) && continue
+        k = argmin(c -> θs[c], pos)
+        θ = min(zero(eltype(s)), θs[k])
+        all(θ >= θs[c] for c in cs if S[r, c] < 0) || continue
+        # y ← y − θ B⁻ᵀ eᵣ moves every reduced gradient by −θ along the row.
+        e = zeros(eltype(y), length(jb))
+        e[r] = one(eltype(y))
+        y .-= θ .* (transpose(LinearAlgebra.lu(A[:, jb])) \ e)
+        s[jb[r]] -= θ
+        for c in eachindex(jn)
+            s[jn[c]] -= θ * S[r, c]
+        end
+        _exchange!(S, jb, jn, r, k)
+    end
+    return y, s
 end
 
 # The balance error, row by row: relative to what the row holds for a row with a
@@ -370,7 +428,9 @@ function _active_set_run(prob::_ActiveSetProblem{T}, opts::OptimaOptions, u0, y0
         at_lb = n .<= lb
         # on the values: a basis is a choice, not a function to differentiate;
         # a variable on its bound has the lowest priority
-        jb = _weighted_basis(_primal_value.(A), [n[i] > lb[i] ? abs(_primal_value(n[i])) : -1.0 for i in eachindex(n)])
+        jb, jn_c, S_c = _canonical_basis(_primal_value.(A), [n[i] > lb[i] ? abs(_primal_value(n[i])) : -1.0 for i in eachindex(n)])
+        _degenerate_pivots!(y, s, jb, jn_c, S_c, at_lb, A)
+        sort!(jb)
         basic = falses(ns)
         basic[jb] .= true
         unstable = .!basic .& at_lb .& (s .> 0)

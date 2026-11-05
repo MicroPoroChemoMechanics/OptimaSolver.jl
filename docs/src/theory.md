@@ -212,7 +212,18 @@ amount (the lowest for one on its bound) and a replacement being possible where
 $|S_{ik}| > 10^{-8}$, a ratio of stoichiometric coefficients. The most abundant
 species carry the balance, and the basis stays one that $A$ supports: an absent
 species alone in its row stays basic. A basic variable is never held, so that
-every row keeps a variable that can restore it. The step $d$ minimizes the quadratic model of $f$ under the
+every row keeps a variable that can restore it.
+
+A row of the canonical form whose variables are all on their bounds describes a
+component the iterate holds none of. No amount fixes its multiplier, and the
+basic variable that would fix it by its own stationarity, $s_{j_r} = 0$, can
+leave another carrier of the row with $s_k < 0$ on its bound, as if the absent
+component were supersaturated. Along the row, with $c_{j_r} = 1$ and
+$c_k = S_{rk}$, the reduced gradients move as $s \leftarrow s - \theta c$ when
+the multiplier moves; $\theta$ is chosen by the ratio test of the dual simplex
+method, the largest $\theta \le 0$ that keeps every carrier at $s \ge 0$, and
+the carrier that binds becomes basic. Every carrier of an absent component then
+stays legitimately on its bound. The step $d$ minimizes the quadratic model of $f$ under the
 linearized balance,
 
 ```math

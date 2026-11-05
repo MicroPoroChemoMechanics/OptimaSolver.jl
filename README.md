@@ -36,12 +36,16 @@ subject to  A n = b        (mass conservation, m equations)
 - **An active set on the bounds** — a species on its bound whose reduced gradient
   points outward is held there; the others take a Newton step whose right-hand side
   holds the residual of the balance, so that a full step restores it.
-- **Null-space step on the full Hessian**, the basis re-chosen at every iteration on
-  the amounts, the most abundant species carrying the balance.
-- **What differs from Optima**, each change measured against it: a barrier and a
-  balance error that do not depend on how much matter the system holds, negligible
-  traces that do not shorten the step, and a saddle point of a non-convex Gibbs
-  energy refused and solved again with an inertia correction.
+- **Null-space step on the full Hessian**, on a basis the matrix supports, re-chosen at
+  every iteration so that the most abundant species carry the balance; a component the
+  iterate holds none of is priced by the ratio test of the dual simplex method.
+- **Intensive and certified**: a barrier and a balance error that do not depend on how
+  much matter the system holds, negligible traces that do not shorten the step, and a
+  saddle point of a non-convex Gibbs energy refused and solved again with an inertia
+  correction.
+- **Unknown parameters** (`OptimaParametricProblem`): the extents of reactions over a
+  time step or the potential of a charged surface, solved with the amounts, each fixed by
+  its own equation.
 
 ### `solve` with `algorithm = :interior_point`
 

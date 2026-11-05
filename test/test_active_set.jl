@@ -174,6 +174,44 @@ const AS_OPTS = OptimaOptions(tol = 1.0e-12, algorithm = :active_set)
         @test OptimaSolver._weighted_basis([2.0 0.0; 0.0 3.0], [1.0, 1.0]) == [1, 2]
     end
 
+    @testset "a component held by no amount is priced by the dual ratio test" begin
+        # Rows X and Y; X₁ carries X and is present, Y₁ and Y₂ carry Y and are on
+        # their bounds: the component Y is absent. With Y₂ basic its stationarity
+        # sets the multiplier of Y to −g(Y₂) = −1, and Y₁ reads as supersaturated
+        # (s = −1) although nothing of Y is there. The ratio test moves the
+        # multiplier to the largest value that keeps both carriers at s ≥ 0, here
+        # 0, and makes Y₁ basic.
+        A = [1.0 0.0 0.0; 0.0 1.0 1.0]
+        g = [0.5, 0.0, 1.0]
+        jb, jn = [1, 3], [2]
+        S = LinearAlgebra.lu(A[:, jb]) \ A[:, jn]
+        y = [-0.5, -1.0]
+        s = g .+ transpose(A) * y
+        @test s ≈ [0.0, -1.0, 0.0]
+        OptimaSolver._degenerate_pivots!(y, s, jb, jn, S, [false, true, true], A)
+        @test s ≈ g .+ transpose(A) * y
+        @test s ≈ [0.0, 0.0, 1.0]
+        @test sort(jb) == [1, 2] && jn == [3]
+        # nothing to do on a row with a carrier off its bound, or already priced
+        s2 = copy(s); y2 = copy(y)
+        OptimaSolver._degenerate_pivots!(y2, s2, copy(jb), copy(jn), copy(S), [false, true, true], A)
+        @test s2 == s && y2 == y
+        jb3, jn3 = [1, 3], [2]
+        y3 = [-0.5, -1.0]; s3 = g .+ transpose(A) * y3
+        OptimaSolver._degenerate_pivots!(y3, s3, jb3, jn3, LinearAlgebra.lu(A[:, jb3]) \ A[:, jn3], [false, false, true], A)
+        @test s3 ≈ [0.0, -1.0, 0.0]
+        # no carrier that can take the multiplier up (every coefficient negative),
+        # or none that keeps all the others non-negative: left as it is
+        for (Srow, s0) in (([-1.0;;], [0.0, -1.0, 0.0]), ([1.0 -1.0], [0.0, -1.0, 0.0, -2.0]))
+            ns4 = length(s0)
+            jb4, jn4 = [1, 3], setdiff(1:ns4, [1, 3])
+            S4 = vcat(zeros(1, length(jn4)), Srow)
+            y4 = [0.0, 0.0]; s4 = copy(s0)
+            OptimaSolver._degenerate_pivots!(y4, s4, jb4, jn4, S4, [false; trues(ns4 - 1)], zeros(2, ns4))
+            @test s4 == s0 && y4 == [0.0, 0.0]
+        end
+    end
+
     # An ideal mixture of three species, `∂f/∂n = g⁰ + ln(n/N) + z q`, whose total
     # the parameter fixes (`Ap`) or whose potential the parameter carries (`z`).
     g⁰ = [0.3, -0.5, 1.2]

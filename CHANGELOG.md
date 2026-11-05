@@ -35,6 +35,16 @@
   where the canonical form `B⁻¹N` has an entry above `1e-8`. Equilibria of cement
   pastes with a C-S-H solid solution, far from equilibrium at the start, that
   stopped after 45 iterations without converging now converge in 22.
+- **A component the iterate holds none of no longer makes the active set
+  cycle.** In a row of the canonical form whose variables are all on their
+  bounds, the multiplier was fixed by the stationarity of whichever basic
+  variable the basis held, and another carrier could read as supersaturated: on
+  a cement paste mixed with a sulfate solution, the reduced sulfur species and
+  hydrogen took turns on their bounds without end. The multiplier is now moved,
+  and the basic variable chosen, by the ratio test of the dual simplex method, so
+  that every carrier keeps a non-negative reduced gradient. That paste's
+  equilibrium, and the same with the reactivity rows of a kinetic step, now
+  converge by the active set alone, in 22 and 20 iterations.
 
 ## v0.11.0 — the iteration of Optima, by default
 
