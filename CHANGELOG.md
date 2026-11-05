@@ -1,8 +1,58 @@
 # Changelog
 
-## v0.10.3 — a Hessian diagonal handed over in the right variables
+## v0.11.0 — the iteration of Optima, by default
 
-A patch release of the interior point.
+`solve` and `OptimaOptimizer` now run the active-set iteration of Optima, the C++
+library this package is named after and the one Reaktoro computes its equilibria
+with, instead of the interior point.
+
+### Breaking changes
+
+- **The default algorithm is `:active_set`.** `OptimaOptions().algorithm` and
+  `OptimaOptimizer()` select the new iteration; the interior point, unchanged, is
+  `algorithm = :interior_point`. Where both converge, the answers agree to the
+  tolerance; the iterates, the iteration counts and the answer of a solve that
+  does not converge differ. The barrier, line-search and Hessian-diagonal options
+  (`barrier_*`, `ls_*`, `use_fd_hessian`, `nullspace_step`) and the `p.hdiag` hook
+  are the interior point's and do not act on the active set.
+- Below 1.0, Julia's resolver treats a minor release as breaking: a package with
+  `[compat] OptimaSolver = "0.10"` must widen its bound to accept 0.11.
+
+### Added
+
+- **`solve_active_set`, the iteration of Optima** (`algorithm = :active_set`).
+  A species on its bound whose reduced gradient points outward is held there; the
+  others take a Newton step in the null space of their columns, whose right-hand
+  side holds the residual of the balance, so that a full step restores it; the
+  basis is chosen at every iteration on the amounts. It differs from the
+  iteration as published where a measurement asked it to: a barrier
+  (`barrier_rel`, a fraction of `max|b|`) and a balance error that do not depend
+  on how much matter the system holds; amounts below `negligible_rel` of `max|b|`
+  set on their bounds rather than shortening the step; a saddle point of a
+  non-convex Gibbs energy detected at convergence and solved again with the
+  inertia correction of Wächter and Biegler; a run that cycles between active
+  sets ended on its best iterate. See *Active-set Newton method* in the theory.
+- **`p.hess`**, a function `(H, n) -> H` among the parameters, through which the
+  caller hands the active set its Hessian instead of a forward-mode Jacobian of
+  the gradient.
+- `OptimaOptions` and `OptimaOptimizer` take `algorithm`, `barrier_rel` and
+  `negligible_rel`; an unknown algorithm is refused by name.
+
+### Why it mattered
+
+The interior point shortened the components of a step near their bounds and
+projected the result back onto `{A d = 0}`, which threw away the part of the step
+that restores the balance: an iterate off a row of the budget stayed off it. On
+calcite in water it ended with the charge balance met to 3 % only; on cement
+pastes it ended most solves on `MaxIters`, and the certified dual Newton of
+ChemistryLab, started from that point, reached the answer at a cost that
+depended on the last bits of it. The active set meets the balance to the
+tolerance on both: unpolished, to 1e-14 on calcite solutions and 1e-12 on
+cement pastes, where the interior point stopped at 1e-9 and 1e-8. Started from
+it, ChemistryLab certifies the equilibrium of a cement paste with a C-S-H
+surface in 19 ms instead of 41 ms, and allocates 44 MB instead of 93 MB
+(ChemistryLab 0.42.2 against 0.42.1 with OptimaSolver 0.10.2, same machine,
+minimum of five).
 
 ### Fixed
 
@@ -14,6 +64,25 @@ A patch release of the interior point.
   of magnitude on a chemical system. It is now evaluated at `s ⊙ ũ` and scaled as
   the gradient is. Handed the exact diagonal, a solve now takes the iterations of
   the forward-mode diagonal it replaces.
+- **A dual Newton search could hold out the very phase that kept its error up.**
+  A variable held at its bound is released once its supersaturation exceeds the
+  error of the iterate, a rule against phases going in and out by turns far from
+  the answer. It has a fixed point: a pure phase the answer needs keeps the error
+  above its supersaturation, and is never released. On a cement paste started
+  without its trace phases, the error crept down by some 1e-5 relative per
+  iteration while the supersaturation rose, until `maxit` ran out, and the search
+  that then certified from the next start had spent seconds on the first. A
+  search whose set is unchanged and whose error has not fallen by 1e-3 relative
+  in ten iterations now releases its most supersaturated variable whatever the
+  error, once per variable; a search that progresses keeps the rule as it was.
+- **A dual Newton search that no longer progressed ran out its `maxit`.** A start
+  that cannot be certified usually ends on a set its search keeps returning to;
+  some instead sat on one set while their error decreased at the rounding of the
+  residual, 1e-14 relative per iteration, for the 500 iterations of the budget,
+  seconds of a cement solve whose next start certified at once. A search whose set
+  has not changed for twenty iterations and whose error, above the tolerance, has
+  fallen by less than 1e-10 of itself over them now ends. Measured before the
+  thresholds were set, no solve that converged passes through such a stretch.
 
 ### Changed
 
