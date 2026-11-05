@@ -15,6 +15,7 @@ repository-code: "https://github.com/MicroPoroChemoMechanics/OptimaSolver.jl"
 keywords:
   - julia
   - optimization
+  - active-set
   - interior-point
   - newton-method
   - kkt-certificate
