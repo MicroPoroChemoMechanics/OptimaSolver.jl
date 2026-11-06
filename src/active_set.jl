@@ -12,9 +12,10 @@
     solve_active_set(prob, opts; u0 = nothing, y0 = nothing) -> OptimaResult
 
 Minimize `f` subject to `A n = b` and `lb ≤ n ≤ ub` by the active-set Newton
-iteration of Optima, the solver Reaktoro computes its equilibria with, from the
-amounts `u0` and the multipliers `y0`. `opts.algorithm == :active_set` selects it
-in [`solve`](@ref); the interior point stays available as `:interior_point`.
+iteration of Optima [Leal2024optima](@cite), the solver Reaktoro computes its
+equilibria with, from the amounts `u0` and the multipliers `y0`.
+`opts.algorithm == :active_set` selects it in [`solve`](@ref); the interior point
+stays available as `:interior_point`.
 
 # One iteration
 
@@ -52,9 +53,9 @@ At the amounts `n` and the multipliers `y`, with `g = ∇f(n) − τ ./ n` and
   solution with a miscibility gap) Newton's method with the exact Hessian converges
   as readily to a saddle point as to a minimum. The reduced Hessian is tested at
   convergence; where it has a negative curvature, the solve is made again from the
-  same start with Ipopt's inertia correction (the Hessian shifted by
-  `δ diag(1/n)`, `δ` raised until the reduced Hessian is positive definite;
-  Wächter and Biegler, Math. Program. 106 (2006) 25–57).
+  same start with Ipopt's inertia correction [WachterBiegler2006](@cite): the
+  Hessian shifted by `δ diag(1/n)`, `δ` raised until the reduced Hessian is
+  positive definite.
 - **A negligible amount does not shorten the step.** A variable below
   `opts.negligible_rel · max|b|` (`1e-12` by default) is set on its bound instead,
   the balance it then misses restored by the next step, whose right-hand side

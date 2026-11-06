@@ -1,5 +1,6 @@
 [deps]
 Documenter = "e30172f5-a6a5-5a46-863b-614d45cd2de4"
+DocumenterCitations = "daee34ce-89f3-4625-b898-19384cb65244"
 DocumenterVitepress = "4710194d-e776-4893-9690-8d956a29c365"
 ForwardDiff = "f6369f11-7733-5829-9624-2563aa707210"
 OptimaSolver = "24efeca9-a785-406e-adb3-83609348bee7"
@@ -12,9 +13,19 @@ SciMLBase = "0bca4576-84f4-4d90-8ffe-ffa030f20462"
 # global environment — which passes locally and fails on a runner, where that
 # environment is empty. Keep these bounds in step with the root Project.toml.
 Documenter = "1"
-# Bounded on the major only, deliberately: this documentation carries no
-# citations, so the DocumenterCitations ceiling that constrains the other
-# packages' docs environments does not apply here.
+# Bounded on the major only, deliberately: the 1.x ceiling belongs to
+# DocumenterVitepress and is already declared there.
+#
+# Its registry entry carries a weak dependency `DocumenterCitations = "1 - 1.4"`
+# for every version from 0.0.21 on, so 1.5 and 0.3.x cannot be resolved together
+# — Pkg puts it as "restricted by compatibility requirements with
+# DocumenterVitepress to versions 1.0.0 - 1.4.1". Writing `"1.4"` here would
+# repeat that ceiling and then need an edit the day DocumenterVitepress raises
+# it. `"1"` lets the resolver take the newest version both packages accept: 1.4.1
+# today, 1.5 and beyond by itself later, with no change to this file. The
+# `CitationSiteNode` override in `make.jl` is guarded so it starts applying on the
+# same day.
+DocumenterCitations = "1"
 DocumenterVitepress = "0.3"
 ForwardDiff = "1"
 # The package itself is built from `..`, so this bound is never used to pick a

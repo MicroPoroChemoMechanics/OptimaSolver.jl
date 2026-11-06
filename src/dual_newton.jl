@@ -303,8 +303,8 @@ removes the total, the map is exact in one sweep, and a weak excess term keeps
 it a contraction. A model whose `∂h/∂w` has eigenvalues above two does not: the
 map then diverges. Ideal mixing on sublattices can be such a model: there the
 eigenvalues are bounded by the sum of the site multiplicities, which is nine for
-the CNASH gel of Myers et al., instead of one. Measured on that gel, at the
-potentials of a CEM I paste, the substitution diverged within six sweeps.
+the CNASH gel of [Myers2014](@citet), instead of one. Measured on that gel, at
+the potentials of a CEM I paste, the substitution diverged within six sweeps.
 
 `newton = true` recovers the composition instead by Newton's method on the
 bordered system `[H 1; xᵀ 0]`, `H = ∂h/∂w` over the members, obtained by
@@ -343,7 +343,8 @@ cycles as well, so the two cannot be told apart. A model whose coefficients
 depend on the composition through the ionic strength alone reduces the
 inversion to one equation in it, which a caller that knows the model solves
 exactly, or proves has no root; that is how PHREEQC treats the ionic strength,
-as an unknown of its own. The sweep remains for a phase without `invert`.
+as an unknown of its own [ParkhurstAppelo2013](@cite). The sweep remains for a
+phase without `invert`.
 
 `bounded_members` lists the members (positions within `members`) that may be
 **exactly absent from the phase while it is present**. A member's activity
@@ -441,13 +442,13 @@ A convex program in the form solved by [`dual_newton_solve`](@ref):
     and only the second licenses the criterion.
   - `holdings_rows`: rows whose budget may be zero and that the search weighs by
     what they hold rather than by the scale of the whole budget: the acid-base or
-    charge row of an aqueous system, judged by PHREEQC on the ionic strength of
-    its iterate. Their tolerance is unchanged. Empty by default, and the search is
-    then that of 0.10.0. Without it, the acid-base row of pure water, whose ions
-    hold 5e-8 mol beside 22 mol of water, weighs 2e-9 of the other rows in the
-    factorization and the line search, and a step that balances it counts for
-    nothing; a redox row, whose carriers lie on one side and must vanish, is
-    better left on the scale of the budget, where the search does not chase them.
+    charge row of an aqueous system, judged by PHREEQC [ParkhurstAppelo2013](@cite)
+    on the ionic strength of its iterate. Their tolerance is unchanged. Empty by
+    default, and the search is then that of 0.10.0. Without it, the acid-base row of
+    pure water, whose ions hold 5e-8 mol beside 22 mol of water, weighs 2e-9 of the
+    other rows in the factorization and the line search, and a step that balances it
+    counts for nothing; a redox row, whose carriers lie on one side and must vanish,
+    is better left on the scale of the budget, where the search does not chase them.
   - `always_active`: bounded variables that are never dropped from the active set.
     A variable whose amount is fixed by a linear row is not deciding anything by a
     sign test: it is determined, and its extra multiplier makes its stationarity
@@ -1479,11 +1480,11 @@ end
                         g = prob.g, q = prob.q0, start = nothing, dead = Set{Int}())
         -> (measure, fractions)
 
-Michelsen's tangent-plane measure for mixing phase `k` at the multipliers `u` and
-composition `x`, with the trial composition that attains it: the log-sum-exp of
-`uᵢ − gᵢ − lnγᵢ` over the phase's members, the trial composition refined against
-the phase's OWN activity model — by successive substitution, or by Newton's method
-for a phase declared `newton = true` ([`SolutionPhase`](@ref)).
+Michelsen's tangent-plane measure [Michelsen1982](@cite) for mixing phase `k` at the
+multipliers `u` and composition `x`, with the trial composition that attains it: the
+log-sum-exp of `uᵢ − gᵢ − lnγᵢ` over the phase's members, the trial composition
+refined against the phase's OWN activity model — by successive substitution, or by
+Newton's method for a phase declared `newton = true` ([`SolutionPhase`](@ref)).
 
 `fractions` are mole fractions over the phase's members. `g` and `q` are the
 standard part of the gradient and the unknown parameters `h` is evaluated at;
@@ -1615,13 +1616,13 @@ phase_tangent_measure(args...; kwargs...) = first(phase_tangent_trial(args...; k
 How far a **present** mixing phase is from wanting to split into two coexisting
 compositions — and **the composition it wants to split into**.
 
-The first element is the largest tangent-plane distance found from any start
-other than the phase's own composition. The second is the trial composition that
-achieved it, as mole fractions over the phase's members: Michelsen's stability
-analysis does not only answer *whether* a phase splits, it hands the flash that
-follows its starting estimate, and discarding it wastes the expensive half of the
-calculation. A caller that means to act on the verdict — by seeding a second
-instance of the phase — needs exactly this vector.
+The first element is the largest tangent-plane distance found from any start other
+than the phase's own composition. The second is the trial composition that achieved
+it, as mole fractions over the phase's members: Michelsen's stability analysis
+[Michelsen1982](@cite) does not only answer *whether* a phase splits, it hands the
+flash that follows its starting estimate, and discarding it wastes the expensive
+half of the calculation. A caller that means to act on the verdict — by seeding a
+second instance of the phase — needs exactly this vector.
 
 A positive value means a composition exists that lies **below** the tangent plane
 at the current one, so the Gibbs minimum for that phase is not one composition
@@ -1933,10 +1934,10 @@ poses the program at their start, on the budget `b − A_q q₀`.
 Over the **bound-constrained** variables, on the sign of `uᵢ − (gᵢ + hᵢ)`: a pure
 phase is present exactly when that index vanishes, absent when it is negative.
 
-Over the **mixing phases**, on Michelsen's tangent-plane measure, the one the
-certificate applies ([`kkt_certificate`](@ref)): the log-sum-exp of
-`uᵢ − gᵢ − ln γᵢ` over the live members of the phase at a trial composition of
-it, a member whose component is absent from the budget left out. A solution
+Over the **mixing phases**, on Michelsen's tangent-plane measure
+[Michelsen1982](@cite), the one the certificate applies ([`kkt_certificate`](@ref)):
+the log-sum-exp of `uᵢ − gᵢ − ln γᵢ` over the live members of the phase at a
+trial composition of it, a member whose component is absent from the budget left out. A solution
 phase forms when that measure is positive, when a trial composition lies below
 the tangent plane of the current state. That test is what a mixing phase
 requires, since its members are never exactly absent while it exists and it has
