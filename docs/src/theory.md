@@ -5,11 +5,10 @@ CurrentModule = OptimaSolver
 # Theory
 
 This page describes the mathematical foundations of the solvers. The active-set
-Newton method, the default, is the iteration of the C++ Optima library by Allan
-Leal ([github.com/reaktoro/optima](https://github.com/reaktoro/optima)) with the
-corrections its section lists; the interior-point method, which follows Leal et
-al. (2014), remains available. The Newton method in the space of the
-multipliers, its certificate and the linear program over pure phases are
+Newton method, the default, is the iteration of the C++ Optima library
+[Leal2024optima](@cite), with the corrections its section lists; the
+interior-point method, which follows [Leal2014](@citet), remains available.
+The Newton method in the space of the multipliers, its certificate and the linear program over pure phases are
 original to this package, after the published methods cited with them.
 
 ## Problem statement
@@ -172,7 +171,7 @@ follow, and neither is automatic:
   the model cannot represent the answer at all;
 - the tangent-plane test admits a phase from outside; it does not test whether an
   already-present phase would rather split. Deciding that is Michelsen's stability
-  problem on the phase itself, and it is not what this solver does.
+  problem [Michelsen1982](@cite) on the phase itself, and it is not what this solver does.
 
 Every mixing model this solver has been exercised on is ideal, so the certificate
 has meant global optimality throughout — but that is a property of those models,
@@ -312,9 +311,9 @@ Z^\top H Z + 10^{-8}\, Z^\top D Z \succ 0,
 \qquad D = \mathrm{diag}(1/n),
 ```
 
-$D$ being the Hessian of an ideal solution, the scale against which a curvature
+where $D$ is the Hessian of an ideal solution, the scale against which a curvature
 is negligible, and $H$ the exact Hessian, computed for this test once. Where the test fails, the solve is made again from the same start
-with the inertia correction of Wächter and Biegler (2006): $H$ is shifted by
+with the inertia correction of [WachterBiegler2006](@citet): $H$ is shifted by
 $\delta D$, $\delta$ raised from $10^{-12}$ by factors of ten until the reduced
 Hessian is positive definite, so that every step descends.
 
@@ -475,7 +474,7 @@ $|E_i| \le s_i|g_{L,i}| + \mu < \infty$; whereas the computation above shows
 $|r_i| = |E_i|/s_i \to \infty$ as $s_i \to 0$ at fixed $E_i$. $\;\square$
 
 This is the measure Ipopt reports, with the bound multiplier eliminated by dual
-feasibility rather than carried as a variable (Wächter & Biegler 2006, §3.5). On
+feasibility rather than carried as a variable [WachterBiegler2006; §3.5](@cite). On
 the same cement equilibrium it reads $5.8\times10^{-3}$ where the residual form
 read $4.5\times 10^{11}$ — fourteen orders of magnitude, on the same iterate.
 
@@ -524,7 +523,8 @@ reach a neighborhood and then certifies the result.
 The interior-point method above minimizes `f` by walking the interior. This
 section describes the alternative the package also provides,
 [`dual_newton_solve`](@ref), which solves the KKT conditions directly. It is the
-Brinkley–Karpov formulation of the geochemical Gibbs-minimization codes, stated
+Brinkley–Karpov formulation [Brinkley1947, KarpovChudnenkoKulik1997](@cite) of the
+geochemical Gibbs-minimization codes, stated
 here for the general convex program.
 
 ### The formulation
@@ -643,7 +643,7 @@ Ideal mixing on sublattices can have such eigenvalues. With ``m_s`` the
 multiplicity of site ``s`` and ``y_{s,i}`` its site fractions,
 ``h_k = \sum_s m_s \ln y_{s,\sigma_s(k)}`` and ``H`` is a sum of ``m_s`` times
 projectors of the same kind, its spectrum bounded by ``\sum_s m_s`` instead of
-one: nine for the C-(N-)A-S-H gel of Myers et al. (2014). Measured on that gel,
+one: nine for the C-(N-)A-S-H gel of [Myers2014](@citet). Measured on that gel,
 at the potentials of a Portland cement paste, the substitution diverged within
 six sweeps; damped by ``1/\sum_s m_s`` it converged, in 370.
 
@@ -726,7 +726,7 @@ I = \tfrac12 \sum_i z_i^2\, e^{\,u_i - g_i - \ln\gamma_i(I)} .
 ```
 
 This is how PHREEQC treats the ionic strength, as an unknown of its own
-(Parkhurst & Appelo, 2013). A phase given `invert` (see [`SolutionPhase`](@ref))
+[ParkhurstAppelo2013](@cite). A phase given `invert` (see [`SolutionPhase`](@ref))
 is recovered by it in one call; ChemistryLab supplies it for its Debye–Hückel,
 Davies and Truesdell–Jones models, solving that equation exactly or reporting
 that it has no root. A solute driven to the ceiling of its log-amount, the other
@@ -879,7 +879,7 @@ dual becomes
 
 ``\phi`` is smooth and **strictly concave**, so Newton with a backtracking line
 search converges from any starting point — there is no active set to guess and
-nothing to stall in. This is Brinkley's method (White, Johnson & Dantzig, 1958),
+nothing to stall in. This is Brinkley's method [WhiteJohnsonDantzig1958](@cite),
 and its solution is the `y` for which the ideal composition conserves matter
 exactly.
 
@@ -1115,7 +1115,7 @@ reason above.
 for every row that has a budget: a relative measure, the same for a trace and for
 a row of 55 mol, so that the verdict does not change when every amount is
 multiplied by the same factor. A trace is then held to its own amount, as PHREEQC
-and GEMS hold a mass balance to its element total. Judged in moles alone, as until
+and GEMS [Kulik2013](@cite) hold a mass balance to its element total. Judged in moles alone, as until
 0.7.8, a trace of `1e-9` mol could be 10 % wrong and certified; judged in moles
 above one mole, as until 0.8.8, a row of a tonne of paste was held to a precision
 no data has, and the verdict depended on the size of the system. The dual Newton
@@ -1312,8 +1312,7 @@ the optimum. Convergence is therefore declared on
 E_0 = \max\Bigl( \max_i \bigl| s_i (\nabla f + A^\mathsf{T} y)_i \bigr|,\; \|An-b\|_\infty \Bigr),
 ```
 
-the same residual at `μ = 0` — Ipopt's `E_0`, Wächter & Biegler (2006),
-Algorithm A, step 2. It is the true KKT error and cannot be satisfied at a loose
+the same residual at `μ = 0` — Ipopt's `E_0` [WachterBiegler2006; Algorithm A, step 2](@cite). It is the true KKT error and cannot be satisfied at a loose
 barrier.
 
 That test only becomes attainable with a barrier schedule the inner Newton can
@@ -1384,7 +1383,7 @@ precipitating or dissolving completely.
 
 ## Filter line search
 
-The line search follows Wächter & Biegler (2006). A *filter* is a Pareto set
+The line search follows [WachterBiegler2006](@citet). A *filter* is a Pareto set
 of pairs $(\theta, \varphi) = (\|An - b\|_1,\, f(n))$; a new point is
 *acceptable to the filter* if it is not dominated by any entry already in the
 filter.
@@ -1559,61 +1558,3 @@ point, making the Schur complement $\tilde{A} H^{-1} \tilde{A}^\top$ well-condit
 across the multi-decade concentration ranges typical in chemical speciation
 (e.g. pH 1–13 where $[\mathrm{H}^+]$ varies over 12 orders of magnitude).
 The scaling is transparent: the returned solution is always in the original units.
-
-## References
-
-- Allan Leal, *Optima* — C++ library for chemical equilibrium optimization,
-  ETH Zürich.
-  [github.com/reaktoro/optima](https://github.com/reaktoro/optima)
-
-- Leal, A.M.M., Blunt, M.J., LaForce, T.C. (2014).
-  Efficient chemical equilibrium calculations for geochemical speciation and
-  reactive transport modelling.
-  *Geochimica et Cosmochimica Acta*, **131**, 301–322.
-  <https://doi.org/10.1016/j.gca.2014.01.038>
-
-- Brinkley, S.R. (1947).
-  Calculation of the equilibrium composition of systems of many constituents.
-  *The Journal of Chemical Physics*, **15**(2), 107–110.
-  <https://doi.org/10.1063/1.1746420>
-
-- Karpov, I.K., Chudnenko, K.V., Kulik, D.A. (1997).
-  Modeling chemical mass transfer in geochemical processes; thermodynamic
-  relations, conditions of equilibria and numerical algorithms.
-  *American Journal of Science*, **297**(8), 767–806.
-  <https://doi.org/10.2475/ajs.297.8.767>
-
-- Kulik, D.A., Wagner, T., Dmytrieva, S.V., Kosakowski, G., Hingerl, F.F.,
-  Chudnenko, K.V., Berner, U.R. (2013).
-  GEM-Selektor geochemical modeling package: revised algorithm and GEMS3K
-  numerical kernel for coupled simulation codes.
-  *Computational Geosciences*, **17**, 1–24.
-  <https://doi.org/10.1007/s10596-012-9310-6>
-
-- Michelsen, M.L. (1982).
-  The isothermal flash problem. Part I. Stability.
-  *Fluid Phase Equilibria*, **9**(1), 1–19.
-  <https://doi.org/10.1016/0378-3812(82)85001-2>
-
-- Myers, R.J., Bernal, S.A., Provis, J.L. (2014).
-  A thermodynamic model for C-(N-)A-S-H gel: CNASH_ss. Derivation and validation.
-  *Cement and Concrete Research*, **66**, 27–47.
-  <https://doi.org/10.1016/j.cemconres.2014.07.005>
-
-- Parkhurst, D.L., Appelo, C.A.J. (2013).
-  Description of input and examples for PHREEQC version 3: A computer program
-  for speciation, batch-reaction, one-dimensional transport, and inverse
-  geochemical calculations.
-  U.S. Geological Survey Techniques and Methods, book 6, chap. A43.
-  <https://doi.org/10.3133/tm6a43>
-
-- Wächter, A., Biegler, L.T. (2006).
-  On the implementation of an interior-point filter line-search algorithm for
-  large-scale nonlinear programming.
-  *Mathematical Programming*, **106**(1), 25–57.
-  <https://doi.org/10.1007/s10107-004-0559-y>
-
-- White, W.B., Johnson, S.M., Dantzig, G.B. (1958).
-  Chemical equilibrium in complex mixtures.
-  *The Journal of Chemical Physics*, **28**(5), 751–755.
-  <https://doi.org/10.1063/1.1744264>

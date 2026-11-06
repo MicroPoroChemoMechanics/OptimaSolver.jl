@@ -8,18 +8,18 @@
 Gibbs-energy minimization for equilibrium chemistry, by two solvers.
 
 The interior-point method of [`solve`](@ref), a Julia port of the Optima library
-(Allan Leal, ETH Zürich), with:
+(Allan Leal, ETH Zürich) [Leal2024optima](@cite), with:
 - Schur-complement Newton step exploiting diagonal Hessian structure
-- filter line search (Wächter & Biegler 2006)
+- filter line search [WachterBiegler2006](@cite)
 - implicit-differentiation sensitivity ∂n*/∂(b, μ⁰/RT)
 - warm-start between consecutive solves
 
 Newton's method on the KKT conditions in the space of the conservation
 multipliers, [`dual_newton_solve`](@ref), original to this package, with an
 active set over the pure phases, the KKT certificate
-[`kkt_certificate`](@ref), Michelsen's phase-stability tests, a start from the
-linear program over pure phases ([`lp_start`](@ref)) and the derivatives of the
-answer ([`dual_newton_tangent`](@ref)).
+[`kkt_certificate`](@ref), Michelsen's phase-stability tests [Michelsen1982](@cite),
+a start from the linear program over pure phases ([`lp_start`](@ref)) and the
+derivatives of the answer ([`dual_newton_tangent`](@ref)).
 
 Both are written in generic arithmetic (ForwardDiff dual numbers pass through),
 and `OptimaOptimizer` is a drop-in SciML interface compatible with ChemistryLab.jl.

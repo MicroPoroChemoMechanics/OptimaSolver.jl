@@ -52,7 +52,7 @@ subject to  A n = b        (mass conservation, m equations)
 - **Schur-complement Newton step** — reduces the KKT system from $(n_s+m)\times(n_s+m)$
   to $m\times m$ by exploiting the diagonal Hessian structure. For typical chemistry
   problems $m$ is the number of elements ($\leq 15$), so this is a dramatic reduction.
-- **Filter line search** (Wächter & Biegler 2006) with Armijo sufficient decrease on the
+- **Filter line search** (Wächter & Biegler, 2006) with Armijo sufficient decrease on the
   barrier objective.
 - **Variable stability classification** — near-bound species receive reduced steps.
 - **Implicit-differentiation sensitivity** — post-solve computation of $\partial n^{\ast}/\partial b$
@@ -64,8 +64,9 @@ subject to  A n = b        (mass conservation, m equations)
 Original to OptimaSolver.jl. The objective is written $\sum_i x_i\,(g_i + h_i(x))$, $h$
 the part of the chemical potentials that depends on the composition.
 
-- **Newton in the space of the multipliers** — the Brinkley–Karpov formulation: the
-  members of a mixing phase follow from the multipliers through their mass-action laws,
+- **Newton in the space of the multipliers** — the Brinkley–Karpov formulation
+  (Brinkley, 1947; Karpov et al., 1997): the members of a mixing phase follow from the
+  multipliers through their mass-action laws,
   solved in log-amounts so that no fraction-to-boundary rule caps the step, and the pure
   phases are held in an active set, exactly.
 - **Mixing phases** — `SolutionPhase`: a phase with a solvent, whose solutes a supplied
@@ -76,12 +77,13 @@ the part of the chemical potentials that depends on the composition.
 - **A certificate, not a stopping test** — `kkt_certificate` checks the KKT conditions at
   any point, whatever produced it, each mass balance against what it holds; for a convex
   problem `optimal = true` proves the global minimum.
-- **Phase stability** — Michelsen's tangent-plane test, for an absent mixing phase
+- **Phase stability** — Michelsen's tangent-plane test (Michelsen, 1982), for an absent
+  mixing phase
   (`phase_tangent_trial`) and for a present one that would split (`phase_split_trial`),
   with the trial composition it finds.
 - **Starts** — the vertex of the pure-phase linear program by a verified simplex
   (`lp_start`), which proves an impossible budget infeasible, and the multipliers of
-  the concave dual of the ideal problem (Brinkley's method).
+  the concave dual of the ideal problem (Brinkley's method; White et al., 1958).
 - **Unknown parameters** — a prescribed property (a pH, a temperature) or a reaction
   extent, solved for together with the composition.
 - **Derivatives of the answer** — dual numbers in the budget or in the data give, through
@@ -158,44 +160,15 @@ OptimaSolver.jl began as a Julia port of the **Optima** C++ library developed by
 <https://github.com/reaktoro/optima>. The interior-point solver keeps that lineage: the
 canonicalization of the conservation matrix, the Schur-complement Newton step, the
 stability classification of the variables and the sensitivity of the answer come from
-that library and from
-
-> Leal, A.M.M., Blunt, M.J., LaForce, T.C. (2014).
-> Efficient chemical equilibrium calculations for geochemical speciation and reactive
-> transport modelling.
-> *Geochimica et Cosmochimica Acta*, **131**, 301–322.
-> <https://doi.org/10.1016/j.gca.2014.01.038>
-
-Its log-barrier formulation and its filter line search follow
-
-> Wächter, A., Biegler, L.T. (2006).
-> On the implementation of an interior-point filter line-search algorithm for
-> large-scale nonlinear programming.
-> *Mathematical Programming*, **106**(1), 25–57.
-> <https://doi.org/10.1007/s10107-004-0559-y>
+that library and from Leal et al. (2014). Its log-barrier formulation and its filter line
+search follow Wächter & Biegler (2006).
 
 The Newton solver in the space of the multipliers and what surrounds it — the KKT
 certificate, the phase-stability tests, the linear-programming start and the
 derivatives of the answer — are original to OptimaSolver.jl (`src/dual_newton.jl`,
 `src/dual_newton_ad.jl` and `src/lp.jl`, more than half of the code). They implement
-published methods:
-
-> Brinkley, S.R. (1947). Calculation of the equilibrium composition of systems of many
-> constituents. *The Journal of Chemical Physics*, **15**(2), 107–110.
-> <https://doi.org/10.1063/1.1746420>
->
-> White, W.B., Johnson, S.M., Dantzig, G.B. (1958). Chemical equilibrium in complex
-> mixtures. *The Journal of Chemical Physics*, **28**(5), 751–755.
-> <https://doi.org/10.1063/1.1744264>
->
-> Karpov, I.K., Chudnenko, K.V., Kulik, D.A. (1997). Modeling chemical mass transfer in
-> geochemical processes; thermodynamic relations, conditions of equilibria and numerical
-> algorithms. *American Journal of Science*, **297**(8), 767–806.
-> <https://doi.org/10.2475/ajs.297.8.767>
->
-> Michelsen, M.L. (1982). The isothermal flash problem. Part I. Stability.
-> *Fluid Phase Equilibria*, **9**(1), 1–19.
-> <https://doi.org/10.1016/0378-3812(82)85001-2>
+the published methods of Brinkley (1947), White et al. (1958), Karpov et al. (1997) and
+Michelsen (1982), listed under [References](#references).
 
 The Julia port was authored by Jean-François Barthélémy (CEREMA, France) with
 assistance from [Claude Code](https://claude.ai/code) (Anthropic).
@@ -241,3 +214,29 @@ also Leal et al. (2014). See [CITATION.cff](CITATION.cff) for citation details.
   year      = {2026}
 }
 ```
+
+## References
+
+- Brinkley, S. R. (1947). Calculation of the equilibrium composition of systems of many
+  constituents. *The Journal of Chemical Physics*, **15**(2), 107–110.
+  <https://doi.org/10.1063/1.1746420>
+- Karpov, I. K., Chudnenko, K. V., Kulik, D. A. (1997). Modeling chemical mass transfer
+  in geochemical processes; thermodynamic relations, conditions of equilibria and
+  numerical algorithms. *American Journal of Science*, **297**(8), 767–806.
+  <https://doi.org/10.2475/ajs.297.8.767>
+- Leal, A. M. M., Blunt, M. J., LaForce, T. C. (2014). Efficient chemical equilibrium
+  calculations for geochemical speciation and reactive transport modelling.
+  *Geochimica et Cosmochimica Acta*, **131**, 301–322.
+  <https://doi.org/10.1016/j.gca.2014.01.038>
+- Leal, A. M. M. *Optima*: a C++ library for chemical equilibrium optimization.
+  Source code, no DOI. <https://github.com/reaktoro/optima>
+- Michelsen, M. L. (1982). The isothermal flash problem. Part I. Stability.
+  *Fluid Phase Equilibria*, **9**(1), 1–19.
+  <https://doi.org/10.1016/0378-3812(82)85001-2>
+- Wächter, A., Biegler, L. T. (2006). On the implementation of an interior-point filter
+  line-search algorithm for large-scale nonlinear programming.
+  *Mathematical Programming*, **106**(1), 25–57.
+  <https://doi.org/10.1007/s10107-004-0559-y>
+- White, W. B., Johnson, S. M., Dantzig, G. B. (1958). Chemical equilibrium in complex
+  mixtures. *The Journal of Chemical Physics*, **28**(5), 751–755.
+  <https://doi.org/10.1063/1.1744264>

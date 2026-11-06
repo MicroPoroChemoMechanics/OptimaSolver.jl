@@ -195,9 +195,9 @@ For a convex Gibbs function with positive curvature, H_diag > 0 always.
     `Σᵢ = zᵢ/sᵢ`, and that is the one substantive difference between a primal
     barrier method and a primal-dual one. It was implemented here in full — the
     `z` iterate, its own Newton step `δz = μ/s − z − Σ δn`, its own
-    fraction-to-boundary step length, and the `κ_Σ` safeguard of Wächter & Biegler
-    (2006) Eq. (16) — and then removed, because it is measurably worse on the
-    problems this package exists for.
+    fraction-to-boundary step length, and the `κ_Σ` safeguard of
+    [WachterBiegler2006](@citet), Eq. (16) — and then removed, because it is
+    measurably worse on the problems this package exists for.
 
     The reason is structural, not incidental. A pure phase's Gibbs energy is
     linear in its amount, so `∂²f/∂nᵢ² = 0` exactly and `Σᵢ` is not a correction

@@ -139,9 +139,9 @@ zero the species of the rows whose budget forces them to vanish
 
 # What it is worth as a start, measured
 
-On two cold cement pastes (the `cement107` benchmark case, 107 species, and a
-CEM I with the CNASH gel of Myers et al.), every time the median of three runs
-after a discarded warm-up:
+On two cold cement pastes, the `cement107` benchmark case (107 species) and a
+CEM I with the CNASH gel of [Myers2014](@citet), every time the median of
+three runs after a discarded warm-up:
 
 | start | cement107 | CEM I + CNASH |
 |:--|--:|--:|
@@ -158,8 +158,7 @@ same composition (1e-12 relative). So what this returns is a state, and nothing
 of it is passed to `dual_newton_solve` directly.
 
 A staged start of this kind, a linear program followed by an interior method, is
-common in Gibbs-energy minimizers; see Kulik et al. (2013), *Comput. Geosci.*
-17, 1–24, doi:10.1007/s10596-012-9310-6.
+common in Gibbs-energy minimizers; see [Kulik2013](@citet).
 """
 function lp_start(
         A::AbstractMatrix, g::AbstractVector, b::AbstractVector;
