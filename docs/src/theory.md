@@ -491,10 +491,10 @@ largest budget and hides every smaller one.
 
 ### What this method does not do
 
-Making the error measure meaningful does not make the iteration converge, and it
-is honest to separate the two.
+Making the error measure meaningful does not make the iteration converge, and the
+two are to be distinguished.
 
-With the error now readable, the trace on a cement equilibrium shows the step
+With the error readable, the trace on a cement equilibrium shows the step
 capped by the fraction-to-boundary rule of
 [Fraction-to-boundary step limit](@ref) at **every** iteration — $\alpha$ equal
 to $\alpha_{\max}$ throughout, falling below $10^{-2}$ — so convergence is
@@ -692,8 +692,8 @@ certificate tests this one-sided form of the stationarity, scaled as the
 equality is (`stationarity_floored`), on the members whose potential the interior
 determines; a member whose column reaches the null space of the interior columns
 has a potential the answer leaves free, and some multiplier meets its
-inequality. Before 0.7.2 such members were excluded from every test, and a member
-left far below its equilibrium amount was certified.
+inequality. Were such members excluded from the test, a member
+left far below its equilibrium amount would be certified.
 
 ### Solutes coupled through the ionic strength
 
@@ -796,11 +796,10 @@ every partial derivative coming from one forward-mode pass over ``z = (v, w)``.
 A member whose own amount does not enter its equation (an activity the model
 floors, below the floor) has ``\partial G/\partial w = 0`` there: it is held,
 its equation dropped. Where the inversion has not converged, the Jacobian is
-that of the residual as evaluated, by forward mode through the sweeps it runs. Until 0.7.4 this Jacobian was formed by
-differences, one inner inversion per column. Their noise had been doing work of
-its own, which the rules above now do on purpose: driving out a phase that breaks
-the phase rule, and letting through the step that restores the balance while the
-rows that cannot be satisfied stay where they are. A step is therefore accepted
+that of the residual as evaluated, by forward mode through the sweeps it runs. The rules above
+drive out a phase that breaks the phase rule, and let through the step that
+restores the balance while the rows that cannot be satisfied stay where they
+are. A step is therefore accepted
 when it decreases the worst residual or, failing that, when it decreases
 ``\|R\|^2`` by Armijo's condition against the slope ``-2\|J\delta\|^2`` of the
 least-squares step, the worst residual not growing.
@@ -831,7 +830,7 @@ system of the active set and ``\theta`` the data (`b`, `A`, `g`, `params`),
 returns `x`, `y` and `q` in duals of the caller's tag, with the active set frozen
 at the answer: the derivative of the solution, not of the iteration that found
 it. [`dual_newton_tangent`](@ref) does the same at an answer obtained by any
-route. Each level of a nested differentiation is taken in turn, so second
+method. Each level of a nested differentiation is taken in turn, so second
 derivatives are exact as well.
 
 ### Termination
@@ -1055,11 +1054,9 @@ over the rows with a budget, the most one row lets it hold; and each balance row
 is judged relative to what it holds. A system multiplied by any factor is
 therefore the same search: the same sets, the same number of iterations, the
 amounts multiplied and the potentials unchanged, which the tests check from
-``10^{-6}`` to ``10^{6}``. Until 0.8.8 a phase entered above ``10^{-6}`` mol, the
-barrier parameter of the interior point whose answers the solver was first
-written to polish, and left below ``10^{-8}`` mol, so that a phase made of a trace
+``10^{-6}`` to ``10^{6}``. A threshold in moles would forbid a phase made of a trace
 (the ettringite of a portlandite suspension whose aluminum is a ``10^{-9}`` mol
-seed) could never stay.
+seed) from ever staying, which a threshold relative to the scale does not.
 
 A start is read the same way. A pure phase starts free when its amount, as a
 fraction of its scale, is no smaller than its undersaturation at the starting
@@ -1115,9 +1112,8 @@ reason above.
 for every row that has a budget: a relative measure, the same for a trace and for
 a row of 55 mol, so that the verdict does not change when every amount is
 multiplied by the same factor. A trace is then held to its own amount, as PHREEQC
-and GEMS [Kulik2013](@cite) hold a mass balance to its element total. Judged in moles alone, as until
-0.7.8, a trace of `1e-9` mol could be 10 % wrong and certified; judged in moles
-above one mole, as until 0.8.8, a row of a tonne of paste was held to a precision
+and GEMS [Kulik2013](@cite) hold a mass balance to its element total. Judged in moles alone, a trace of `1e-9` mol could be 10 % wrong and certified; judged in moles
+above one mole, a row of a tonne of paste would be held to a precision
 no data has, and the verdict depended on the size of the system. The dual Newton
 converges on the same measure, and its rows are weighted by the same scales in
 the step, but for the rows named in `holdings_rows`. The scale is floored at ``\epsilon^2 |b_k|`` for a row that has a
@@ -1164,7 +1160,7 @@ a method in ``\ln x`` cannot start from the others at zero. Raised to
 ``x_j = e^{u_j - g_j}``, the amount the multipliers give a species absent from the
 vertex (the ideal dilute amount at those potentials), the vertex becomes a start.
 Measured on two cold cement pastes, 107 and 109 species, a certified cascade that
-took 4.7 s and 4.2 s from the recipe took 0.37 s and 0.26 s from it, to the same
+took 4.7 s and 4.2 s from the initial composition took 0.37 s and 0.26 s from it, to the same
 composition. The dual Newton reads the vertex as it stands instead: its zeros are
 exact bounds, the species it leaves out start absent, and its multipliers are the
 starting potentials. It is a start of `dual_newton_solve` when the fitted
@@ -1255,9 +1251,10 @@ For the **rank**, the column scaling is noise:
 positive `s`. But the pivoted-QR test compares each pivot to the largest, and the
 SciML interface scales columns by each variable's starting value; warm-starting
 from a converged equilibrium spreads those over ten orders of magnitude and the
-smallest honest pivot falls below the tolerance. The rank came out one short, `B`
-was built with `m-1` columns, and the failure surfaced as a "matrix is not square"
-error from LAPACK. It is therefore read off a column-equilibrated copy.
+smallest genuine pivot falls below the tolerance: read on that matrix, the rank
+would come out one short, `B` would be built with `m-1` columns, and LAPACK
+would report a "matrix is not square" error. The rank is therefore read off a
+column-equilibrated copy.
 
 For the basis **order**, that same scaling is exactly the information wanted. The
 null-space step asks the basic variables to absorb the infeasibility, through
@@ -1333,7 +1330,7 @@ direction at all. Measured on an LC³ equilibrium, a start carrying
 barrier level, and the solve reported `MaxIters` on the point it began at.
 
 Positivity is enforced first and feasibility after, so the clamp cannot undo the
-projection. Two exact routes are then tried in order:
+projection. Two exact methods are then tried in order:
 
 1. **Solve for the basic amounts** given the others, ``B n_b = b - N n_n``. One
    triangular solve on a factorization that already exists, and this is how Optima
@@ -1431,8 +1428,8 @@ Armijo's fraction, $R(n + \alpha\,\delta n,\, y + \alpha\,\delta y) \le
 
 Row by row, because the rows do not share a scale: a trace component, whose
 budget is orders of magnitude below the others, fits whole inside a tolerance
-the major rows set, and was lost that way when the balance was judged on
-$\theta$ (0.7.5).
+the major rows set, and would be lost if the balance were judged on
+$\theta$.
 
 ## Outer barrier loop
 
@@ -1478,7 +1475,7 @@ S\, \frac{\partial y^*}{\partial b_j} = -e_j,
 \frac{\partial n^*}{\partial b_j} = -H^{-1} A^\top \frac{\partial y^*}{\partial b_j}.
 ```
 
-**Sanity check**: summing over species $i$,
+Check: summing over species $i$,
 $\sum_i \partial n_i^*/\partial b_j = 1$ — the extra mole of element $j$ is
 fully redistributed among the species.
 

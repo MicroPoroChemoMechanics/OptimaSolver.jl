@@ -106,7 +106,7 @@ returned in duals of the caller's tag, their partials the derivatives of the
 answer given by the implicit-function theorem with the active set frozen.
 
 `x` (and `y`, `q` when given) is the answer one level of duals down, as
-`dual_newton_solve` returns it on the values of the data, whatever route
+`dual_newton_solve` returns it on the values of the data, whatever method
 produced it. What is not given is recovered from `x`:
 
 - the active phases are those holding more than `floor` times the scale of the
@@ -117,7 +117,7 @@ produced it. What is not given is recovered from `x`:
   as `kkt_certificate` does.
 
 The answer must be one: the derivative of a point that is not an equilibrium is
-not the derivative of anything. Audit it with `kkt_certificate` first.
+not the derivative of anything. Check it with `kkt_certificate` first.
 
 A member the inversion does not determine (a model flooring a vanishing
 activity, below its floor) is held: its amount has no derivative. A phase every

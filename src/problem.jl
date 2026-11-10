@@ -235,8 +235,8 @@ Solver hyperparameters.
                       approximation 1/nᵢ (default false). Enable for problems
                       with pure solid or gas species where the true
                       ∂²f/∂nᵢ² = 0, otherwise the approximation 1/nᵢ causes
-                      extremely slow convergence. (The name is historical: no
-                      difference quotient is taken.)
+                      extremely slow convergence. (No difference quotient is
+                      taken.)
 - `nullspace_step`:   compute the Newton step in the null space of `A`, so that
                       feasibility once reached is kept (default true)
 - `algorithm`:        `:active_set` (default), the iteration of Optima
@@ -261,7 +261,7 @@ Solver hyperparameters.
     | | pure water | mixed solid/aqueous |
     |:--|--:|--:|
     | `false` (analytic 1/nᵢ) | `[H⁺]/[OH⁻] = 1.000003` ✓ | worst ×6181 ✗ |
-    | `true` (the diagonal of ∇²f; measured with 0.7.4's difference quotient) | `[H⁺]/[OH⁻] = 3.78` ✗ | worst ×19.8 |
+    | `true` (the diagonal of ∇²f) | `[H⁺]/[OH⁻] = 3.78` ✗ | worst ×19.8 |
 
     A Hessian affects the *rate* of Newton's method, not its limit, so a solver
     that merely converged slowly would still reach the right answer. It does

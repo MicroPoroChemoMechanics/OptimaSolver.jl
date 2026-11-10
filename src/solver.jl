@@ -356,13 +356,13 @@ return the fraction-to-boundary limit of THAT step with the factorization of
 
 The direction is clipped for the variables near their bounds, then, with the
 null-space step, projected back onto `{A d = 0}`, and only then limited. The
-limit used to be taken on the raw direction: the projection then moved the step
-the line search tried, which could cross a bound well short of `α_max`, and the
-line search could only halve until it no longer did. On the part of
-ChemistryLab's suite that equilibrates the most, that was 1.1 million halvings
-over 280 thousand iterations, each a step shorter than the direction allowed;
-on calcite the interior point alone came out more than 1e-3 off the certified
-pH, and 5e-4 off once limited on its own step.
+limit is taken on the projected direction, not on the raw one: projecting after
+the limit would move the step the line search tries, which could then cross a
+bound well short of `α_max`, the line search being able only to halve. On the
+part of ChemistryLab's suite that equilibrates the most, limiting the raw
+direction took 1.1 million halvings over 280 thousand iterations, each a step
+shorter than the direction allowed; on calcite the interior point alone came out
+more than 1e-3 off the certified pH, and 5e-4 off once limited on its own step.
 """
 function _limited_step!(dn, n, prob::OptimaProblem{T}, can, ex, aat_qr, nullspace::Bool) where {T}
     # Variable stability: cap the step of the variables near their bounds.
@@ -592,7 +592,7 @@ end
 """
     _initialise_feasible!(n, prob, can; maxit=100, tol=1e-12)
 
-Make `n` satisfy `A n = b` with `n ≥ lb`, exactly if possible. Four routes are
+Make `n` satisfy `A n = b` with `n ≥ lb`, exactly if possible. Four methods are
 tried in turn, each only when the previous one has not reached the affine set:
 
 1. **Least disturbance**: the minimum-norm correction towards `A n = b`, clamped
@@ -731,7 +731,7 @@ Alternate the projection onto `{A n = b}` with the projection onto `{n ≥ lb}`.
 Both sets are convex and their intersection is non-empty whenever the budget is
 attainable, so the alternation converges — linearly, and on a cement far too
 slowly to be relied on from a cold start, which is why it is reached only when the
-point is already close or when the exact routes have failed.
+point is already close or when the exact methods have failed.
 """
 function _project_alternating!(
         n::AbstractVector{T}, prob::OptimaProblem{T}; maxit::Int, tol::T,
