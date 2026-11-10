@@ -444,7 +444,7 @@ A convex program in the form solved by [`dual_newton_solve`](@ref):
     what they hold rather than by the scale of the whole budget: the acid-base or
     charge row of an aqueous system, judged by PHREEQC [ParkhurstAppelo2013](@cite)
     on the ionic strength of its iterate. Their tolerance is unchanged. Empty by
-    default, and the search is then that of 0.10.0. Without it, the acid-base row of
+    default, and the search then weighs every row by the scale of the whole budget. Without it, the acid-base row of
     pure water, whose ions hold 5e-8 mol beside 22 mol of water, weighs 2e-9 of the
     other rows in the factorization and the line search, and a step that balances it
     counts for nothing; a redox row, whose carriers lie on one side and must vanish,
@@ -688,8 +688,7 @@ end
     holds.
   - `maxit`: Newton iterations of the search, whose active set is reclassified
     at every one of them.
-  - `max_active_updates`: no longer used, the active set changing at every
-    iteration; accepted so that existing calls still construct, and deprecated.
+  - `max_active_updates`: deprecated, ignored.
   - `si_tol`: saturation index, in RT, above which a variable at its bound is
     admitted.
   - `inner_tol`, `inner_maxit`: the inner fixed point that recovers the phase
@@ -1052,7 +1051,7 @@ the next one gives another composition at the same potentials, and the residual
 of an iterate depended on where its sweeps stopped. The starts of a chlorinated
 cement paste under the limiting law lay outside the model's domain, by 0.13 RT
 and more, and their line searches compared trials of one cycle with the residual
-of another, 1.6e17 against 10.0 down to α = 2⁻⁴⁰: every start of every route
+of another, 1.6e17 against 10.0 down to α = 2⁻⁴⁰: every start
 ended so, and the paste certified on some machines only. The composition at the
 edge is a function of the potentials alone, the line search compares what it
 evaluates, and the step, through `w = w_Δ + Δ` with the coefficients held, is
@@ -1361,7 +1360,7 @@ The outer residual at `v = [ln x_ref(φ) for each active phase; y; x_B; q]`:
   - `prob.cq(x, q, params)` — one equation per unknown parameter.
 
 `|Φ| + m + |P| + nq` equations in as many unknowns: some fifteen for a cement,
-against forty-seven variables in the interior-point route.
+against forty-seven variables in the interior-point formulation.
 
 The `q` block is how a prescribed property is imposed: an adiabatic solve has `T`
 in `q` and `H(x, T) − H₀` in `cq`; a fixed-volume solve has `P` in `q` and
@@ -1753,13 +1752,12 @@ linear program `minimize gᵀx subject to A x = b, x ≥ 0` lands on, as
 [`lp_start`](@ref) computes and verifies it. Returns that vertex, raised to
 `floor`, when the program is solved; `nothing` when it is **proved** infeasible,
 which is a statement about `b` rather than about the solver; and throws when the
-tableau's answer could not be verified either way, which the earlier
-implementation reported as one or the other without checking.
+tableau's answer could not be verified either way.
 
 # What the vertex is worth as a start for the dual Newton
 
 Measured, because the transplant was tried before it was believed. On a
-91-species Portland cement with 12 components (OptimaSolver 0.6.0):
+91-species Portland cement with 12 components:
 
 | | |
 |:--|--:|
@@ -2364,7 +2362,7 @@ inversion, and differs from the derivative of the residual the Newton actually
 sees by as much as the inversion is short of convergence: measured on the
 coupled hydration of a CEM I over three hours, where the inversion ends
 unconverged at most iterations, it took 5007 Newton iterations where this takes
-the number the difference quotients of 0.7.4 did, on the same trajectory.
+the number that difference quotients take, on the same trajectory.
 """
 function _swept_jacobian(prob, v, W_ref, act_ph, active, bv; dead, degenerate, inner_maxit, max_fall)
     f = function (vv)

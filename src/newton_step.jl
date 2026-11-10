@@ -260,7 +260,7 @@ out of the projected stationarity condition and
 
 is an `(ns − m) × (ns − m)` system in which `H` appears only as a *product*.
 
-The canonicalizer already supplies the basis for free. With `A[:, jb] = B`,
+The canonicalizer already supplies the basis at no extra cost. With `A[:, jb] = B`,
 `A[:, jn] = N` and `R = B⁻¹N`, the nullspace basis is `Z[jb, :] = −R`,
 `Z[jn, :] = I`, so
 

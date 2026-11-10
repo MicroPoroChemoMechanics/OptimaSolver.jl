@@ -145,7 +145,7 @@ three runs after a discarded warm-up:
 
 | start | cement107 | CEM I + CNASH |
 |:--|--:|--:|
-| the caller's certified cascade from the recipe | 4.7 s | 4.2 s |
+| the caller's certified cascade from the initial composition | 4.7 s | 4.2 s |
 | `dual_newton_solve` alone, vertex floored at 1e-16 | not converged | not converged |
 | alone, absent species raised to `exp(uⱼ − gⱼ)`, first `y` the program's | not converged | not converged |
 | alone, the same with the basis as initial active set | not converged | not converged |

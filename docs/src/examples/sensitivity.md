@@ -48,7 +48,7 @@ println("∂n*/∂μ⁰ = ", sens.∂n_∂μ0)   # (3 × 3) matrix
 Column $j$ of `sens.∂n_∂b` answers: "if one extra unit of element $j$ is added
 to the system, how does the equilibrium composition change?"
 
-**Sanity check** — the extra mole must be distributed among the species, so
+Check: the extra mole must be distributed among the species, so
 columns sum to 1:
 
 ```@example sens
